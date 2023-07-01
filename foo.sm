@@ -1,0 +1,6 @@
+fn main() i64 { 
+    let a: i64 = 3 + 1; 
+    let b = a + 1;
+    let c = a + b + 1;
+    return a + b + c + 1;
+}

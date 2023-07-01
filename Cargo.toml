@@ -1,0 +1,13 @@
+[package]
+name = "seam"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cranelift-codegen = "0.97.1"
+cranelift-jit = "0.97.1"
+cranelift-module = "0.97.1"
+cranelift-native = "0.97.1"
+cranelift-object = "0.97.1"
+cranelift-frontend = "0.97.1"
+string-interner = "0.14.0"
