@@ -1,14 +1,16 @@
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
+    rc::Rc,
 };
 
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use string_interner::{symbol::SymbolU32, StringInterner};
 
 use cranelift_codegen::ir::{
-    stackslot::StackSize, types, AbiParam, InstBuilder, MemFlags, StackSlotData, StackSlotKind,
-    Type as CraneliftType, Value as CraneliftValue,
+    stackslot::StackSize, types, AbiParam, Block, InstBuilder, MemFlags, Signature, StackSlotData,
+    StackSlotKind, Type as CraneliftType, Value as CraneliftValue,
 };
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context as CodegenContext;
@@ -203,7 +205,7 @@ fn is_special(c: char) -> bool {
 }
 
 #[derive(Debug)]
-pub struct SourceInfo<'a> {
+pub struct SourceInfo {
     pub source_path: &'static str,
     pub original_source: &'static str,
     pub byte_offset: usize,
@@ -211,12 +213,10 @@ pub struct SourceInfo<'a> {
     pub loc: Location,
     pub top: Lexeme,
     pub second: Lexeme,
-
-    pub string_interner: &'a mut StringInterner,
 }
 
-impl<'a> SourceInfo<'a> {
-    fn new(file_name: &str, string_interner: &'a mut StringInterner) -> Self {
+impl SourceInfo {
+    fn new(file_name: &str) -> Self {
         let source_path = PathBuf::from(file_name);
         let original_source = std::fs::read_to_string(&source_path).unwrap();
         let source_path = Box::leak(source_path.into_boxed_path().to_str().unwrap().into());
@@ -227,41 +227,11 @@ impl<'a> SourceInfo<'a> {
             loc: Default::default(),
             top: Default::default(),
             second: Default::default(),
-            string_interner,
         }
     }
 
     pub fn make_range(&self, start: Location, end: Location) -> Range {
         Range::new(start, end, self.source_path)
-    }
-
-    fn expect(&mut self, tok: &Token) -> Result<(), CompileError> {
-        match &self.top.tok {
-            t if t == tok => {
-                self.pop();
-                Ok(())
-            }
-            _ => {
-                let msg = Box::leak(Box::new(
-                    format!("Expected {:?}, found {:?}", tok, self.top.tok).to_string(),
-                ));
-                Err(CompileError::Generic(msg, self.top.range))
-            }
-        }
-    }
-
-    fn expect_range(&mut self, start: Location, token: Token) -> Result<Range, CompileError> {
-        let range = self.make_range(start, self.top.range.end);
-
-        if self.top.tok == token {
-            self.pop();
-            Ok(range)
-        } else {
-            let msg = Box::leak(Box::new(
-                format!("Expected {:?}, found {:?}", token, self.top.tok).to_string(),
-            ));
-            Err(CompileError::Generic(msg, range))
-        }
     }
 
     fn prefix(&mut self, pat: &str, tok: Token) -> bool {
@@ -294,204 +264,6 @@ impl<'a> SourceInfo<'a> {
         } else {
             false
         }
-    }
-
-    fn pop(&mut self) {
-        self.eat_spaces();
-
-        let start = self.loc;
-        self.top = self.second;
-
-        if self.prefix_keyword("fn", Token::Fn) {
-            return;
-        }
-        if self.prefix_keyword("let", Token::Let) {
-            return;
-        }
-        if self.prefix_keyword("return", Token::Return) {
-            return;
-        }
-        if self.prefix_keyword("i8", Token::I8) {
-            return;
-        }
-        if self.prefix_keyword("i16", Token::I16) {
-            return;
-        }
-        if self.prefix_keyword("i32", Token::I32) {
-            return;
-        }
-        if self.prefix_keyword("i64", Token::I64) {
-            return;
-        }
-        if self.prefix_keyword("u8", Token::U8) {
-            return;
-        }
-        if self.prefix_keyword("u16", Token::U16) {
-            return;
-        }
-        if self.prefix_keyword("u32", Token::U32) {
-            return;
-        }
-        if self.prefix_keyword("u64", Token::U64) {
-            return;
-        }
-        if self.prefix_keyword("f32", Token::F32) {
-            return;
-        }
-        if self.prefix_keyword("f64", Token::F64) {
-            return;
-        }
-        if self.prefix("(", Token::LParen) {
-            return;
-        }
-        if self.prefix(")", Token::RParen) {
-            return;
-        }
-        if self.prefix("{", Token::LCurly) {
-            return;
-        }
-        if self.prefix("}", Token::RCurly) {
-            return;
-        }
-        if self.prefix(",", Token::Comma) {
-            return;
-        }
-        if self.prefix(";", Token::Semicolon) {
-            return;
-        }
-        if self.prefix(":", Token::Colon) {
-            return;
-        }
-        if self.prefix("=", Token::Eq) {
-            return;
-        }
-        if self.prefix("_", Token::Underscore) {
-            return;
-        }
-        if self.prefix("+", Token::Plus) {
-            return;
-        }
-        if self.prefix("-", Token::Dash) {
-            return;
-        }
-        if self.prefix("*", Token::Star) {
-            return;
-        }
-        if self.prefix("/", Token::Slash) {
-            return;
-        }
-
-        let new_second = match self.source().chars().next() {
-            Some(c) if c.is_digit(10) => {
-                let index = match self.source().chars().position(|c| !c.is_digit(10)) {
-                    Some(index) => index,
-                    None => self.source().len(),
-                };
-
-                let has_decimal = match self.source().get(index..index + 1) {
-                    Some(c) => c == ".",
-                    _ => false,
-                };
-
-                let digit = self.source()[..index]
-                    .parse::<i64>()
-                    .expect("Failed to parse numeric literal");
-
-                self.eat(index);
-
-                if has_decimal {
-                    self.eat(1);
-
-                    let decimal_index = match self.source().chars().position(|c| !c.is_digit(10)) {
-                        Some(index) => index,
-                        None => self.source().len(),
-                    };
-
-                    let decimal_digit = self.source()[..decimal_index]
-                        .parse::<i64>()
-                        .expect("Failed to parse numeric literal");
-
-                    self.eat(decimal_index);
-
-                    let digit: f64 = format!("{}.{}", digit, decimal_digit).parse().unwrap();
-
-                    let mut spec = NumericSpecification::None;
-                    if self.source().starts_with("f32") {
-                        spec = NumericSpecification::F32;
-                        self.eat(3);
-                    } else if self.source().starts_with("f64") {
-                        spec = NumericSpecification::F64;
-                        self.eat(3);
-                    }
-
-                    let end = self.loc;
-                    Lexeme::new(
-                        Token::FloatLiteral(digit, spec),
-                        self.make_range(start, end),
-                    )
-                } else {
-                    let mut spec = NumericSpecification::None;
-
-                    if self.source().starts_with("i8") {
-                        spec = NumericSpecification::I8;
-                        self.eat(2);
-                    } else if self.source().starts_with("i16") {
-                        spec = NumericSpecification::I16;
-                        self.eat(3);
-                    } else if self.source().starts_with("i32") {
-                        spec = NumericSpecification::I32;
-                        self.eat(3);
-                    } else if self.source().starts_with("i64") {
-                        spec = NumericSpecification::I64;
-                        self.eat(3);
-                    } else if self.source().starts_with("u8") {
-                        spec = NumericSpecification::U8;
-                        self.eat(2);
-                    } else if self.source().starts_with("u16") {
-                        spec = NumericSpecification::U16;
-                        self.eat(3);
-                    } else if self.source().starts_with("u32") {
-                        spec = NumericSpecification::U32;
-                        self.eat(3);
-                    } else if self.source().starts_with("u64") {
-                        spec = NumericSpecification::U64;
-                        self.eat(3);
-                    } else if self.source().starts_with("f32") {
-                        spec = NumericSpecification::F32;
-                        self.eat(3);
-                    } else if self.source().starts_with("f64") {
-                        spec = NumericSpecification::F64;
-                        self.eat(3);
-                    }
-
-                    let end = self.loc;
-                    Lexeme::new(
-                        Token::IntegerLiteral(digit, spec),
-                        self.make_range(start, end),
-                    )
-                }
-            }
-            Some(_) => {
-                let index = match self.source().chars().position(is_special) {
-                    Some(index) => index,
-                    None => self.source().len(),
-                };
-
-                if index == 0 {
-                    Lexeme::new(Token::Eof, Default::default())
-                } else {
-                    let sym = self.string_interner.get_or_intern(&self.source()[..index]);
-                    self.eat(index);
-
-                    let end = self.loc;
-
-                    Lexeme::new(Token::Symbol(Sym(sym)), self.make_range(start, end))
-                }
-            }
-            None => Lexeme::new(Token::Eof, Default::default()),
-        };
-
-        self.second = new_second;
     }
 
     fn source(&self) -> &'static str {
@@ -661,7 +433,7 @@ pub enum Node {
         is_store: bool,
     },
     Func {
-        name: NodeId,
+        name: Option<NodeId>,
         scope: ScopeId,
         params: IdVec,
         return_ty: Option<NodeId>,
@@ -674,10 +446,20 @@ pub enum Node {
         default: Option<NodeId>,
         index: u16,
     },
+    ValueParam {
+        name: Option<NodeId>,
+        value: NodeId,
+        index: u16,
+    },
     BinOp {
         op: Op,
         lhs: NodeId,
         rhs: NodeId,
+    },
+    Call {
+        func: NodeId,
+        params: IdVec,
+        rearranged_params: Option<IdVec>,
     },
 }
 
@@ -719,30 +501,16 @@ impl UnificationData {
 pub enum Value {
     Unassigned,
     None,
-    FuncId(FuncId),
+    Func(FuncId),
     Value(CraneliftValue),
 }
 
-impl Value {
-    fn as_func_id(&self) -> FuncId {
-        match self {
-            Value::FuncId(id) => *id,
-            _ => panic!("not a func id"),
-        }
-    }
-
-    fn as_cranelift_value(&self) -> CraneliftValue {
-        match self {
-            Value::Value(val) => *val,
-            _ => panic!("not a cranelift value"),
-        }
-    }
-}
-
 pub struct Context {
+    pub string_interner: StringInterner,
+
     pub nodes: Vec<Node>,
     pub ranges: Vec<Range>,
-    pub id_vecs: Vec<Vec<NodeId>>,
+    pub id_vecs: Vec<Rc<RefCell<Vec<NodeId>>>>,
     pub node_scopes: Vec<ScopeId>,
     pub addressable_nodes: HashSet<NodeId>,
 
@@ -758,13 +526,12 @@ pub struct Context {
     pub type_matches: Vec<TypeMatch>,
     pub type_array_reverse_map: HashMap<NodeId, usize>,
     pub completes: HashSet<NodeId>,
+    pub topo: Vec<NodeId>,
     pub circular_dependency_nodes: HashSet<NodeId>,
     pub unification_data: UnificationData,
 
     pub module: JITModule,
     pub values: HashMap<NodeId, Value>,
-    pub func_ids: HashMap<Sym, FuncId>,
-    pub func_ids_by_name: HashMap<Sym, FuncId>,
 }
 
 impl Context {
@@ -810,6 +577,8 @@ impl Context {
         };
 
         Self {
+            string_interner: StringInterner::new(),
+
             nodes: Default::default(),
             ranges: Default::default(),
             id_vecs: Default::default(),
@@ -827,23 +596,18 @@ impl Context {
             types: Default::default(),
             type_matches: Default::default(),
             type_array_reverse_map: Default::default(),
-            circular_dependency_nodes: Default::default(),
             completes: Default::default(),
+            topo: Default::default(),
+            circular_dependency_nodes: Default::default(),
             unification_data: Default::default(),
 
             module,
             values: Default::default(),
-            func_ids: Default::default(),
-            func_ids_by_name: Default::default(),
         }
     }
 
-    pub fn parse(
-        &mut self,
-        file_name: &str,
-        string_interner: &mut StringInterner,
-    ) -> Result<(), CompileError> {
-        let mut parser = Parser::new(self, file_name, string_interner);
+    pub fn parse(&mut self, file_name: &str) -> Result<(), CompileError> {
+        let mut parser = Parser::new(self, file_name);
         parser.parse()
     }
 
@@ -856,7 +620,7 @@ impl Context {
     }
 
     pub fn push_id_vec(&mut self, vec: Vec<NodeId>) -> IdVec {
-        self.id_vecs.push(vec);
+        self.id_vecs.push(Rc::new(RefCell::new(vec)));
         IdVec(self.id_vecs.len() - 1)
     }
 
@@ -883,20 +647,16 @@ impl Context {
         self.scopes[self.top_scope.0].entries.insert(sym, id);
     }
 
-    pub fn debug_tokens(
-        &mut self,
-        file_name: &str,
-        string_interner: &mut StringInterner,
-    ) -> Result<(), CompileError> {
-        let mut source_info = SourceInfo::new(file_name, string_interner);
+    pub fn debug_tokens(&mut self, file_name: &str) -> Result<(), CompileError> {
+        let mut parser = Parser::new(self, file_name);
 
-        source_info.pop();
-        source_info.pop();
+        parser.pop();
+        parser.pop();
 
         let mut a = 0;
-        while source_info.top.tok != Token::Eof && a < 25 {
-            println!("{:?}", source_info.top);
-            source_info.pop();
+        while parser.source_info.top.tok != Token::Eof && a < 25 {
+            println!("{:?}", parser.source_info.top);
+            parser.pop();
             a += 1;
         }
 
@@ -910,7 +670,6 @@ impl Context {
 
 impl Context {
     pub fn perform_semantic_analysis(&mut self) {
-        // todo(chad): split into two types
         for node in self.top_level.clone() {
             self.assign_type(node);
             self.unify_types();
@@ -955,7 +714,7 @@ impl Context {
                     self.assign_type(return_ty);
                 }
 
-                for param in self.id_vecs[params.0].clone() {
+                for &param in self.id_vecs[params.0].clone().borrow().iter() {
                     self.assign_type(param);
                 }
 
@@ -967,11 +726,11 @@ impl Context {
                     },
                 );
 
-                for stmt in self.id_vecs[stmts.0].clone() {
+                for &stmt in self.id_vecs[stmts.0].clone().borrow().iter() {
                     self.assign_type(stmt);
                 }
 
-                for ret_id in self.id_vecs[returns.0].clone() {
+                for &ret_id in self.id_vecs[returns.0].clone().borrow().iter() {
                     let ret_id = match self.nodes[ret_id.0] {
                         Node::Return(Some(id)) => id,
                         Node::Return(None) => continue,
@@ -984,6 +743,10 @@ impl Context {
                         self.errors
                             .push(CompileError::Node("Return type not specified", id));
                     }
+                }
+
+                if !self.topo.contains(&id) {
+                    self.topo.push(id);
                 }
             }
             Node::TypeLiteral(ty) => {
@@ -999,7 +762,7 @@ impl Context {
                             self.assign_type(return_ty);
                         }
 
-                        for input_ty in self.id_vecs[input_tys.0].clone() {
+                        for &input_ty in self.id_vecs[input_tys.0].clone().borrow().iter() {
                             self.assign_type(input_ty);
                         }
                     }
@@ -1078,12 +841,7 @@ impl Context {
                     }
                 }
             }
-            Node::DeclParam {
-                name: _,  // Sym
-                ty,       // Id
-                default,  // Id
-                index: _, // u16
-            } => {
+            Node::DeclParam { ty, default, .. } => {
                 if let Some(ty) = ty {
                     self.assign_type(ty);
                 }
@@ -1095,6 +853,13 @@ impl Context {
 
                 if let Some(ty) = ty {
                     self.match_types(id, ty);
+                }
+            }
+            Node::ValueParam { name, value, .. } => {
+                self.assign_type(value);
+                self.match_types(id, value);
+                if let Some(name) = name {
+                    self.match_types(name, value);
                 }
             }
             Node::Let { name: _, ty, expr } => {
@@ -1141,6 +906,122 @@ impl Context {
                     }
                 }
             }
+            Node::Call { func, params, .. } => {
+                self.assign_type(func);
+
+                let param_ids = self.id_vecs[params.0].clone();
+                for &param in param_ids.borrow().iter() {
+                    self.assign_type(param);
+                }
+
+                if let Type::Func {
+                    return_ty,
+                    input_tys,
+                } = self.get_type(func)
+                {
+                    let given = param_ids;
+                    let given_len = given.borrow().len();
+
+                    let decl = self.id_vecs[input_tys.0].clone();
+
+                    let mut rearranged_given = Vec::new();
+
+                    // While there are free params, push them into rearranged_given
+                    if given_len > 0 {
+                        let mut given_idx = 0;
+                        while given_idx < given_len
+                            && matches!(
+                                self.nodes[given.borrow()[given_idx].0],
+                                Node::ValueParam { name: None, .. }
+                            )
+                        {
+                            rearranged_given.push(given.borrow()[given_idx]);
+                            given_idx += 1;
+                        }
+
+                        let mut cgiven_idx = given_idx;
+                        while cgiven_idx < given_len {
+                            if matches!(
+                                self.nodes[given.borrow()[cgiven_idx].0],
+                                Node::ValueParam { name: None, .. }
+                            ) {
+                                self.errors.push(CompileError::Node(
+                                    "Cannot have unnamed params after named params",
+                                    id,
+                                ));
+                                return;
+                            }
+                            cgiven_idx += 1;
+                        }
+                    }
+
+                    let starting_rearranged_len = rearranged_given.len();
+
+                    for &d in decl.borrow().iter().skip(starting_rearranged_len) {
+                        let mut found = false;
+
+                        for &g in given.borrow().iter().skip(starting_rearranged_len) {
+                            let decl_name = match &self.nodes[d.0] {
+                                Node::DeclParam { name, .. } => *name,
+                                _ => unreachable!(),
+                            };
+                            let decl_name_sym = self.get_symbol(decl_name);
+
+                            let given_name = match &self.nodes[g.0] {
+                                Node::ValueParam {
+                                    name: Some(name), ..
+                                } => *name,
+                                _ => unreachable!(),
+                            };
+                            let given_name_sym = self.get_symbol(given_name);
+
+                            if given_name_sym == decl_name_sym {
+                                rearranged_given.push(g);
+                                found = true;
+                                break;
+                            }
+                        }
+
+                        if !found {
+                            if let Node::DeclParam {
+                                default: Some(def), ..
+                            } = self.nodes[d.0]
+                            {
+                                rearranged_given.push(def);
+                            } else {
+                                self.errors
+                                    .push(CompileError::Node("Could not find parameter", id));
+                                return;
+                            }
+                        }
+                    }
+
+                    self.nodes[id.0] = Node::Call {
+                        func,
+                        params,
+                        rearranged_params: Some(self.push_id_vec(rearranged_given.clone())),
+                    };
+
+                    let input_ty_ids = self.id_vecs[input_tys.0].clone();
+
+                    if input_ty_ids.borrow().len() != rearranged_given.len() {
+                        self.errors
+                            .push(CompileError::Node("Incorrect number of parameters", id));
+                    } else {
+                        for (param, input_ty) in
+                            rearranged_given.iter().zip(input_ty_ids.borrow().iter())
+                        {
+                            self.match_types(*param, *input_ty);
+                        }
+
+                        if let Some(return_ty) = return_ty {
+                            self.match_types(id, return_ty);
+                        }
+                    }
+                } else {
+                    self.errors.push(CompileError::Node("Not a function", id));
+                }
+            }
         }
 
         self.completes.insert(id);
@@ -1183,7 +1064,7 @@ impl Context {
                 let input_tys1 = self.id_vecs[input_tys1.0].clone();
                 let input_tys2 = self.id_vecs[input_tys2.0].clone();
 
-                if input_tys1.len() != input_tys2.len() {
+                if input_tys1.borrow().len() != input_tys2.borrow().len() {
                     self.errors.push(CompileError::Node2(
                         "Could not match types: input types differ in length",
                         ty1,
@@ -1191,7 +1072,7 @@ impl Context {
                     ));
                 }
 
-                for (it1, it2) in input_tys1.iter().zip(input_tys2.iter()) {
+                for (it1, it2) in input_tys1.borrow().iter().zip(input_tys2.borrow().iter()) {
                     self.match_types(*it1, *it2);
                 }
             }
@@ -1479,262 +1360,101 @@ impl Context {
 }
 
 impl Context {
-    pub fn compile_fn(
-        &mut self,
-        fn_name: &str,
-        string_interner: &mut StringInterner,
-        codegen_ctx: &mut CodegenContext,
-        func_ctx: &mut FunctionBuilderContext,
-    ) -> Result<(), CompileError> {
-        let fn_name_interned = string_interner.get_or_intern(fn_name);
+    pub fn predeclare_functions(&mut self) -> Result<(), CompileError> {
+        let mut codegen_ctx = self.module.make_context();
+        let mut func_ctx = FunctionBuilderContext::new();
+
+        for &t in self.topo.clone().iter() {
+            if !self.completes.contains(&t) {
+                continue;
+            }
+
+            self.predeclare_function(t)?;
+        }
+
+        let mut compile_ctx = ToplevelCompileContext {
+            ctx: self,
+            codegen_ctx: &mut codegen_ctx,
+            func_ctx: &mut func_ctx,
+        };
+
+        for &t in compile_ctx.ctx.topo.clone().iter() {
+            compile_ctx.compile_toplevel_id(t)?;
+        }
+
+        self.module
+            .finalize_definitions()
+            .expect("Failed to finalize definitions");
+
+        Ok(())
+    }
+
+    pub fn predeclare_function(&mut self, id: NodeId) -> Result<(), CompileError> {
+        if let Node::Func {
+            name,
+            params,
+            return_ty,
+            ..
+        } = self.nodes[id.0]
+        {
+            let mut sig = self.module.make_signature();
+
+            for &param in self.id_vecs[params.0].borrow().iter() {
+                sig.params
+                    .push(AbiParam::new(self.get_cranelift_type(param)));
+            }
+
+            let return_size = return_ty.map(|rt| self.get_type_size(rt)).unwrap_or(0);
+
+            if return_size > 0 {
+                sig.returns
+                    .push(AbiParam::new(self.get_cranelift_type(return_ty.unwrap())));
+            }
+
+            let func_name = self.func_name(name, id.0);
+
+            let func = self
+                .module
+                .declare_function(&func_name, Linkage::Local, &sig)
+                .unwrap();
+
+            self.values.insert(id, Value::Func(func));
+        }
+
+        Ok(())
+    }
+
+    fn func_name(&self, name: Option<NodeId>, anonymous_id: usize) -> String {
+        name.map(|n| {
+            let sym = self.nodes[n.0].as_symbol().unwrap();
+            String::from(self.string_interner.resolve(sym.0).unwrap())
+        })
+        .unwrap_or_else(|| format!("anonymous__{}", anonymous_id))
+    }
+
+    pub fn call_fn(&mut self, fn_name: &str) -> Result<(), CompileError> {
+        let fn_name_interned = self.string_interner.get_or_intern(fn_name);
 
         let node_id = self
             .top_level
             .iter()
             .filter(|tl| match self.nodes[tl.0] {
-                Node::Func { name, .. } => self.get_symbol(name).0 == fn_name_interned,
+                Node::Func {
+                    name: Some(name), ..
+                } => self.get_symbol(name).0 == fn_name_interned,
                 _ => false,
             })
             .next()
             .cloned();
 
         if let Some(id) = node_id {
-            self.compile_toplevel_id(id, string_interner, codegen_ctx, func_ctx)?;
-
-            self.module
-                .finalize_definitions()
-                .expect("Failed to finalize definitions");
-
-            let code = self
-                .module
-                .get_finalized_function(self.values[&id].as_func_id());
+            let code = self.module.get_finalized_function(self.get_func_id(id));
 
             let func = unsafe { std::mem::transmute::<_, fn() -> i64>(code) };
             dbg!(func());
         }
 
         Ok(())
-    }
-
-    pub fn compile_id(
-        &mut self,
-        id: NodeId,
-        string_interner: &mut StringInterner,
-        builder: &mut FunctionBuilder,
-    ) -> Result<(), CompileError> {
-        // idempotency
-        match self.values.get(&id) {
-            None | Some(Value::Unassigned) => {}
-            _ => return Ok(()),
-        };
-
-        match self.nodes[id.0] {
-            Node::Symbol(sym) => {
-                let resolved = self.scope_get(sym, id);
-                match resolved {
-                    Some(res) => {
-                        self.compile_id(res, string_interner, builder)?;
-                        let value = self.values.get(&res);
-                        if let Some(value) = value {
-                            self.values.insert(id, *value);
-                        }
-                        Ok(())
-                    }
-                    _ => todo!(),
-                }
-            }
-            Node::IntLiteral(n, _) => match self.types[&id] {
-                Type::I64 => {
-                    let value = builder.ins().iconst(types::I64, n);
-                    self.values.insert(id, Value::Value(value));
-                    Ok(())
-                }
-                _ => todo!(),
-            },
-            Node::FloatLiteral(_, _) => todo!(),
-            Node::TypeLiteral(_) => todo!(),
-            Node::Return(rv) => {
-                if let Some(rv) = rv {
-                    self.compile_id(rv, string_interner, builder)?;
-                    let value = self.rvalue(rv, builder);
-                    builder.ins().return_(&[value]);
-                } else {
-                    builder.ins().return_(&[]);
-                }
-
-                Ok(())
-            }
-            Node::Let { expr, .. } => {
-                let size: u32 = self.get_type_size(id);
-                let slot = builder.create_sized_stack_slot(StackSlotData {
-                    kind: StackSlotKind::ExplicitSlot,
-                    size,
-                });
-
-                let slot_addr = builder
-                    .ins()
-                    .stack_addr(self.module.isa().pointer_type(), slot, 0);
-                let value = Value::Value(slot_addr);
-
-                if let Some(expr) = expr {
-                    self.compile_id(expr, string_interner, builder)?;
-                    self.store(builder, expr, &value);
-                }
-
-                self.values.insert(id, value);
-
-                Ok(())
-            }
-            Node::Set { .. } => todo!(),
-            Node::DeclParam { .. } => todo!(),
-            Node::BinOp { op, lhs, rhs } => {
-                self.compile_id(lhs, string_interner, builder)?;
-                self.compile_id(rhs, string_interner, builder)?;
-
-                let lhs_value = self.rvalue(lhs, builder);
-                let rhs_value = self.rvalue(rhs, builder);
-
-                let value = match op {
-                    Op::Add => builder.ins().iadd(lhs_value, rhs_value),
-                    Op::Sub => builder.ins().isub(lhs_value, rhs_value),
-                    Op::Mul => builder.ins().imul(lhs_value, rhs_value),
-                    Op::Div => builder.ins().sdiv(lhs_value, rhs_value),
-                };
-
-                self.values.insert(id, Value::Value(value));
-
-                Ok(())
-            }
-            _ => todo!(),
-        }
-    }
-
-    pub fn compile_toplevel_id(
-        &mut self,
-        id: NodeId,
-        string_interner: &mut StringInterner,
-        codegen_ctx: &mut CodegenContext,
-        func_ctx: &mut FunctionBuilderContext,
-    ) -> Result<(), CompileError> {
-        // idempotency
-        match self.values.get(&id) {
-            None | Some(Value::Unassigned) => {}
-            _ => return Ok(()),
-        };
-
-        match self.nodes[id.0] {
-            Node::Symbol(_) => todo!(),
-            Node::Func {
-                name,
-                stmts,
-                params,
-                ..
-            } => {
-                let name_sym = self.get_symbol(name);
-                let name_str = string_interner.resolve(name_sym.0).unwrap();
-
-                let mut sig = self.module.make_signature();
-
-                for param in self.id_vecs[params.0].clone() {
-                    sig.params
-                        .push(AbiParam::new(self.get_cranelift_type(param)));
-                }
-
-                sig.returns.push(AbiParam::new(types::I64));
-
-                let decl = self
-                    .module
-                    .declare_function(name_str, Linkage::Export, &sig)
-                    .unwrap();
-
-                self.values.insert(id, Value::FuncId(decl));
-
-                let mut builder = FunctionBuilder::new(&mut codegen_ctx.func, func_ctx);
-                builder.func.signature = sig;
-
-                let ebb = builder.create_block();
-                builder.append_block_params_for_function_params(ebb);
-                builder.switch_to_block(ebb);
-
-                for stmt in self.id_vecs[stmts.0].clone() {
-                    self.compile_id(stmt, string_interner, &mut builder)?;
-                }
-
-                builder.seal_all_blocks();
-                builder.finalize();
-
-                println!("{}", codegen_ctx.func.display());
-
-                self.module.define_function(decl, codegen_ctx).unwrap();
-
-                self.module.clear_context(codegen_ctx);
-
-                Ok(())
-            }
-            _ => todo!(),
-        }
-    }
-
-    fn store(&mut self, builder: &mut FunctionBuilder, id: NodeId, dest: &Value) {
-        if self.addressable_nodes.contains(&id) {
-            self.store_copy(builder, id, dest);
-        } else {
-            self.store_value(builder, id, dest, None);
-        }
-    }
-
-    fn store_copy(&mut self, builder: &mut FunctionBuilder, id: NodeId, dest: &Value) {
-        let size = self.get_type_size(id);
-
-        let source_value = self.values[&id].as_cranelift_value();
-        let dest_value = dest.as_cranelift_value();
-
-        builder.emit_small_memory_copy(
-            self.module.isa().frontend_config(),
-            dest_value,
-            source_value,
-            size as _,
-            1,
-            1,
-            true, // non-overlapping
-            MemFlags::new(),
-        );
-    }
-
-    fn store_value(
-        &mut self,
-        builder: &mut FunctionBuilder,
-        id: NodeId,
-        dest: &Value,
-        offset: Option<i32>,
-    ) {
-        let source_value = match self.values[&id] {
-            Value::Value(value) => value,
-            _ => todo!("store_value source for {:?}", id),
-        };
-
-        match dest {
-            Value::Value(value) => {
-                builder.ins().store(
-                    MemFlags::new(),
-                    source_value,
-                    *value,
-                    offset.unwrap_or_default(),
-                );
-            }
-            _ => todo!("store_value dest for {:?}", dest),
-        }
-    }
-
-    fn rvalue(&self, id: NodeId, builder: &mut FunctionBuilder) -> CraneliftValue {
-        let value = self.values[&id].as_cranelift_value();
-
-        if self.addressable_nodes.contains(&id) {
-            let ty = self.get_cranelift_type(id);
-            builder.ins().load(ty, MemFlags::new(), value, 0)
-        } else {
-            value
-        }
     }
 
     fn get_cranelift_type(&self, param: NodeId) -> CraneliftType {
@@ -1745,10 +1465,14 @@ impl Context {
             Type::I64 => types::I64,
             Type::F32 => types::F32,
             Type::F64 => types::F64,
-            Type::Func { .. } => types::I64,
+            Type::Func { .. } => self.get_pointer_type(),
             Type::Unassigned => todo!(),
             _ => todo!(),
         }
+    }
+
+    fn get_pointer_type(&self) -> CraneliftType {
+        self.module.isa().pointer_type()
     }
 
     fn get_type_size(&self, param: NodeId) -> StackSize {
@@ -1763,10 +1487,43 @@ impl Context {
             _ => todo!(),
         }
     }
+
+    pub fn get_func_id(&self, id: NodeId) -> FuncId {
+        match self.values[&id] {
+            Value::Func(f) => f,
+            _ => panic!("Not a function"),
+        }
+    }
+
+    pub fn get_func_signature(&self, func: NodeId, param_ids: &Vec<NodeId>) -> Signature {
+        let func_ty = self.get_type(func);
+        let return_ty = match func_ty {
+            Type::Func {
+                return_ty: Some(return_ty),
+                ..
+            } => Some(return_ty),
+            _ => None,
+        };
+
+        let return_size = return_ty.map(|rt| self.get_type_size(rt)).unwrap_or(0);
+
+        let mut sig = self.module.make_signature();
+        for param in param_ids.iter() {
+            sig.params
+                .push(AbiParam::new(self.get_cranelift_type(*param)));
+        }
+
+        if return_size > 0 {
+            sig.returns
+                .push(AbiParam::new(self.get_cranelift_type(return_ty.unwrap())));
+        }
+
+        sig
+    }
 }
 
 struct Parser<'a> {
-    source_info: SourceInfo<'a>,
+    source_info: SourceInfo,
     ctx: &'a mut Context,
 
     // stack of returns - pushed when entering parsing a function, popped when exiting
@@ -1774,21 +1531,262 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(
-        context: &'a mut Context,
-        file_name: &str,
-        string_interner: &'a mut StringInterner,
-    ) -> Self {
+    pub fn new(context: &'a mut Context, file_name: &str) -> Self {
         Self {
-            source_info: SourceInfo::new(file_name, string_interner),
+            source_info: SourceInfo::new(file_name),
             ctx: context,
             returns: Default::default(),
         }
     }
 
+    fn pop(&mut self) {
+        self.source_info.eat_spaces();
+
+        let start = self.source_info.loc;
+        self.source_info.top = self.source_info.second;
+
+        if self.source_info.prefix_keyword("fn", Token::Fn) {
+            return;
+        }
+        if self.source_info.prefix_keyword("let", Token::Let) {
+            return;
+        }
+        if self.source_info.prefix_keyword("return", Token::Return) {
+            return;
+        }
+        if self.source_info.prefix_keyword("i8", Token::I8) {
+            return;
+        }
+        if self.source_info.prefix_keyword("i16", Token::I16) {
+            return;
+        }
+        if self.source_info.prefix_keyword("i32", Token::I32) {
+            return;
+        }
+        if self.source_info.prefix_keyword("i64", Token::I64) {
+            return;
+        }
+        if self.source_info.prefix_keyword("u8", Token::U8) {
+            return;
+        }
+        if self.source_info.prefix_keyword("u16", Token::U16) {
+            return;
+        }
+        if self.source_info.prefix_keyword("u32", Token::U32) {
+            return;
+        }
+        if self.source_info.prefix_keyword("u64", Token::U64) {
+            return;
+        }
+        if self.source_info.prefix_keyword("f32", Token::F32) {
+            return;
+        }
+        if self.source_info.prefix_keyword("f64", Token::F64) {
+            return;
+        }
+        if self.source_info.prefix("(", Token::LParen) {
+            return;
+        }
+        if self.source_info.prefix(")", Token::RParen) {
+            return;
+        }
+        if self.source_info.prefix("{", Token::LCurly) {
+            return;
+        }
+        if self.source_info.prefix("}", Token::RCurly) {
+            return;
+        }
+        if self.source_info.prefix(",", Token::Comma) {
+            return;
+        }
+        if self.source_info.prefix(";", Token::Semicolon) {
+            return;
+        }
+        if self.source_info.prefix(":", Token::Colon) {
+            return;
+        }
+        if self.source_info.prefix("=", Token::Eq) {
+            return;
+        }
+        if self.source_info.prefix("_", Token::Underscore) {
+            return;
+        }
+        if self.source_info.prefix("+", Token::Plus) {
+            return;
+        }
+        if self.source_info.prefix("-", Token::Dash) {
+            return;
+        }
+        if self.source_info.prefix("*", Token::Star) {
+            return;
+        }
+        if self.source_info.prefix("/", Token::Slash) {
+            return;
+        }
+
+        let new_second = match self.source_info.source().chars().next() {
+            Some(c) if c.is_digit(10) => {
+                let index = match self
+                    .source_info
+                    .source()
+                    .chars()
+                    .position(|c| !c.is_digit(10))
+                {
+                    Some(index) => index,
+                    None => self.source_info.source().len(),
+                };
+
+                let has_decimal = match self.source_info.source().get(index..index + 1) {
+                    Some(c) => c == ".",
+                    _ => false,
+                };
+
+                let digit = self.source_info.source()[..index]
+                    .parse::<i64>()
+                    .expect("Failed to parse numeric literal");
+
+                self.source_info.eat(index);
+
+                if has_decimal {
+                    self.source_info.eat(1);
+
+                    let decimal_index = match self
+                        .source_info
+                        .source()
+                        .chars()
+                        .position(|c| !c.is_digit(10))
+                    {
+                        Some(index) => index,
+                        None => self.source_info.source().len(),
+                    };
+
+                    let decimal_digit = self.source_info.source()[..decimal_index]
+                        .parse::<i64>()
+                        .expect("Failed to parse numeric literal");
+
+                    self.source_info.eat(decimal_index);
+
+                    let digit: f64 = format!("{}.{}", digit, decimal_digit).parse().unwrap();
+
+                    let mut spec = NumericSpecification::None;
+                    if self.source_info.source().starts_with("f32") {
+                        spec = NumericSpecification::F32;
+                        self.source_info.eat(3);
+                    } else if self.source_info.source().starts_with("f64") {
+                        spec = NumericSpecification::F64;
+                        self.source_info.eat(3);
+                    }
+
+                    let end = self.source_info.loc;
+                    Lexeme::new(
+                        Token::FloatLiteral(digit, spec),
+                        self.source_info.make_range(start, end),
+                    )
+                } else {
+                    let mut spec = NumericSpecification::None;
+
+                    if self.source_info.source().starts_with("i8") {
+                        spec = NumericSpecification::I8;
+                        self.source_info.eat(2);
+                    } else if self.source_info.source().starts_with("i16") {
+                        spec = NumericSpecification::I16;
+                        self.source_info.eat(3);
+                    } else if self.source_info.source().starts_with("i32") {
+                        spec = NumericSpecification::I32;
+                        self.source_info.eat(3);
+                    } else if self.source_info.source().starts_with("i64") {
+                        spec = NumericSpecification::I64;
+                        self.source_info.eat(3);
+                    } else if self.source_info.source().starts_with("u8") {
+                        spec = NumericSpecification::U8;
+                        self.source_info.eat(2);
+                    } else if self.source_info.source().starts_with("u16") {
+                        spec = NumericSpecification::U16;
+                        self.source_info.eat(3);
+                    } else if self.source_info.source().starts_with("u32") {
+                        spec = NumericSpecification::U32;
+                        self.source_info.eat(3);
+                    } else if self.source_info.source().starts_with("u64") {
+                        spec = NumericSpecification::U64;
+                        self.source_info.eat(3);
+                    } else if self.source_info.source().starts_with("f32") {
+                        spec = NumericSpecification::F32;
+                        self.source_info.eat(3);
+                    } else if self.source_info.source().starts_with("f64") {
+                        spec = NumericSpecification::F64;
+                        self.source_info.eat(3);
+                    }
+
+                    let end = self.source_info.loc;
+                    Lexeme::new(
+                        Token::IntegerLiteral(digit, spec),
+                        self.source_info.make_range(start, end),
+                    )
+                }
+            }
+            Some(_) => {
+                let index = match self.source_info.source().chars().position(is_special) {
+                    Some(index) => index,
+                    None => self.source_info.source().len(),
+                };
+
+                if index == 0 {
+                    Lexeme::new(Token::Eof, Default::default())
+                } else {
+                    let sym = self
+                        .ctx
+                        .string_interner
+                        .get_or_intern(&self.source_info.source()[..index]);
+                    self.source_info.eat(index);
+
+                    let end = self.source_info.loc;
+
+                    Lexeme::new(
+                        Token::Symbol(Sym(sym)),
+                        self.source_info.make_range(start, end),
+                    )
+                }
+            }
+            None => Lexeme::new(Token::Eof, Default::default()),
+        };
+
+        self.source_info.second = new_second;
+    }
+
+    fn expect(&mut self, tok: Token) -> Result<(), CompileError> {
+        match self.source_info.top.tok {
+            t if t == tok => {
+                self.pop();
+                Ok(())
+            }
+            _ => {
+                let msg = Box::leak(Box::new(
+                    format!("Expected {:?}, found {:?}", tok, self.source_info.top.tok).to_string(),
+                ));
+                Err(CompileError::Generic(msg, self.source_info.top.range))
+            }
+        }
+    }
+
+    fn expect_range(&mut self, start: Location, token: Token) -> Result<Range, CompileError> {
+        let range = self
+            .source_info
+            .make_range(start, self.source_info.top.range.end);
+
+        if self.source_info.top.tok == token {
+            self.pop();
+            Ok(range)
+        } else {
+            let msg = Box::leak(Box::new(
+                format!("Expected {:?}, found {:?}", token, self.source_info.top.tok).to_string(),
+            ));
+            Err(CompileError::Generic(msg, range))
+        }
+    }
+
     pub fn parse(&mut self) -> Result<(), CompileError> {
-        self.source_info.pop();
-        self.source_info.pop();
+        self.pop();
+        self.pop();
 
         while self.source_info.top.tok != Token::Eof {
             let tl = self.parse_top_level()?;
@@ -1800,7 +1798,7 @@ impl<'a> Parser<'a> {
 
     pub fn parse_top_level(&mut self) -> Result<NodeId, CompileError> {
         let tl = match self.source_info.top.tok {
-            Token::Fn => Ok(self.parse_fn()?),
+            Token::Fn => Ok(self.parse_fn(false)?),
             _ => {
                 let msg = Box::leak(Box::new(format!(
                     "expected 'fn', found '{:?}'",
@@ -1818,17 +1816,55 @@ impl<'a> Parser<'a> {
         let range = self.source_info.top.range;
         match self.source_info.top.tok {
             Token::Symbol(sym) => {
-                self.source_info.pop();
+                self.pop();
                 Ok(self.ctx.push_node(range, Node::Symbol(sym)))
             }
             _ => Err(CompileError::Generic("expected symbol", range)),
         }
     }
 
+    pub fn parse_value_params(&mut self) -> Result<IdVec, CompileError> {
+        let mut params = Vec::new();
+
+        while self.source_info.top.tok != Token::RParen && self.source_info.top.tok != Token::RCurly
+        {
+            if let Token::Colon = self.source_info.second.tok {
+                let name = self.parse_symbol()?;
+                self.expect(Token::Colon)?;
+                let value = self.parse_expression()?;
+                params.push(self.ctx.push_node(
+                    self.make_range_spanning(name, value),
+                    Node::ValueParam {
+                        name: Some(name),
+                        value,
+                        index: params.len() as u16,
+                    },
+                ));
+            } else {
+                let value = self.parse_expression()?;
+                params.push(self.ctx.push_node(
+                    self.ctx.ranges[value.0],
+                    Node::ValueParam {
+                        name: None,
+                        value,
+                        index: params.len() as u16,
+                    },
+                ));
+            }
+
+            if self.source_info.top.tok == Token::Comma {
+                self.pop(); // `,`
+            } else {
+                break;
+            }
+        }
+
+        Ok(self.ctx.push_id_vec(params))
+    }
+
     fn parse_decl_params(&mut self) -> Result<IdVec, CompileError> {
         let mut params = Vec::new();
 
-        let mut index = 0;
         while self.source_info.top.tok != Token::RParen && self.source_info.top.tok != Token::RCurly
         {
             let input_start = self.source_info.top.range.start;
@@ -1837,12 +1873,12 @@ impl<'a> Parser<'a> {
             let name_sym = self.ctx.nodes[name.0].as_symbol().unwrap();
 
             let (ty, default) = if self.source_info.top.tok == Token::Colon {
-                self.source_info.pop(); // `:`
+                self.pop(); // `:`
                 let ty = self.parse_type()?;
 
                 let mut default = None;
                 if self.source_info.top.tok == Token::Eq {
-                    self.source_info.pop(); // `=`
+                    self.pop(); // `=`
                     default = Some(self.parse_expression()?);
                 }
 
@@ -1868,36 +1904,39 @@ impl<'a> Parser<'a> {
                     name,
                     ty,
                     default,
-                    index,
+                    index: params.len() as u16,
                 },
             );
             self.ctx.scope_insert(name_sym, param);
+            self.ctx.addressable_nodes.insert(param);
             params.push(param);
 
             if self.source_info.top.tok == Token::Comma {
-                self.source_info.pop(); // `,`
+                self.pop(); // `,`
             }
-
-            index += 1;
         }
 
         Ok(self.ctx.push_id_vec(params))
     }
 
-    pub fn parse_fn(&mut self) -> Result<NodeId, CompileError> {
+    pub fn parse_fn(&mut self, anonymous: bool) -> Result<NodeId, CompileError> {
         let start = self.source_info.top.range.start;
 
-        self.source_info.pop();
+        self.pop();
 
-        let name = self.parse_symbol()?;
-        let name_sym = self.ctx.nodes[name.0].as_symbol().unwrap();
+        let name = if anonymous {
+            None
+        } else {
+            Some(self.parse_symbol()?)
+        };
+        let name_sym = name.map(|n| self.ctx.nodes[n.0].as_symbol().unwrap());
 
         // open a new scope
         let pushed_scope = self.ctx.push_scope(true);
 
-        self.source_info.expect(&Token::LParen)?;
+        self.expect(Token::LParen)?;
         let params = self.parse_decl_params()?;
-        self.source_info.expect(&Token::RParen)?;
+        self.expect(Token::RParen)?;
 
         let return_ty = if self.source_info.top.tok != Token::LCurly {
             Some(self.parse_type()?)
@@ -1905,7 +1944,7 @@ impl<'a> Parser<'a> {
             None
         };
 
-        self.source_info.expect(&Token::LCurly)?;
+        self.expect(Token::LCurly)?;
 
         self.returns.push(Vec::new());
 
@@ -1916,7 +1955,7 @@ impl<'a> Parser<'a> {
         }
         let stmts = self.ctx.push_id_vec(stmts);
 
-        let range = self.source_info.expect_range(start, Token::RCurly)?;
+        let range = self.expect_range(start, Token::RCurly)?;
 
         let returns = self.returns.pop().unwrap();
         let returns = self.ctx.push_id_vec(returns);
@@ -1935,7 +1974,9 @@ impl<'a> Parser<'a> {
         // pop the top scope
         self.ctx.pop_scope(pushed_scope);
 
-        self.ctx.scope_insert(name_sym, func);
+        if let Some(name_sym) = name_sym {
+            self.ctx.scope_insert(name_sym, func);
+        }
         // self.top_level_map.insert(name, func);
 
         // self.funcs.push(func);
@@ -1989,31 +2030,52 @@ impl<'a> Parser<'a> {
                     }
                     operators.push(Op::Add);
 
-                    self.source_info.pop(); // `+`
+                    self.pop(); // `+`
                 }
                 Token::Dash => {
                     if !parsing_op {
                         break;
                     }
 
-                    self.source_info.pop(); // `-`
-                    output.push(Shunting::Op(Op::Sub));
+                    while !operators.is_empty()
+                        && operators.last().unwrap().precedence()
+                            >= Op::from(self.source_info.top.tok).precedence()
+                    {
+                        output.push(Shunting::Op(operators.pop().unwrap()));
+                    }
+                    operators.push(Op::Sub);
+
+                    self.pop(); // `-`
                 }
                 Token::Star => {
                     if !parsing_op {
                         break;
                     }
 
-                    self.source_info.pop(); // `*`
-                    output.push(Shunting::Op(Op::Mul));
+                    while !operators.is_empty()
+                        && operators.last().unwrap().precedence()
+                            >= Op::from(self.source_info.top.tok).precedence()
+                    {
+                        output.push(Shunting::Op(operators.pop().unwrap()));
+                    }
+                    operators.push(Op::Mul);
+
+                    self.pop(); // `*`
                 }
                 Token::Slash => {
                     if !parsing_op {
                         break;
                     }
 
-                    self.source_info.pop(); // `/`
-                    output.push(Shunting::Op(Op::Div));
+                    while !operators.is_empty()
+                        && operators.last().unwrap().precedence()
+                            >= Op::from(self.source_info.top.tok).precedence()
+                    {
+                        output.push(Shunting::Op(operators.pop().unwrap()));
+                    }
+                    operators.push(Op::Div);
+
+                    self.pop(); // `/`
                 }
                 _ => break,
             }
@@ -2037,61 +2099,78 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_expression_piece(&mut self) -> Result<NodeId, CompileError> {
-        let value = match self.source_info.top.tok {
+        let start = self.source_info.top.range.start;
+
+        let mut value = match self.source_info.top.tok {
             Token::IntegerLiteral(_, _) | Token::FloatLiteral(_, _) => self.parse_numeric_literal(),
-            Token::Fn => self.parse_fn(),
+            Token::Fn => self.parse_fn(true),
             _ => self.parse_lvalue(),
         }?;
+
+        // function call?
+        while self.source_info.top.tok == Token::LParen {
+            self.pop(); // `(`
+            let params = self.parse_value_params()?;
+            let end = self.expect_range(start, Token::RParen)?.end;
+            value = self.ctx.push_node(
+                Range::new(start, end, self.source_info.source_path),
+                Node::Call {
+                    func: value,
+                    params,
+                    rearranged_params: None,
+                },
+            );
+        }
 
         Ok(value)
     }
 
     fn parse_lvalue(&mut self) -> Result<NodeId, CompileError> {
         if self.source_info.top.tok == Token::LParen {
-            self.source_info.pop(); // `(`
+            self.pop(); // `(`
             let expr = self.parse_expression()?;
-            self.source_info.expect(&Token::RParen)?;
+            self.expect(Token::RParen)?;
 
             Ok(expr)
         } else if self.source_info.top.tok == Token::I8 {
             let range = self.source_info.top.range;
-            self.source_info.pop();
+            self.pop();
             Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::I8)))
         } else if self.source_info.top.tok == Token::I16 {
             let range = self.source_info.top.range;
-            self.source_info.pop();
+            self.pop();
             Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::I16)))
         } else if self.source_info.top.tok == Token::I32 {
             let range = self.source_info.top.range;
-            self.source_info.pop();
+            self.pop();
             Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::I32)))
         } else if self.source_info.top.tok == Token::I64 {
             let range = self.source_info.top.range;
-            self.source_info.pop();
+            self.pop();
             Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::I64)))
         } else if self.source_info.top.tok == Token::U8 {
             let range = self.source_info.top.range;
-            self.source_info.pop();
+            self.pop();
             Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::U8)))
         } else if self.source_info.top.tok == Token::U16 {
             let range = self.source_info.top.range;
-            self.source_info.pop();
+            self.pop();
             Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::U16)))
         } else if self.source_info.top.tok == Token::U32 {
             let range = self.source_info.top.range;
-            self.source_info.pop();
+            self.pop();
             Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::U32)))
         } else if self.source_info.top.tok == Token::U64 {
             let range = self.source_info.top.range;
-            self.source_info.pop();
+            self.pop();
             Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::U64)))
         } else if self.source_info.top.tok == Token::F32 {
             let range = self.source_info.top.range;
-            self.source_info.pop();
+            self.pop();
             Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::F32)))
         } else if self.source_info.top.tok == Token::F64 {
             let range = self.source_info.top.range;
-            self.source_info.pop();
+            self.pop();
             Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::F64)))
         } else if let Token::Symbol(_) = self.source_info.top.tok {
             Ok(self.parse_symbol()?)
@@ -2107,12 +2186,12 @@ impl<'a> Parser<'a> {
         match self.source_info.top.tok {
             Token::IntegerLiteral(i, s) => {
                 let range = self.source_info.top.range;
-                self.source_info.pop();
+                self.pop();
                 Ok(self.ctx.push_node(range, Node::IntLiteral(i, s)))
             }
             Token::FloatLiteral(f, s) => {
                 let range = self.source_info.top.range;
-                self.source_info.pop();
+                self.pop();
                 Ok(self.ctx.push_node(range, Node::FloatLiteral(f, s)))
             }
             _ => Err(CompileError::Generic(
@@ -2123,24 +2202,24 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_let(&mut self, start: Location) -> Result<NodeId, CompileError> {
-        self.source_info.pop(); // `let`
+        self.pop(); // `let`
         let name = self.parse_symbol()?;
         let name_sym = self.ctx.nodes[name.0].as_symbol().unwrap();
 
         let ty = if self.source_info.top.tok == Token::Colon {
-            self.source_info.pop(); // `:`
+            self.pop(); // `:`
             Some(self.parse_type()?)
         } else {
             None
         };
 
-        self.source_info.expect(&Token::Eq)?;
+        self.expect(Token::Eq)?;
 
         let expr = match self.source_info.top.tok {
             Token::Semicolon => None,
             _ => Some(self.parse_expression()?),
         };
-        let range = self.source_info.expect_range(start, Token::Semicolon)?;
+        let range = self.expect_range(start, Token::Semicolon)?;
         let let_id = self.ctx.push_node(range, Node::Let { name, ty, expr });
 
         self.ctx.addressable_nodes.insert(let_id);
@@ -2154,7 +2233,7 @@ impl<'a> Parser<'a> {
 
         let r = match self.source_info.top.tok {
             Token::Return => {
-                self.source_info.pop(); // `return`
+                self.pop(); // `return`
 
                 let expr = if self.source_info.top.tok != Token::Semicolon {
                     Some(self.parse_expression()?)
@@ -2162,7 +2241,7 @@ impl<'a> Parser<'a> {
                     None
                 };
 
-                let range = self.source_info.expect_range(start, Token::Semicolon)?;
+                let range = self.expect_range(start, Token::Semicolon)?;
 
                 let ret_id = self.ctx.push_node(range, Node::Return(expr));
                 self.returns.last_mut().unwrap().push(ret_id);
@@ -2176,9 +2255,9 @@ impl<'a> Parser<'a> {
                     // Assignment?
                     Token::Eq => {
                         // parsing something like "foo = expr;";
-                        self.source_info.expect(&Token::Eq)?;
+                        self.expect(Token::Eq)?;
                         let expr = self.parse_expression()?;
-                        let range = self.source_info.expect_range(start, Token::Semicolon)?;
+                        let range = self.expect_range(start, Token::Semicolon)?;
 
                         Ok(self.ctx.push_node(
                             range,
@@ -2190,8 +2269,7 @@ impl<'a> Parser<'a> {
                         ))
                     }
                     _ => {
-                        self.ctx.ranges[lvalue.0] =
-                            self.source_info.expect_range(start, Token::Semicolon)?;
+                        self.ctx.ranges[lvalue.0] = self.expect_range(start, Token::Semicolon)?;
                         Ok(lvalue)
                     }
                 }
@@ -2205,60 +2283,92 @@ impl<'a> Parser<'a> {
         match self.source_info.top.tok {
             Token::I8 => {
                 let range = self.source_info.top.range;
-                self.source_info.pop();
+                self.pop();
                 Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::I8)))
             }
             Token::I16 => {
                 let range = self.source_info.top.range;
-                self.source_info.pop();
+                self.pop();
                 Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::I16)))
             }
             Token::I32 => {
                 let range = self.source_info.top.range;
-                self.source_info.pop();
+                self.pop();
                 Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::I32)))
             }
             Token::I64 => {
                 let range = self.source_info.top.range;
-                self.source_info.pop();
+                self.pop();
                 Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::I64)))
             }
             Token::U8 => {
                 let range = self.source_info.top.range;
-                self.source_info.pop();
+                self.pop();
                 Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::U8)))
             }
             Token::U16 => {
                 let range = self.source_info.top.range;
-                self.source_info.pop();
+                self.pop();
                 Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::U16)))
             }
             Token::U32 => {
                 let range = self.source_info.top.range;
-                self.source_info.pop();
+                self.pop();
                 Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::U32)))
             }
             Token::U64 => {
                 let range = self.source_info.top.range;
-                self.source_info.pop();
+                self.pop();
                 Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::U64)))
             }
             Token::F32 => {
                 let range = self.source_info.top.range;
-                self.source_info.pop();
+                self.pop();
                 Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::F32)))
             }
             Token::F64 => {
                 let range = self.source_info.top.range;
-                self.source_info.pop();
+                self.pop();
                 Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::F64)))
+            }
+            Token::Fn => {
+                let range = self.source_info.top.range;
+                self.pop(); // `fn`
+
+                self.expect(Token::LParen)?;
+                let params = self.parse_decl_params()?;
+                self.expect(Token::RParen)?;
+
+                let return_ty = if !matches!(
+                    self.source_info.top.tok,
+                    Token::RCurly | Token::Comma | Token::Semicolon | Token::RParen
+                ) {
+                    Some(self.parse_type()?)
+                } else {
+                    None
+                };
+
+                Ok(self.ctx.push_node(
+                    range,
+                    Node::TypeLiteral(Type::Func {
+                        return_ty,
+                        input_tys: params,
+                    }),
+                ))
             }
             Token::Underscore => {
                 let range = self.source_info.top.range;
-                self.source_info.pop();
+                self.pop();
                 Ok(self
                     .ctx
                     .push_node(range, Node::TypeLiteral(Type::Unassigned)))
+            }
+            Token::LParen => {
+                let range = self.source_info.top.range;
+                self.pop(); // `(`
+                let inner_ty = self.parse_type()?;
+                let range = self.expect_range(range.start, Token::RParen)?;
+                Ok(self.ctx.push_node(range, self.ctx.nodes[inner_ty.0]))
             }
             _ => Err(CompileError::Generic(
                 "Expected type",
@@ -2300,12 +2410,7 @@ impl<'a> Parser<'a> {
     pub fn make_range_spanning(&self, start: NodeId, end: NodeId) -> Range {
         let start = self.ctx.ranges[start.0].start;
         let end = self.ctx.ranges[end.0].end;
-
-        if start.char_offset > end.char_offset {
-            Range::new(end, start, self.source_info.source_path)
-        } else {
-            Range::new(start, end, self.source_info.source_path)
-        }
+        Range::new(start, end, self.source_info.source_path)
     }
 }
 
@@ -2324,14 +2429,351 @@ impl Shunting {
     }
 }
 
-fn main() -> Result<(), CompileError> {
-    let mut string_interner = StringInterner::new();
+struct ToplevelCompileContext<'a> {
+    pub ctx: &'a mut Context,
+    pub codegen_ctx: &'a mut CodegenContext,
+    pub func_ctx: &'a mut FunctionBuilderContext,
+}
 
+struct FunctionCompileContext<'a> {
+    pub ctx: &'a mut Context,
+    pub builder: FunctionBuilder<'a>,
+    pub current_block: Block,
+}
+
+impl<'a> FunctionCompileContext<'a> {
+    pub fn compile_id(&mut self, id: NodeId) -> Result<(), CompileError> {
+        // idempotency
+        match self.ctx.values.get(&id) {
+            None | Some(Value::Unassigned) => {}
+            _ => return Ok(()),
+        };
+
+        match self.ctx.nodes[id.0] {
+            Node::Symbol(sym) => {
+                let resolved = self.ctx.scope_get(sym, id);
+                match resolved {
+                    Some(res) => {
+                        self.compile_id(res)?;
+                        self.ctx
+                            .values
+                            .get(&res)
+                            .cloned()
+                            .map(|v| self.ctx.values.insert(id, v));
+                        Ok(())
+                    }
+                    _ => todo!(),
+                }
+            }
+            Node::IntLiteral(n, _) => match self.ctx.types[&id] {
+                Type::I64 => {
+                    let value = self.builder.ins().iconst(types::I64, n);
+                    self.ctx.values.insert(id, Value::Value(value));
+                    Ok(())
+                }
+                _ => todo!(),
+            },
+            Node::FloatLiteral(_, _) => todo!(),
+            Node::TypeLiteral(_) => todo!(),
+            Node::Return(rv) => {
+                if let Some(rv) = rv {
+                    self.compile_id(rv)?;
+                    let value = self.rvalue(rv);
+                    self.builder.ins().return_(&[value]);
+                } else {
+                    self.builder.ins().return_(&[]);
+                }
+
+                Ok(())
+            }
+            Node::Let { expr, .. } => {
+                let size: u32 = self.ctx.get_type_size(id);
+                let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                    kind: StackSlotKind::ExplicitSlot,
+                    size,
+                });
+
+                let slot_addr =
+                    self.builder
+                        .ins()
+                        .stack_addr(self.ctx.module.isa().pointer_type(), slot, 0);
+                let value = Value::Value(slot_addr);
+
+                if let Some(expr) = expr {
+                    self.compile_id(expr)?;
+                    self.store(expr, value);
+                }
+
+                self.ctx.values.insert(id, value);
+
+                Ok(())
+            }
+            Node::Set { name, expr, .. } => {
+                self.compile_id(name)?;
+
+                let addr = self.ctx.values[&name];
+
+                self.compile_id(expr)?;
+                self.store(expr, addr);
+
+                Ok(())
+            }
+            Node::DeclParam { index, .. } => {
+                // we need our own storage
+                let size = self.ctx.get_type_size(id);
+                let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                    kind: StackSlotKind::ExplicitSlot,
+                    size,
+                });
+
+                let slot_addr =
+                    self.builder
+                        .ins()
+                        .stack_addr(self.ctx.module.isa().pointer_type(), slot, 0);
+                let value = Value::Value(slot_addr);
+
+                let params = self.builder.block_params(self.current_block);
+                let param_value = params[index as usize];
+
+                self.builder
+                    .ins()
+                    .store(MemFlags::new(), param_value, slot_addr, 0);
+
+                self.ctx.values.insert(id, value);
+
+                Ok(())
+            }
+            Node::ValueParam { value, .. } => {
+                self.compile_id(value)?;
+                self.ctx.values.insert(id, self.ctx.values[&value]);
+                if self.ctx.addressable_nodes.contains(&value) {
+                    self.ctx.addressable_nodes.insert(id);
+                }
+                Ok(())
+            }
+            Node::BinOp { op, lhs, rhs } => {
+                self.compile_id(lhs)?;
+                self.compile_id(rhs)?;
+
+                let lhs_value = self.rvalue(lhs);
+                let rhs_value = self.rvalue(rhs);
+
+                let value = match op {
+                    Op::Add => self.builder.ins().iadd(lhs_value, rhs_value),
+                    Op::Sub => self.builder.ins().isub(lhs_value, rhs_value),
+                    Op::Mul => self.builder.ins().imul(lhs_value, rhs_value),
+                    Op::Div => self.builder.ins().sdiv(lhs_value, rhs_value),
+                };
+
+                self.ctx.values.insert(id, Value::Value(value));
+
+                Ok(())
+            }
+            Node::Call {
+                func,
+                rearranged_params,
+                ..
+            } => {
+                let params = rearranged_params.unwrap();
+
+                self.compile_id(func)?;
+
+                let param_ids = self.ctx.id_vecs[params.0].clone();
+                let mut param_values = Vec::new();
+                for &param in param_ids.borrow().iter() {
+                    self.compile_id(param)?;
+                    param_values.push(self.rvalue(param));
+                }
+
+                // direct call?
+                let call_inst = if let Some(Value::Func(func_id)) = self.ctx.values.get(&func) {
+                    let func_ref = self
+                        .ctx
+                        .module
+                        .declare_func_in_func(*func_id, self.builder.func);
+                    self.builder.ins().call(func_ref, &param_values)
+                } else {
+                    let sig_ref = self
+                        .ctx
+                        .get_func_signature(func, param_ids.borrow().as_ref());
+                    let sig = self.builder.import_signature(sig_ref);
+
+                    self.as_cranelift_value(self.ctx.values[&func]);
+                    let callee = self.rvalue(func);
+
+                    self.builder.ins().call_indirect(sig, callee, &param_values)
+                };
+
+                let value = self.builder.func.dfg.first_result(call_inst);
+                self.ctx.values.insert(id, Value::Value(value));
+
+                Ok(())
+            }
+            Node::Func { .. } => Ok(()),
+            // _ => todo!("{:?}", &self.nodes[id.0]),
+        }
+    }
+
+    fn as_cranelift_value(&mut self, value: Value) -> CraneliftValue {
+        match value {
+            Value::Value(val) => val,
+            Value::Func(func_id) => {
+                let func_ref = self
+                    .ctx
+                    .module
+                    .declare_func_in_func(func_id, self.builder.func);
+
+                self.builder
+                    .ins()
+                    .func_addr(self.ctx.get_pointer_type(), func_ref)
+            }
+            _ => panic!("not a cranelift value: {:?}", value),
+        }
+    }
+
+    fn rvalue(&mut self, id: NodeId) -> CraneliftValue {
+        let value = self.as_cranelift_value(self.ctx.values[&id]);
+
+        if self.ctx.addressable_nodes.contains(&id) {
+            let ty = self.ctx.get_cranelift_type(id);
+            self.builder.ins().load(ty, MemFlags::new(), value, 0)
+        } else {
+            value
+        }
+    }
+
+    fn store(&mut self, id: NodeId, dest: Value) {
+        if self.ctx.addressable_nodes.contains(&id) {
+            self.store_copy(id, dest);
+        } else {
+            self.store_value(id, dest, None);
+        }
+    }
+
+    fn store_copy(&mut self, id: NodeId, dest: Value) {
+        let size = self.ctx.get_type_size(id);
+
+        let source_value = self.as_cranelift_value(self.ctx.values[&id]);
+        let dest_value = self.as_cranelift_value(dest);
+
+        self.builder.emit_small_memory_copy(
+            self.ctx.module.isa().frontend_config(),
+            dest_value,
+            source_value,
+            size as _,
+            1,
+            1,
+            true, // non-overlapping
+            MemFlags::new(),
+        );
+    }
+
+    fn store_value(&mut self, id: NodeId, dest: Value, offset: Option<i32>) {
+        let source_value = match self.ctx.values[&id] {
+            Value::Value(value) => value,
+            Value::Func(func_id) => {
+                let func_ref = self
+                    .ctx
+                    .module
+                    .declare_func_in_func(func_id, self.builder.func);
+                self.builder
+                    .ins()
+                    .func_addr(self.ctx.get_cranelift_type(id), func_ref)
+            }
+            a => todo!("store_value source for {:?}", a),
+        };
+
+        match dest {
+            Value::Value(value) => {
+                self.builder.ins().store(
+                    MemFlags::new(),
+                    source_value,
+                    value,
+                    offset.unwrap_or_default(),
+                );
+            }
+            _ => todo!("store_value dest for {:?}", dest),
+        }
+    }
+}
+
+impl<'a> ToplevelCompileContext<'a> {
+    pub fn compile_toplevel_id(&mut self, id: NodeId) -> Result<(), CompileError> {
+        // idempotency
+        match self.ctx.values.get(&id) {
+            None | Some(Value::Unassigned | Value::Func(_)) => {}
+            _ => return Ok(()),
+        };
+
+        match self.ctx.nodes[id.0] {
+            Node::Symbol(_) => todo!(),
+            Node::Func {
+                name,
+                stmts,
+                params,
+                ..
+            } => {
+                let name_str = self.ctx.func_name(name, id.0);
+
+                let mut sig = self.ctx.module.make_signature();
+
+                for &param in self.ctx.id_vecs[params.0].borrow().iter() {
+                    sig.params
+                        .push(AbiParam::new(self.ctx.get_cranelift_type(param)));
+                }
+
+                sig.returns.push(AbiParam::new(types::I64));
+
+                let func_id = self
+                    .ctx
+                    .module
+                    .declare_function(&name_str, Linkage::Export, &sig)
+                    .unwrap();
+
+                let mut builder = FunctionBuilder::new(&mut self.codegen_ctx.func, self.func_ctx);
+                builder.func.signature = sig;
+
+                self.ctx.values.insert(id, Value::Func(func_id));
+
+                let ebb = builder.create_block();
+                builder.append_block_params_for_function_params(ebb);
+                builder.switch_to_block(ebb);
+
+                let mut builder_ctx = FunctionCompileContext {
+                    ctx: self.ctx,
+                    builder,
+                    current_block: ebb,
+                };
+
+                for &stmt in builder_ctx.ctx.id_vecs[stmts.0].clone().borrow().iter() {
+                    builder_ctx.compile_id(stmt)?;
+                }
+
+                builder_ctx.builder.seal_all_blocks();
+                builder_ctx.builder.finalize();
+
+                println!("{}", self.codegen_ctx.func.display());
+
+                self.ctx
+                    .module
+                    .define_function(func_id, self.codegen_ctx)
+                    .unwrap();
+
+                self.ctx.module.clear_context(self.codegen_ctx);
+
+                Ok(())
+            }
+            _ => todo!(),
+        }
+    }
+}
+
+fn main() -> Result<(), CompileError> {
     let mut context = Context::new();
 
     // context.debug_tokens("foo.sm", &mut string_interner)?;
 
-    context.parse("foo.sm", &mut string_interner)?;
+    context.parse("foo.sm")?;
 
     context.perform_semantic_analysis();
 
@@ -2340,14 +2782,9 @@ fn main() -> Result<(), CompileError> {
         return Ok(());
     }
 
-    let mut codegen_ctx = context.module.make_context();
-    let mut func_ctx = FunctionBuilderContext::new();
-    context.compile_fn(
-        "main",
-        &mut string_interner,
-        &mut codegen_ctx,
-        &mut func_ctx,
-    )?;
+    context.predeclare_functions()?;
+
+    context.call_fn("main")?;
 
     Ok(())
 }
