@@ -204,30 +204,184 @@ fn is_special(c: char) -> bool {
         || c == ';'
 }
 
-#[derive(Debug)]
-pub struct SourceInfo {
-    pub source_path: &'static str,
+pub trait WorkingSource: std::fmt::Debug + Sized + Clone {
+    fn from_str(source: &'static str) -> Self;
+
+    fn char_count(&self) -> usize;
+
+    fn pop_chars(&mut self, chars: usize);
+
+    fn next_char(&self) -> Option<char>;
+
+    fn is_empty(&self) -> bool {
+        self.char_count() == 0
+    }
+
+    fn starts_with(&self, pat: &str) -> bool;
+
+    fn slice(&self, r: std::ops::Range<usize>) -> &str;
+
+    fn char_at(&self, index: usize) -> Option<char>;
+
+    fn position_of<P: FnMut(char) -> bool>(&self, pred: P) -> Option<usize>;
+
+    fn reset(&mut self);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StaticStrSource {
     pub original_source: &'static str,
-    pub byte_offset: usize,
+    pub source: &'static str,
+}
+
+impl WorkingSource for StaticStrSource {
+    fn from_str(source: &'static str) -> Self {
+        Self {
+            original_source: source,
+            source,
+        }
+    }
+
+    fn char_count(&self) -> usize {
+        self.source.chars().count()
+    }
+
+    fn pop_chars(&mut self, chars: usize) {
+        self.source = &self.source[chars..];
+    }
+
+    fn next_char(&self) -> Option<char> {
+        self.source.chars().next()
+    }
+
+    fn starts_with(&self, pat: &str) -> bool {
+        self.source.starts_with(pat)
+    }
+
+    fn slice(&self, r: std::ops::Range<usize>) -> &'static str {
+        &self.source[r]
+    }
+
+    fn char_at(&self, index: usize) -> Option<char> {
+        self.source.chars().skip(index).take(1).next()
+    }
+
+    fn position_of<P: FnMut(char) -> bool>(&self, pred: P) -> Option<usize> {
+        self.source.chars().position(pred)
+    }
+
+    fn reset(&mut self) {
+        self.source = self.original_source;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RopeySource {
+    pub source: ropey::Rope,
+    pub char_index: usize,
+    pub source_len: usize,
+}
+
+impl WorkingSource for RopeySource {
+    fn from_str(source: &'static str) -> Self {
+        RopeySource {
+            source: source.into(),
+            char_index: 0,
+            source_len: source.chars().count(),
+        }
+    }
+
+    fn char_count(&self) -> usize {
+        self.source_len - self.char_index
+    }
+
+    fn pop_chars(&mut self, chars: usize) {
+        self.char_index += chars;
+    }
+
+    fn next_char(&self) -> Option<char> {
+        self.source.get_char(self.char_index)
+    }
+
+    fn starts_with(&self, pat: &str) -> bool {
+        self.source
+            .byte_slice(self.char_index..self.char_index + pat.len())
+            .as_str()
+            .unwrap()
+            .starts_with(pat)
+    }
+
+    fn slice(&self, r: std::ops::Range<usize>) -> &str {
+        self.source
+            .slice(r.start + self.char_index..r.end + self.char_index)
+            .as_str()
+            .unwrap()
+    }
+
+    fn char_at(&self, index: usize) -> Option<char> {
+        self.source.get_char(self.char_index + index)
+    }
+
+    fn position_of<P: FnMut(char) -> bool>(&self, pred: P) -> Option<usize> {
+        self.source.slice(self.char_index..).chars().position(pred)
+    }
+
+    fn reset(&mut self) {
+        self.char_index = 0
+    }
+}
+
+#[derive(Debug)]
+pub struct SourceInfo<W: WorkingSource> {
+    pub source_path: &'static str,
+    pub source: W,
+    pub chars_left: usize,
 
     pub loc: Location,
     pub top: Lexeme,
     pub second: Lexeme,
 }
 
-impl SourceInfo {
-    fn new(file_name: &str) -> Self {
+impl<W: WorkingSource> SourceInfo<W> {
+    fn from_file(file_name: &str) -> Self {
         let source_path = PathBuf::from(file_name);
-        let original_source = std::fs::read_to_string(&source_path).unwrap();
+        let source = std::fs::read_to_string(&source_path).unwrap();
+        let source: &'static str = Box::leak(source.into_boxed_str());
+        let source = W::from_str(source);
+        let chars_left = source.char_count();
         let source_path = Box::leak(source_path.into_boxed_path().to_str().unwrap().into());
+
         Self {
             source_path,
-            byte_offset: 0,
-            original_source: Box::leak(original_source.into_boxed_str()),
+            source,
+            chars_left,
             loc: Default::default(),
             top: Default::default(),
             second: Default::default(),
         }
+    }
+
+    pub fn from_source(source: &'static str) -> Self {
+        let source = W::from_str(source);
+        let source = source.clone();
+        let chars_left = source.char_count();
+
+        Self {
+            source_path: "<none>",
+            source,
+            chars_left,
+            loc: Default::default(),
+            top: Default::default(),
+            second: Default::default(),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.source = self.source.clone();
+        self.chars_left = self.source.char_count();
+        self.loc = Default::default();
+        self.top = Default::default();
+        self.second = Default::default();
     }
 
     pub fn make_range(&self, start: Location, end: Location) -> Range {
@@ -235,7 +389,7 @@ impl SourceInfo {
     }
 
     fn prefix(&mut self, pat: &str, tok: Token) -> bool {
-        if self.source().len() >= pat.len() && self.source().starts_with(pat) {
+        if self.source.char_count() >= pat.len() && self.source.starts_with(pat) {
             let start = self.loc;
             self.eat(pat.len());
             self.second = Lexeme::new(tok, self.make_range(start, self.loc));
@@ -246,16 +400,9 @@ impl SourceInfo {
     }
 
     fn prefix_keyword(&mut self, pat: &str, tok: Token) -> bool {
-        if self.source().len() > pat.len()
-            && self.source().starts_with(pat)
-            && is_special(
-                self.source()
-                    .chars()
-                    .skip(pat.len())
-                    .take(1)
-                    .next()
-                    .unwrap(),
-            )
+        if self.source.char_count() > pat.len()
+            && self.source.starts_with(pat)
+            && is_special(self.source.char_at(pat.len()).unwrap())
         {
             let start = self.loc;
             self.eat(pat.len());
@@ -266,25 +413,20 @@ impl SourceInfo {
         }
     }
 
-    fn source(&self) -> &'static str {
-        &self.original_source[self.byte_offset..]
-    }
-
-    fn eat_bytes(&mut self, bytes: usize) {
-        self.byte_offset += bytes;
-        if self.byte_offset > self.original_source.len() {
-            self.byte_offset = self.original_source.len();
-        }
+    fn eat_chars(&mut self, chars: usize) {
+        let chars = chars.min(self.chars_left);
+        self.source.pop_chars(chars);
+        self.chars_left -= chars;
     }
 
     fn eat(&mut self, chars: usize) {
-        self.eat_bytes(chars);
+        self.eat_chars(chars);
         self.loc.col += chars;
         self.loc.char_offset += chars;
     }
 
     fn newline(&mut self) {
-        self.eat_bytes(1);
+        self.eat_chars(1);
         self.loc.line += 1;
         self.loc.col = 1;
         self.loc.char_offset += 1;
@@ -292,13 +434,12 @@ impl SourceInfo {
 
     fn eat_rest_of_line(&mut self) {
         let chars = self
-            .source()
-            .chars()
-            .position(|c| c == '\n')
-            .unwrap_or_else(|| self.source().len());
+            .source
+            .position_of(|c| c == '\n')
+            .unwrap_or_else(|| self.source.char_count());
         self.eat(chars);
 
-        if !self.source().is_empty() {
+        if !self.source.is_empty() {
             self.newline();
         }
     }
@@ -306,15 +447,15 @@ impl SourceInfo {
     fn eat_spaces(&mut self) {
         loop {
             let mut br = true;
-            while let Some(' ') = self.source().chars().next() {
+            while let Some(' ') = self.source.next_char() {
                 br = false;
                 self.eat(1);
             }
-            while let Some('\r') | Some('\n') = self.source().chars().next() {
+            while let Some('\r') | Some('\n') = self.source.next_char() {
                 br = false;
                 self.newline();
             }
-            while let Some('#') = self.source().chars().next() {
+            while let Some('#') = self.source.next_char() {
                 br = false;
                 self.eat_rest_of_line();
             }
@@ -535,47 +676,47 @@ pub struct Context {
 }
 
 impl Context {
+    pub fn make_module() -> JITModule {
+        let mut flags_builder = settings::builder();
+        flags_builder.set("is_pic", "false").unwrap();
+        // flags_builder.set("enable_verifier", "false").unwrap();
+        flags_builder.set("opt_level", "none").unwrap();
+        flags_builder.set("enable_probestack", "false").unwrap();
+
+        let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
+            panic!("host machine is not supported: {}", msg);
+        });
+        let isa = isa_builder
+            .finish(settings::Flags::new(flags_builder))
+            .unwrap();
+
+        let mut jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
+
+        // no hot swapping for now
+        jit_builder.hotswap(false);
+
+        // jit_builder.symbol("__panic", panic_helper as *const u8);
+        // jit_builder.symbol("__dbg_poke", dbg_poke as *const u8);
+        // jit_builder.symbol("__dbg_repr_internal", dbg_repr_internal as *const u8);
+        // jit_builder.symbol("print_i8", print_i8 as *const u8);
+        // jit_builder.symbol("print_i16", print_i16 as *const u8);
+        // jit_builder.symbol("print_i32", print_i32 as *const u8);
+        // jit_builder.symbol("print_i64", print_i64 as *const u8);
+        // jit_builder.symbol("print_u8", print_u8 as *const u8);
+        // jit_builder.symbol("print_u16", print_u16 as *const u8);
+        // jit_builder.symbol("print_u32", print_u32 as *const u8);
+        // jit_builder.symbol("print_u64", print_u64 as *const u8);
+        // jit_builder.symbol("print_f32", print_f32 as *const u8);
+        // jit_builder.symbol("print_f64", print_f64 as *const u8);
+        // jit_builder.symbol("print_string", print_string as *const u8);
+        // jit_builder.symbol("alloc", libc::malloc as *const u8);
+        // jit_builder.symbol("realloc", libc::realloc as *const u8);
+        // jit_builder.symbol("debug_data", &semantic as *const _ as *const u8);
+
+        JITModule::new(jit_builder)
+    }
+
     pub fn new() -> Self {
-        let module = {
-            let mut flags_builder = settings::builder();
-            flags_builder.set("is_pic", "false").unwrap();
-            // flags_builder.set("enable_verifier", "false").unwrap();
-            flags_builder.set("opt_level", "none").unwrap();
-            flags_builder.set("enable_probestack", "false").unwrap();
-
-            let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
-                panic!("host machine is not supported: {}", msg);
-            });
-            let isa = isa_builder
-                .finish(settings::Flags::new(flags_builder))
-                .unwrap();
-
-            let mut jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
-
-            // no hot swapping for now
-            jit_builder.hotswap(false);
-
-            // jit_builder.symbol("__panic", panic_helper as *const u8);
-            // jit_builder.symbol("__dbg_poke", dbg_poke as *const u8);
-            // jit_builder.symbol("__dbg_repr_internal", dbg_repr_internal as *const u8);
-            // jit_builder.symbol("print_i8", print_i8 as *const u8);
-            // jit_builder.symbol("print_i16", print_i16 as *const u8);
-            // jit_builder.symbol("print_i32", print_i32 as *const u8);
-            // jit_builder.symbol("print_i64", print_i64 as *const u8);
-            // jit_builder.symbol("print_u8", print_u8 as *const u8);
-            // jit_builder.symbol("print_u16", print_u16 as *const u8);
-            // jit_builder.symbol("print_u32", print_u32 as *const u8);
-            // jit_builder.symbol("print_u64", print_u64 as *const u8);
-            // jit_builder.symbol("print_f32", print_f32 as *const u8);
-            // jit_builder.symbol("print_f64", print_f64 as *const u8);
-            // jit_builder.symbol("print_string", print_string as *const u8);
-            // jit_builder.symbol("alloc", libc::malloc as *const u8);
-            // jit_builder.symbol("realloc", libc::realloc as *const u8);
-            // jit_builder.symbol("debug_data", &semantic as *const _ as *const u8);
-
-            JITModule::new(jit_builder)
-        };
-
         Self {
             string_interner: StringInterner::new(),
 
@@ -601,13 +742,50 @@ impl Context {
             circular_dependency_nodes: Default::default(),
             unification_data: Default::default(),
 
-            module,
+            module: Self::make_module(),
             values: Default::default(),
         }
     }
 
-    pub fn parse(&mut self, file_name: &str) -> Result<(), CompileError> {
-        let mut parser = Parser::new(self, file_name);
+    pub fn clear(&mut self) {
+        self.string_interner = StringInterner::new();
+
+        self.nodes.clear();
+        self.ranges.clear();
+        self.id_vecs.clear();
+        self.node_scopes.clear();
+        self.addressable_nodes.clear();
+
+        self.scopes.clear();
+        self.function_scopes.clear();
+        self.top_scope = ScopeId(0);
+
+        self.errors.clear();
+
+        self.top_level.clear();
+
+        self.types.clear();
+        self.type_matches.clear();
+        self.type_array_reverse_map.clear();
+        self.completes.clear();
+        self.topo.clear();
+        self.circular_dependency_nodes.clear();
+        self.unification_data.clear();
+
+        self.module = Self::make_module();
+        self.values.clear();
+    }
+
+    pub fn parse_file<W: WorkingSource>(&mut self, file_name: &str) -> Result<(), CompileError> {
+        let mut parser = Parser::<W>::from_file(self, file_name);
+        parser.parse()
+    }
+
+    pub fn parse_source<W: WorkingSource>(
+        &mut self,
+        source: &'static str,
+    ) -> Result<(), CompileError> {
+        let mut parser = Parser::<W>::from_source(self, source);
         parser.parse()
     }
 
@@ -647,8 +825,8 @@ impl Context {
         self.scopes[self.top_scope.0].entries.insert(sym, id);
     }
 
-    pub fn debug_tokens(&mut self, file_name: &str) -> Result<(), CompileError> {
-        let mut parser = Parser::new(self, file_name);
+    pub fn debug_tokens<W: WorkingSource>(&mut self, file_name: &str) -> Result<(), CompileError> {
+        let mut parser = Parser::<W>::from_file(self, file_name);
 
         parser.pop();
         parser.pop();
@@ -669,12 +847,14 @@ impl Context {
 }
 
 impl Context {
-    pub fn perform_semantic_analysis(&mut self) {
+    pub fn prepare(&mut self) -> Result<(), CompileError> {
         for node in self.top_level.clone() {
             self.assign_type(node);
             self.unify_types();
             self.circular_dependency_nodes.clear();
         }
+
+        self.predeclare_functions()
     }
 
     pub fn scope_get_with_scope_id(&self, sym: Sym, scope: ScopeId) -> Option<NodeId> {
@@ -1522,18 +1702,26 @@ impl Context {
     }
 }
 
-struct Parser<'a> {
-    source_info: SourceInfo,
+struct Parser<'a, W: WorkingSource> {
+    source_info: SourceInfo<W>,
     ctx: &'a mut Context,
 
     // stack of returns - pushed when entering parsing a function, popped when exiting
     returns: Vec<Vec<NodeId>>,
 }
 
-impl<'a> Parser<'a> {
-    pub fn new(context: &'a mut Context, file_name: &str) -> Self {
+impl<'a, W: WorkingSource> Parser<'a, W> {
+    pub fn from_file(context: &'a mut Context, file_name: &str) -> Self {
         Self {
-            source_info: SourceInfo::new(file_name),
+            source_info: SourceInfo::from_file(file_name),
+            ctx: context,
+            returns: Default::default(),
+        }
+    }
+
+    pub fn from_source(context: &'a mut Context, source: &'static str) -> Self {
+        Self {
+            source_info: SourceInfo::from_source(source),
             ctx: context,
             returns: Default::default(),
         }
@@ -1624,24 +1812,22 @@ impl<'a> Parser<'a> {
             return;
         }
 
-        let new_second = match self.source_info.source().chars().next() {
+        let new_second = match self.source_info.source.next_char() {
             Some(c) if c.is_digit(10) => {
-                let index = match self
-                    .source_info
-                    .source()
-                    .chars()
-                    .position(|c| !c.is_digit(10))
-                {
+                let index = match self.source_info.source.position_of(|c| !c.is_digit(10)) {
                     Some(index) => index,
-                    None => self.source_info.source().len(),
+                    None => self.source_info.source.char_count(),
                 };
 
-                let has_decimal = match self.source_info.source().get(index..index + 1) {
-                    Some(c) => c == ".",
+                let has_decimal = match self.source_info.source.char_at(index) {
+                    Some(c) => c == '.',
                     _ => false,
                 };
 
-                let digit = self.source_info.source()[..index]
+                let digit = self
+                    .source_info
+                    .source
+                    .slice(0..index)
                     .parse::<i64>()
                     .expect("Failed to parse numeric literal");
 
@@ -1650,17 +1836,16 @@ impl<'a> Parser<'a> {
                 if has_decimal {
                     self.source_info.eat(1);
 
-                    let decimal_index = match self
-                        .source_info
-                        .source()
-                        .chars()
-                        .position(|c| !c.is_digit(10))
-                    {
-                        Some(index) => index,
-                        None => self.source_info.source().len(),
-                    };
+                    let decimal_index =
+                        match self.source_info.source.position_of(|c| !c.is_digit(10)) {
+                            Some(index) => index,
+                            None => self.source_info.source.char_count(),
+                        };
 
-                    let decimal_digit = self.source_info.source()[..decimal_index]
+                    let decimal_digit = self
+                        .source_info
+                        .source
+                        .slice(0..decimal_index)
                         .parse::<i64>()
                         .expect("Failed to parse numeric literal");
 
@@ -1669,10 +1854,10 @@ impl<'a> Parser<'a> {
                     let digit: f64 = format!("{}.{}", digit, decimal_digit).parse().unwrap();
 
                     let mut spec = NumericSpecification::None;
-                    if self.source_info.source().starts_with("f32") {
+                    if self.source_info.source.starts_with("f32") {
                         spec = NumericSpecification::F32;
                         self.source_info.eat(3);
-                    } else if self.source_info.source().starts_with("f64") {
+                    } else if self.source_info.source.starts_with("f64") {
                         spec = NumericSpecification::F64;
                         self.source_info.eat(3);
                     }
@@ -1685,34 +1870,34 @@ impl<'a> Parser<'a> {
                 } else {
                     let mut spec = NumericSpecification::None;
 
-                    if self.source_info.source().starts_with("i8") {
+                    if self.source_info.source.starts_with("i8") {
                         spec = NumericSpecification::I8;
                         self.source_info.eat(2);
-                    } else if self.source_info.source().starts_with("i16") {
+                    } else if self.source_info.source.starts_with("i16") {
                         spec = NumericSpecification::I16;
                         self.source_info.eat(3);
-                    } else if self.source_info.source().starts_with("i32") {
+                    } else if self.source_info.source.starts_with("i32") {
                         spec = NumericSpecification::I32;
                         self.source_info.eat(3);
-                    } else if self.source_info.source().starts_with("i64") {
+                    } else if self.source_info.source.starts_with("i64") {
                         spec = NumericSpecification::I64;
                         self.source_info.eat(3);
-                    } else if self.source_info.source().starts_with("u8") {
+                    } else if self.source_info.source.starts_with("u8") {
                         spec = NumericSpecification::U8;
                         self.source_info.eat(2);
-                    } else if self.source_info.source().starts_with("u16") {
+                    } else if self.source_info.source.starts_with("u16") {
                         spec = NumericSpecification::U16;
                         self.source_info.eat(3);
-                    } else if self.source_info.source().starts_with("u32") {
+                    } else if self.source_info.source.starts_with("u32") {
                         spec = NumericSpecification::U32;
                         self.source_info.eat(3);
-                    } else if self.source_info.source().starts_with("u64") {
+                    } else if self.source_info.source.starts_with("u64") {
                         spec = NumericSpecification::U64;
                         self.source_info.eat(3);
-                    } else if self.source_info.source().starts_with("f32") {
+                    } else if self.source_info.source.starts_with("f32") {
                         spec = NumericSpecification::F32;
                         self.source_info.eat(3);
-                    } else if self.source_info.source().starts_with("f64") {
+                    } else if self.source_info.source.starts_with("f64") {
                         spec = NumericSpecification::F64;
                         self.source_info.eat(3);
                     }
@@ -1725,9 +1910,9 @@ impl<'a> Parser<'a> {
                 }
             }
             Some(_) => {
-                let index = match self.source_info.source().chars().position(is_special) {
+                let index = match self.source_info.source.position_of(is_special) {
                     Some(index) => index,
-                    None => self.source_info.source().len(),
+                    None => self.source_info.source.char_count(),
                 };
 
                 if index == 0 {
@@ -1736,7 +1921,7 @@ impl<'a> Parser<'a> {
                     let sym = self
                         .ctx
                         .string_interner
-                        .get_or_intern(&self.source_info.source()[..index]);
+                        .get_or_intern(&self.source_info.source.slice(0..index));
                     self.source_info.eat(index);
 
                     let end = self.source_info.loc;
@@ -2771,19 +2956,24 @@ impl<'a> ToplevelCompileContext<'a> {
 fn main() -> Result<(), CompileError> {
     let mut context = Context::new();
 
-    // context.debug_tokens("foo.sm", &mut string_interner)?;
+    // context.debug_tokens::<RopeySource>("foo.sm")?;
 
-    context.parse("foo.sm")?;
-
-    context.perform_semantic_analysis();
-
+    context.parse_file::<RopeySource>("foo.sm")?;
+    context.prepare()?;
     if !context.errors.is_empty() {
         dbg!(&context.errors);
         return Ok(());
     }
+    context.call_fn("main")?;
 
-    context.predeclare_functions()?;
+    context.clear();
 
+    context.parse_source::<RopeySource>("fn main() i64 { return 3; }")?;
+    context.prepare()?;
+    if !context.errors.is_empty() {
+        dbg!(&context.errors);
+        return Ok(());
+    }
     context.call_fn("main")?;
 
     Ok(())

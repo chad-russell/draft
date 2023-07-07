@@ -6,10 +6,10 @@ fn add_one(n: i64) i64 {
     return n + 1;
 }
 
-fn call(f: fn(n: i64) i64, n := 1) _ {
+fn call(f: fn(n: i64) i64, n: _ = 1) _ {
     return f(n);
 }
 
 fn main() i64 { 
-    return call(add_one);
+    return call(id);
 }

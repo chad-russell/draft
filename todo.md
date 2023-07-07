@@ -1,0 +1,12 @@
+- lsp
+- structs
+- pointers
+- enums
+- generics
+- pattern matching
+- async/await
+- modules
+- any / #astof(...)
+- c interop
+- immutability (??)
+- implicit function arguments
