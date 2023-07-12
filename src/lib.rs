@@ -18,16 +18,16 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
-pub struct Sym(SymbolU32);
+pub struct Sym(pub SymbolU32);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash, PartialOrd, Ord)]
-pub struct NodeId(usize);
+pub struct NodeId(pub usize);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash, PartialOrd, Ord)]
-pub struct ScopeId(usize);
+pub struct ScopeId(pub usize);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash, PartialOrd, Ord)]
-pub struct IdVec(usize);
+pub struct IdVec(pub usize);
 
 #[derive(Debug, Clone, Copy)]
 pub struct PushedScope(pub ScopeId, pub bool);
@@ -71,12 +71,32 @@ impl Range {
         }
     }
 
-    pub fn spanning(start: Range, end: Range, source_path: &'static str) -> Self {
+    pub fn spanning(start: Range, end: Range) -> Self {
+        assert!(start.source_path == end.source_path);
+
         Self {
             start: start.start,
             end: end.end,
-            source_path,
+            source_path: start.source_path,
         }
+    }
+
+    pub fn contains(&self, line: usize, col: usize) -> bool {
+        if self.start.line < line && self.end.line > line {
+            true
+        } else if self.start.line == line && self.end.line == line {
+            self.start.col <= col && self.end.col >= col
+        } else if self.start.line == line {
+            self.start.col <= col
+        } else if self.end.line == line {
+            self.end.col >= col
+        } else {
+            false
+        }
+    }
+
+    pub fn char_span(&self) -> usize {
+        self.end.char_offset - self.start.char_offset
     }
 }
 
@@ -205,8 +225,6 @@ fn is_special(c: char) -> bool {
 }
 
 pub trait Source: std::fmt::Debug + Sized {
-    fn from_str(source: &'static str) -> Self;
-
     fn char_count(&self) -> usize;
 
     fn is_empty(&self) -> bool {
@@ -234,14 +252,16 @@ pub struct StaticStrSource<'a> {
     pub source: &'a str,
 }
 
-impl<'a> Source for StaticStrSource<'a> {
-    fn from_str(source: &'a str) -> Self {
+impl<'a> StaticStrSource<'a> {
+    pub fn from_str(source: &'a str) -> Self {
         Self {
             original_source: source,
             source,
         }
     }
+}
 
+impl<'a> Source for StaticStrSource<'a> {
     fn char_count(&self) -> usize {
         self.source.chars().count()
     }
@@ -282,15 +302,17 @@ pub struct RopeySource {
     pub source_len: usize,
 }
 
-impl Source for RopeySource {
-    fn from_str(source: &str) -> Self {
+impl RopeySource {
+    pub fn from_str(source: &str) -> Self {
         RopeySource {
             rope: source.into(),
             char_index: 0,
             source_len: source.chars().count(),
         }
     }
+}
 
+impl Source for RopeySource {
     fn char_count(&self) -> usize {
         self.source_len - self.char_index
     }
@@ -327,7 +349,8 @@ impl Source for RopeySource {
     }
 
     fn reset(&mut self) {
-        self.char_index = 0
+        self.char_index = 0;
+        self.source_len = self.rope.len_chars();
     }
 }
 
@@ -379,7 +402,7 @@ impl<W: Source> SourceInfo<W> {
         }
     }
 
-    pub fn from_str(source: &'static str) -> SourceInfo<StaticStrSource> {
+    pub fn from_str(source: &str) -> SourceInfo<StaticStrSource> {
         let source = StaticStrSource::from_str(source);
         let chars_left = source.char_count();
 
@@ -406,7 +429,8 @@ impl<W: Source> SourceInfo<W> {
         }
     }
 
-    pub fn clear(&mut self) {
+    pub fn reset(&mut self) {
+        self.source.reset();
         self.chars_left = self.source.char_count();
         self.loc = Default::default();
         self.top = Default::default();
@@ -787,7 +811,7 @@ impl Context {
         self.node_scopes.clear();
         self.addressable_nodes.clear();
 
-        self.scopes.clear();
+        self.scopes = vec![Scope::new_top()];
         self.function_scopes.clear();
         self.top_scope = ScopeId(0);
 
@@ -869,15 +893,17 @@ impl Context {
         self.scopes[self.top_scope.0].entries.insert(sym, id);
     }
 
-    pub fn debug_tokens<W: Source>(&mut self, file_name: &str) -> Result<(), CompileError> {
-        let mut source = SourceInfo::<W>::from_file(file_name);
-        let mut parser = Parser::<StaticStrSource>::from_source(self, &mut source);
+    pub fn debug_tokens<W: Source>(
+        &mut self,
+        source: &mut SourceInfo<W>,
+    ) -> Result<(), CompileError> {
+        let mut parser = Parser::from_source(self, source);
 
         parser.pop();
         parser.pop();
 
         let mut a = 0;
-        while parser.source_info.top.tok != Token::Eof && a < 25 {
+        while parser.source_info.top.tok != Token::Eof && a < 250_000 {
             println!("{:?}", parser.source_info.top);
             parser.pop();
             a += 1;
@@ -886,7 +912,7 @@ impl Context {
         Ok(())
     }
 
-    fn get_symbol(&self, sym_id: NodeId) -> Sym {
+    pub fn get_symbol(&self, sym_id: NodeId) -> Sym {
         self.nodes[sym_id.0].as_symbol().unwrap()
     }
 }
@@ -895,15 +921,16 @@ impl Context {
     pub fn prepare(&mut self) -> Result<(), CompileError> {
         for node in self.top_level.clone() {
             self.assign_type(node);
-            self.unify_types();
-            self.circular_dependency_nodes.clear();
+            // self.unify_types();
+            // self.circular_dependency_nodes.clear();
         }
 
-        if self.errors.is_empty() {
-            self.predeclare_functions()
-        } else {
-            Err(self.errors[0])
-        }
+        // if self.errors.is_empty() {
+        //     self.predeclare_functions()
+        // } else {
+        //     Err(self.errors[0])
+        // }
+        Ok(())
     }
 
     pub fn scope_get_with_scope_id(&self, sym: Sym, scope: ScopeId) -> Option<NodeId> {

@@ -3,7 +3,8 @@ use cpi::*;
 fn main() -> Result<(), CompileError> {
     let mut context = Context::new();
 
-    // context.debug_tokens::<RopeySource>("foo.sm")?;
+    // let mut source = SourceInfo::<RopeySource>::ropey_from_file("foo.sm");
+    // context.debug_tokens::<RopeySource>(&mut source)?;
 
     context.ropey_parse_file("foo.sm")?;
     context.prepare()?;

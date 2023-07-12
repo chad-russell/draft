@@ -1,3 +1,6 @@
-fn main() i64 { 
-    return a;
+fn main() i64 {
+    let foo = 3;
+    let bar = 8;
+    let baz = 13;
+    return 3 + 4;
 }
