@@ -7,15 +7,15 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'seam'",
+            "name": "Debug executable 'cpi'",
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=seam",
-                    "--package=seam"
+                    "--bin=cpi",
+                    "--package=cpi"
                 ],
                 "filter": {
-                    "name": "seam",
+                    "name": "cpi",
                     "kind": "bin"
                 }
             },

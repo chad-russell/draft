@@ -1,7 +1,9 @@
 [package]
-name = "seam"
+name = "cpi"
 version = "0.1.0"
 edition = "2021"
+
+[lib]
 
 [dependencies]
 cranelift-codegen = "0.97.1"
