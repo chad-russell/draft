@@ -6,7 +6,7 @@ fn main() -> Result<(), CompileError> {
     // let mut source = SourceInfo::<RopeySource>::ropey_from_file("foo.sm");
     // context.debug_tokens::<RopeySource>(&mut source)?;
 
-    context.ropey_parse_file("foo.sm")?;
+    context.parse_file("foo.sm")?;
     context.prepare()?;
     if !context.errors.is_empty() {
         dbg!(&context.errors);

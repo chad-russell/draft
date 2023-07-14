@@ -1,6 +1,11 @@
+fn bar() i64 {
+    return 8;
+}
+
 fn main() i64 {
-    let foo = 3;
-    let bar = 8;
-    let baz = 13;
-    return 3 + 4;
+    # let foo = 3;
+    # let bar = 8;
+    # let baz = 13;
+    let b = bar();
+    return 3 + b;
 }

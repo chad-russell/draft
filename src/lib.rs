@@ -921,16 +921,27 @@ impl Context {
     pub fn prepare(&mut self) -> Result<(), CompileError> {
         for node in self.top_level.clone() {
             self.assign_type(node);
-            // self.unify_types();
-            // self.circular_dependency_nodes.clear();
+            self.unify_types();
+            self.circular_dependency_nodes.clear();
         }
 
-        // if self.errors.is_empty() {
-        //     self.predeclare_functions()
-        // } else {
-        //     Err(self.errors[0])
-        // }
-        Ok(())
+        // Check if any types are still unassigned
+        for (id, ty) in self.types.iter() {
+            if *ty == Type::Unassigned {
+                self.errors
+                    .push(CompileError::Node("Type not assigned", *id));
+            }
+            if *ty == Type::IntLiteral {
+                self.errors
+                    .push(CompileError::Node("Int literal not assigned", *id));
+            }
+        }
+
+        if self.errors.is_empty() {
+            self.predeclare_functions()
+        } else {
+            Err(self.errors[0])
+        }
     }
 
     pub fn scope_get_with_scope_id(&self, sym: Sym, scope: ScopeId) -> Option<NodeId> {
@@ -988,16 +999,23 @@ impl Context {
 
                 for &ret_id in self.id_vecs[returns.0].clone().borrow().iter() {
                     let ret_id = match self.nodes[ret_id.0] {
-                        Node::Return(Some(id)) => id,
-                        Node::Return(None) => continue,
+                        Node::Return(Some(id)) => Ok(id),
+                        Node::Return(None) if return_ty.is_some() => {
+                            Err(CompileError::Node("Empty return not allowed", ret_id))
+                        }
+                        Node::Return(None) => Ok(ret_id),
                         _ => unreachable!(),
                     };
 
-                    if let Some(return_ty) = return_ty {
-                        self.match_types(return_ty, ret_id);
-                    } else {
-                        self.errors
-                            .push(CompileError::Node("Return type not specified", id));
+                    match (ret_id, return_ty) {
+                        (Err(err), _) => self.errors.push(err),
+                        (Ok(ret_id), Some(return_ty)) => {
+                            self.match_types(return_ty, ret_id);
+                        }
+                        (Ok(ret_id), None) => {
+                            self.errors
+                                .push(CompileError::Node("Return type not specified", ret_id));
+                        }
                     }
                 }
 
@@ -1740,7 +1758,7 @@ impl Context {
             Type::F32 => 4,
             Type::F64 | Type::Func { .. } => 8,
             Type::Unassigned => todo!(),
-            _ => todo!(),
+            _ => todo!("get_type_size for {:?}", self.types[&param]),
         }
     }
 

@@ -1,12 +1,23 @@
 -[-]  lsp
+    - [x] error reporting
+    - [-] completion
+        - [x] for symbols in scope
+        - [ ] for dots on structs/enums/modules/etc.
+        - [ ] for functions (params)
+    - [x] go to definition
+    - [ ] hover
+    - [ ] go to type definition
+    - [-] syntax highlighter
 -[ ] structs
 -[ ] enums
 -[ ] pointers
 -[ ] generics
 -[ ] modules
+-[ ] string interpolation
 -[ ] pattern matching
 -[ ] async/await
 -[ ] any / #astof(...)
 -[ ] c interop
 -[ ] immutability (??)
 -[ ] implicit function arguments
+-[ ] formatter
