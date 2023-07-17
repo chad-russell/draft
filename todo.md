@@ -1,5 +1,6 @@
 -[-]  lsp
     - [x] error reporting
+    - [ ] symbol outline
     - [-] completion
         - [x] for symbols in scope
         - [ ] for dots on structs/enums/modules/etc.
@@ -8,9 +9,9 @@
     - [ ] hover
     - [ ] go to type definition
     - [-] syntax highlighter
--[ ] structs
+-[x] structs
+-[x] pointers
 -[ ] enums
--[ ] pointers
 -[ ] generics
 -[ ] modules
 -[ ] string interpolation

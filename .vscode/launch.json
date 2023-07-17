@@ -7,15 +7,15 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'cpi'",
+            "name": "Debug executable 'draft'",
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=cpi",
-                    "--package=cpi"
+                    "--bin=draft",
+                    "--package=draft"
                 ],
                 "filter": {
-                    "name": "cpi",
+                    "name": "draft",
                     "kind": "bin"
                 }
             },

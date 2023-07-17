@@ -74,6 +74,18 @@ impl Range {
     pub fn spanning(start: Range, end: Range) -> Self {
         assert!(start.source_path == end.source_path);
 
+        let (start, end) = if start.start.line < end.start.line {
+            (start, end)
+        } else if start.start.line == end.start.line {
+            if start.start.col < end.start.col {
+                (start, end)
+            } else {
+                (end, start)
+            }
+        } else {
+            (end, start)
+        };
+
         Self {
             start: start.start,
             end: end.end,
@@ -152,6 +164,7 @@ pub enum Token {
     Semicolon,
     Colon,
     Comma,
+    Dot,
     Underscore,
     Eq,
     Fn,
@@ -174,6 +187,8 @@ pub enum Token {
     Star,
     Slash,
     Return,
+    Struct,
+    AddressOf,
     Eof,
 }
 
@@ -539,6 +554,10 @@ pub enum Type {
         return_ty: Option<NodeId>,
         input_tys: IdVec,
     },
+    Struct {
+        fields: IdVec,
+    },
+    Pointer(NodeId),
 }
 
 impl Type {
@@ -614,7 +633,7 @@ pub enum Node {
     Symbol(Sym),
     IntLiteral(i64, NumericSpecification),
     FloatLiteral(f64, NumericSpecification),
-    TypeLiteral(Type),
+    Type(Type),
     Return(Option<NodeId>),
     Let {
         name: NodeId,
@@ -655,6 +674,20 @@ pub enum Node {
         params: IdVec,
         rearranged_params: Option<IdVec>,
     },
+    StructDefinition {
+        name: NodeId,
+        fields: IdVec,
+    },
+    StructLiteral {
+        name: NodeId,
+        fields: IdVec,
+    },
+    MemberAccess {
+        value: NodeId,
+        member: NodeId,
+    },
+    AddressOf(NodeId),
+    Deref(NodeId),
 }
 
 impl Node {
@@ -664,13 +697,36 @@ impl Node {
             _ => None,
         }
     }
+
+    pub fn ty(&self) -> String {
+        match self {
+            Node::Symbol(_) => "Symbol".to_string(),
+            Node::IntLiteral(_, _) => "IntLiteral".to_string(),
+            Node::FloatLiteral(_, _) => "FloatLiteral".to_string(),
+            Node::Type(_) => "Type".to_string(),
+            Node::Return(_) => "Return".to_string(),
+            Node::Let { .. } => "Let".to_string(),
+            Node::Set { .. } => "Set".to_string(),
+            Node::Func { .. } => "Func".to_string(),
+            Node::DeclParam { .. } => "DeclParam".to_string(),
+            Node::ValueParam { .. } => "ValueParam".to_string(),
+            Node::BinOp { .. } => "BinOp".to_string(),
+            Node::Call { .. } => "Call".to_string(),
+            Node::StructDefinition { .. } => "StructDefinition".to_string(),
+            Node::StructLiteral { .. } => "StructLiteral".to_string(),
+            Node::MemberAccess { .. } => "MemberAccess".to_string(),
+            Node::AddressOf(_) => "AddressOf".to_string(),
+            Node::Deref(_) => "Deref".to_string(),
+        }
+    }
 }
 
-#[derive(Clone, Copy, Debug)]
+// todo(chad): replace this with something that implements Copy
+#[derive(Clone, Debug)]
 pub enum CompileError {
-    Generic(&'static str, Range),
-    Node(&'static str, NodeId),
-    Node2(&'static str, NodeId, NodeId),
+    Generic(String, Range),
+    Node(String, NodeId),
+    Node2(String, NodeId, NodeId),
 }
 
 #[derive(Debug)]
@@ -915,6 +971,23 @@ impl Context {
     pub fn get_symbol(&self, sym_id: NodeId) -> Sym {
         self.nodes[sym_id.0].as_symbol().unwrap()
     }
+
+    pub fn report_error(&self, err: CompileError) {
+        match err {
+            CompileError::Generic(msg, range) => {
+                println!("{:?}: {}", range, msg);
+            }
+            CompileError::Node(msg, id) => {
+                println!("{:?}: {}", self.ranges[id.0], msg);
+            }
+            CompileError::Node2(msg, id1, id2) => {
+                println!(
+                    "{:?}, {:?}: {}",
+                    self.ranges[id1.0], self.ranges[id2.0], msg
+                );
+            }
+        }
+    }
 }
 
 impl Context {
@@ -929,18 +1002,20 @@ impl Context {
         for (id, ty) in self.types.iter() {
             if *ty == Type::Unassigned {
                 self.errors
-                    .push(CompileError::Node("Type not assigned", *id));
+                    .push(CompileError::Node("Type not assigned".to_string(), *id));
             }
             if *ty == Type::IntLiteral {
-                self.errors
-                    .push(CompileError::Node("Int literal not assigned", *id));
+                self.errors.push(CompileError::Node(
+                    "Int literal not assigned".to_string(),
+                    *id,
+                ));
             }
         }
 
         if self.errors.is_empty() {
             self.predeclare_functions()
         } else {
-            Err(self.errors[0])
+            Err(self.errors[0].clone())
         }
     }
 
@@ -1000,9 +1075,10 @@ impl Context {
                 for &ret_id in self.id_vecs[returns.0].clone().borrow().iter() {
                     let ret_id = match self.nodes[ret_id.0] {
                         Node::Return(Some(id)) => Ok(id),
-                        Node::Return(None) if return_ty.is_some() => {
-                            Err(CompileError::Node("Empty return not allowed", ret_id))
-                        }
+                        Node::Return(None) if return_ty.is_some() => Err(CompileError::Node(
+                            "Empty return not allowed".to_string(),
+                            ret_id,
+                        )),
                         Node::Return(None) => Ok(ret_id),
                         _ => unreachable!(),
                     };
@@ -1013,8 +1089,10 @@ impl Context {
                             self.match_types(return_ty, ret_id);
                         }
                         (Ok(ret_id), None) => {
-                            self.errors
-                                .push(CompileError::Node("Return type not specified", ret_id));
+                            self.errors.push(CompileError::Node(
+                                "Return type not specified".to_string(),
+                                ret_id,
+                            ));
                         }
                     }
                 }
@@ -1023,7 +1101,7 @@ impl Context {
                     self.topo.push(id);
                 }
             }
-            Node::TypeLiteral(ty) => {
+            Node::Type(ty) => {
                 self.types.insert(id, ty);
 
                 match ty {
@@ -1040,6 +1118,14 @@ impl Context {
                             self.assign_type(input_ty);
                         }
                     }
+                    Type::Struct { fields } => {
+                        for &field in self.id_vecs[fields.0].clone().borrow().iter() {
+                            self.assign_type(field);
+                        }
+                    }
+                    Type::Pointer(ty) => {
+                        self.assign_type(ty);
+                    }
                     Type::IntLiteral
                     | Type::I8
                     | Type::I16
@@ -1054,8 +1140,6 @@ impl Context {
                     | Type::F64
                     | Type::Unassigned => {}
                 }
-
-                self.types.insert(id, ty);
             }
             Node::Return(ret_id) => {
                 if let Some(ret_id) = ret_id {
@@ -1111,7 +1195,8 @@ impl Context {
                         }
                     }
                     None => {
-                        self.errors.push(CompileError::Node("Symbol not found", id));
+                        self.errors
+                            .push(CompileError::Node("Symbol not found".to_string(), id));
                     }
                 }
             }
@@ -1158,8 +1243,10 @@ impl Context {
                     self.types.insert(id, Type::F64);
                 }
                 _ => {
-                    self.errors
-                        .push(CompileError::Node("Under-specified float literal", id));
+                    self.errors.push(CompileError::Node(
+                        "Under-specified float literal".to_string(),
+                        id,
+                    ));
                     return;
                 }
             },
@@ -1220,7 +1307,7 @@ impl Context {
                                 Node::ValueParam { name: None, .. }
                             ) {
                                 self.errors.push(CompileError::Node(
-                                    "Cannot have unnamed params after named params",
+                                    "Cannot have unnamed params after named params".to_string(),
                                     id,
                                 ));
                                 return;
@@ -1263,8 +1350,10 @@ impl Context {
                             {
                                 rearranged_given.push(def);
                             } else {
-                                self.errors
-                                    .push(CompileError::Node("Could not find parameter", id));
+                                self.errors.push(CompileError::Node(
+                                    "Could not find parameter".to_string(),
+                                    id,
+                                ));
                                 return;
                             }
                         }
@@ -1279,8 +1368,10 @@ impl Context {
                     let input_ty_ids = self.id_vecs[input_tys.0].clone();
 
                     if input_ty_ids.borrow().len() != rearranged_given.len() {
-                        self.errors
-                            .push(CompileError::Node("Incorrect number of parameters", id));
+                        self.errors.push(CompileError::Node(
+                            "Incorrect number of parameters".to_string(),
+                            id,
+                        ));
                     } else {
                         for (param, input_ty) in
                             rearranged_given.iter().zip(input_ty_ids.borrow().iter())
@@ -1293,7 +1384,97 @@ impl Context {
                         }
                     }
                 } else {
-                    self.errors.push(CompileError::Node("Not a function", id));
+                    self.errors
+                        .push(CompileError::Node("Not a function".to_string(), id));
+                }
+            }
+            Node::StructDefinition { name, fields } => {
+                let field_ids = self.id_vecs[fields.0].clone();
+                for &field in field_ids.borrow().iter() {
+                    self.assign_type(field);
+                }
+
+                self.types.insert(id, Type::Struct { fields });
+
+                self.match_types(id, name);
+            }
+            Node::StructLiteral { name, fields } => {
+                self.assign_type(name);
+
+                for &field in self.id_vecs[fields.0].clone().borrow().iter() {
+                    self.assign_type(field);
+                }
+
+                self.types.insert(id, Type::Struct { fields });
+
+                self.match_types(name, id);
+            }
+            Node::MemberAccess { value, member } => {
+                self.assign_type(value);
+
+                let member_name_sym = self.get_symbol(member);
+
+                let mut value_ty = self.get_type(value);
+
+                while let Type::Pointer(ty) = value_ty {
+                    value_ty = self.get_type(ty);
+                }
+
+                match value_ty {
+                    Type::Struct { fields } => {
+                        let field_ids = self.id_vecs[fields.0].clone();
+                        let mut found = false;
+
+                        for &field in field_ids.borrow().iter() {
+                            let field_name = match &self.nodes[field.0] {
+                                Node::ValueParam {
+                                    name: Some(name), ..
+                                } => *name,
+                                _ => unreachable!(
+                                    "Struct field {:?} is not a ValueParam",
+                                    &self.nodes[field.0]
+                                ),
+                            };
+                            let field_name_sym = self.get_symbol(field_name);
+
+                            if field_name_sym == member_name_sym {
+                                self.match_types(id, field);
+                                found = true;
+                                break;
+                            }
+                        }
+
+                        if !found {
+                            self.errors.push(CompileError::Node(
+                                "Could not find member".to_string(),
+                                member,
+                            ));
+                        }
+                    }
+                    _ => {
+                        self.errors.push(CompileError::Node(
+                            "Member access on non-struct".to_string(),
+                            id,
+                        ));
+                    }
+                }
+            }
+            Node::AddressOf(value) => {
+                self.assign_type(value);
+                self.types.insert(id, Type::Pointer(value));
+            }
+            Node::Deref(value) => {
+                self.assign_type(value);
+                match self.get_type(value) {
+                    Type::Pointer(ty) => {
+                        self.match_types(id, ty);
+                    }
+                    _ => {
+                        self.errors.push(CompileError::Node(
+                            "Dereference on non-pointer".to_string(),
+                            id,
+                        ));
+                    }
                 }
             }
         }
@@ -1310,6 +1491,14 @@ impl Context {
         if ty1 == ty2 {
             return;
         }
+
+        // println!(
+        //     "matching {} ({:?}) with {} ({:?})",
+        //     self.nodes[ty1.0].ty(),
+        //     self.ranges[ty1.0],
+        //     self.nodes[ty2.0].ty(),
+        //     self.ranges[ty2.0]
+        // );
 
         match (self.get_type(ty1), self.get_type(ty2)) {
             (
@@ -1330,8 +1519,11 @@ impl Context {
                     }
                     (None, None) => {}
                     _ => {
-                        self.errors
-                            .push(CompileError::Node2("Could not match types", ty1, ty2));
+                        self.errors.push(CompileError::Node2(
+                            "Could not match function return types".to_string(),
+                            ty1,
+                            ty2,
+                        ));
                     }
                 }
 
@@ -1340,7 +1532,7 @@ impl Context {
 
                 if input_tys1.borrow().len() != input_tys2.borrow().len() {
                     self.errors.push(CompileError::Node2(
-                        "Could not match types: input types differ in length",
+                        "Could not match types: input types differ in length".to_string(),
                         ty1,
                         ty2,
                     ));
@@ -1350,36 +1542,69 @@ impl Context {
                     self.match_types(*it1, *it2);
                 }
             }
+            (Type::Struct { fields: f1 }, Type::Struct { fields: f2 }) => {
+                let f1 = self.id_vecs[f1.0].clone();
+                let f2 = self.id_vecs[f2.0].clone();
+
+                if f1.borrow().len() != f2.borrow().len() {
+                    self.errors.push(CompileError::Node2(
+                        "Could not match types: struct fields differ in length".to_string(),
+                        ty1,
+                        ty2,
+                    ));
+                }
+
+                for (f1, f2) in f1.borrow().iter().zip(f2.borrow().iter()) {
+                    self.match_types(*f1, *f2);
+                }
+            }
             (bt1, bt2) if bt1 == bt2 => (),
             (Type::IntLiteral, bt) if bt.is_basic() => {
                 if !self.check_int_literal_type(bt) {
-                    self.errors
-                        .push(CompileError::Node("Expected integer literal", ty2));
+                    self.errors.push(CompileError::Node(
+                        "Expected integer literal".to_string(),
+                        ty2,
+                    ));
                 }
             }
             (bt, Type::IntLiteral) if bt.is_basic() => {
                 if !self.check_int_literal_type(bt) {
-                    self.errors
-                        .push(CompileError::Node("Expected integer literal", ty1));
+                    self.errors.push(CompileError::Node(
+                        "Expected integer literal".to_string(),
+                        ty1,
+                    ));
                 }
             }
             (Type::FloatLiteral, bt) if bt.is_basic() => {
                 if !self.check_float_literal_type(bt) {
-                    self.errors
-                        .push(CompileError::Node("Expected float literal", ty2));
+                    self.errors.push(CompileError::Node(
+                        "Expected float literal".to_string(),
+                        ty2,
+                    ));
                 }
             }
             (bt, Type::FloatLiteral) if bt.is_basic() => {
                 if !self.check_float_literal_type(bt) {
-                    self.errors
-                        .push(CompileError::Node("Expected float literal", ty1));
+                    self.errors.push(CompileError::Node(
+                        "Expected float literal".to_string(),
+                        ty1,
+                    ));
                 }
             }
             (Type::Unassigned, _) => (),
             (_, Type::Unassigned) => (),
             (_, _) => {
-                self.errors
-                    .push(CompileError::Node2("Could not match types", ty1, ty2));
+                self.errors.push(CompileError::Node2(
+                    format!(
+                        "Could not match types: {} ({:?}), {} ({:?})",
+                        self.nodes[ty1.0].ty(),
+                        self.ranges[ty1.0],
+                        self.nodes[ty2.0].ty(),
+                        self.ranges[ty2.0]
+                    ),
+                    ty1,
+                    ty2,
+                ));
             }
         }
     }
@@ -1590,11 +1815,15 @@ impl Context {
 
             // Literally doesn't matter
             (Type::Func { .. }, Type::Func { .. }) => first,
+            (Type::Struct { .. }, Type::Struct { .. }) => first,
 
             // Anything else
             _ => {
-                self.errors
-                    .push(CompileError::Node2("Type mismatch", err_ids.0, err_ids.1));
+                self.errors.push(CompileError::Node2(
+                    "Type mismatch".to_string(),
+                    err_ids.0,
+                    err_ids.1,
+                ));
                 Type::Unassigned
             }
         }
@@ -1603,7 +1832,6 @@ impl Context {
     pub fn unify_types(&mut self) {
         self.unification_data.clear();
 
-        // todo(chad): @Performance
         for uid in 0..self.type_matches.len() {
             if !self.type_matches[uid].changed {
                 continue;
@@ -1615,14 +1843,8 @@ impl Context {
                 continue;
             }
 
-            // println!("setting all to {:?}", most_specific_ty);
-
-            match most_specific_ty {
-                _ => {
-                    for &id in self.type_matches[uid].ids.iter() {
-                        self.types.insert(id, most_specific_ty);
-                    }
-                }
+            for &id in self.type_matches[uid].ids.iter() {
+                self.types.insert(id, most_specific_ty);
             }
         }
 
@@ -1739,9 +1961,9 @@ impl Context {
             Type::I64 => types::I64,
             Type::F32 => types::F32,
             Type::F64 => types::F64,
-            Type::Func { .. } => self.get_pointer_type(),
+            Type::Pointer(_) | Type::Func { .. } | Type::Struct { .. } => self.get_pointer_type(),
             Type::Unassigned => todo!(),
-            _ => todo!(),
+            _ => todo!("{:?}", &self.types[&param]),
         }
     }
 
@@ -1756,7 +1978,18 @@ impl Context {
             Type::I32 => 4,
             Type::I64 => 8,
             Type::F32 => 4,
-            Type::F64 | Type::Func { .. } => 8,
+            Type::F64 => 8,
+            Type::Func { .. } => 8,
+            Type::Pointer(_) => 8,
+            Type::Struct { fields } => {
+                // todo(chad): c struct packing rules if annotated
+                self.id_vecs[fields.0]
+                    .clone()
+                    .borrow()
+                    .iter()
+                    .map(|f| self.get_type_size(*f))
+                    .sum()
+            }
             Type::Unassigned => todo!(),
             _ => todo!("get_type_size for {:?}", self.types[&param]),
         }
@@ -1829,6 +2062,9 @@ impl<'a, W: Source> Parser<'a, W> {
         if self.source_info.prefix_keyword("return", Token::Return) {
             return;
         }
+        if self.source_info.prefix_keyword("struct", Token::Struct) {
+            return;
+        }
         if self.source_info.prefix_keyword("i8", Token::I8) {
             return;
         }
@@ -1874,6 +2110,9 @@ impl<'a, W: Source> Parser<'a, W> {
         if self.source_info.prefix(",", Token::Comma) {
             return;
         }
+        if self.source_info.prefix(".", Token::Dot) {
+            return;
+        }
         if self.source_info.prefix(";", Token::Semicolon) {
             return;
         }
@@ -1893,6 +2132,9 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
         if self.source_info.prefix("*", Token::Star) {
+            return;
+        }
+        if self.source_info.prefix("&", Token::AddressOf) {
             return;
         }
         if self.source_info.prefix("/", Token::Slash) {
@@ -2032,9 +2274,8 @@ impl<'a, W: Source> Parser<'a, W> {
                 Ok(())
             }
             _ => {
-                let msg = Box::leak(Box::new(
-                    format!("Expected {:?}, found {:?}", tok, self.source_info.top.tok).to_string(),
-                ));
+                let msg =
+                    format!("Expected {:?}, found {:?}", tok, self.source_info.top.tok).to_string();
                 Err(CompileError::Generic(msg, self.source_info.top.range))
             }
         }
@@ -2049,9 +2290,8 @@ impl<'a, W: Source> Parser<'a, W> {
             self.pop();
             Ok(range)
         } else {
-            let msg = Box::leak(Box::new(
-                format!("Expected {:?}, found {:?}", token, self.source_info.top.tok).to_string(),
-            ));
+            let msg =
+                format!("Expected {:?}, found {:?}", token, self.source_info.top.tok).to_string();
             Err(CompileError::Generic(msg, range))
         }
     }
@@ -2071,11 +2311,9 @@ impl<'a, W: Source> Parser<'a, W> {
     pub fn parse_top_level(&mut self) -> Result<NodeId, CompileError> {
         let tl = match self.source_info.top.tok {
             Token::Fn => Ok(self.parse_fn(false)?),
+            Token::Struct => Ok(self.parse_struct_definition()?),
             _ => {
-                let msg = Box::leak(Box::new(format!(
-                    "expected 'fn', found '{:?}'",
-                    self.source_info.top.tok
-                )));
+                let msg = format!("expected 'fn', found '{:?}'", self.source_info.top.tok);
 
                 Err(CompileError::Generic(msg, self.source_info.top.range))
             }
@@ -2091,7 +2329,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 self.pop();
                 Ok(self.ctx.push_node(range, Node::Symbol(sym)))
             }
-            _ => Err(CompileError::Generic("expected symbol", range)),
+            _ => Err(CompileError::Generic("expected symbol".to_string(), range)),
         }
     }
 
@@ -2158,7 +2396,7 @@ impl<'a, W: Source> Parser<'a, W> {
             } else if self.source_info.top.tok == Token::Eq {
                 todo!("parse default parameters")
             } else {
-                todo!()
+                (None, None)
             };
 
             let range_end = match (ty, default) {
@@ -2189,6 +2427,26 @@ impl<'a, W: Source> Parser<'a, W> {
         }
 
         Ok(self.ctx.push_id_vec(params))
+    }
+
+    pub fn parse_struct_definition(&mut self) -> Result<NodeId, CompileError> {
+        let start = self.source_info.top.range.start;
+
+        self.pop(); // `struct`
+
+        let name = self.parse_symbol()?;
+        let name_sym = self.ctx.nodes[name.0].as_symbol().unwrap();
+
+        self.expect(Token::LCurly)?;
+        let fields = self.parse_decl_params()?;
+        let range = self.expect_range(start, Token::RCurly)?;
+
+        let struct_node = self
+            .ctx
+            .push_node(range, Node::StructDefinition { name, fields });
+        self.ctx.scope_insert(name_sym, struct_node);
+
+        Ok(struct_node)
     }
 
     pub fn parse_fn(&mut self, anonymous: bool) -> Result<NodeId, CompileError> {
@@ -2271,6 +2529,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 | Token::LCurly
                 | Token::LParen
                 | Token::Symbol(_)
+                | Token::AddressOf
                 | Token::Fn
                 | Token::I8
                 | Token::I16
@@ -2320,19 +2579,35 @@ impl<'a, W: Source> Parser<'a, W> {
                     self.pop(); // `-`
                 }
                 Token::Star => {
-                    if !parsing_op {
-                        break;
-                    }
+                    if parsing_op {
+                        while !operators.is_empty()
+                            && operators.last().unwrap().precedence()
+                                >= Op::from(self.source_info.top.tok).precedence()
+                        {
+                            output.push(Shunting::Op(operators.pop().unwrap()));
+                        }
+                        operators.push(Op::Mul);
 
-                    while !operators.is_empty()
-                        && operators.last().unwrap().precedence()
-                            >= Op::from(self.source_info.top.tok).precedence()
-                    {
-                        output.push(Shunting::Op(operators.pop().unwrap()));
-                    }
-                    operators.push(Op::Mul);
+                        self.pop(); // `*`
+                    } else {
+                        let start = self.source_info.top.range.start;
 
-                    self.pop(); // `*`
+                        self.pop(); // `*`
+
+                        let id = self.parse_expression_piece()?;
+                        let id = self.ctx.push_node(
+                            Range::new(
+                                start,
+                                self.ctx.ranges[id.0].end,
+                                self.source_info.source_path,
+                            ),
+                            Node::Deref(id),
+                        );
+
+                        self.ctx.addressable_nodes.insert(id);
+
+                        output.push(Shunting::Id(id))
+                    }
                 }
                 Token::Slash => {
                     if !parsing_op {
@@ -2368,7 +2643,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
         if output.is_empty() {
             return Err(CompileError::Generic(
-                "Could not parse expression",
+                "Could not parse expression".to_string(),
                 self.source_info.top.range,
             ));
         }
@@ -2378,7 +2653,7 @@ impl<'a, W: Source> Parser<'a, W> {
             self.shunting_unroll(&mut output, output_id)
         } else {
             Err(CompileError::Generic(
-                "Could not parse expression",
+                "Could not parse expression".to_string(),
                 self.source_info.top.range,
             ))
         }
@@ -2390,6 +2665,19 @@ impl<'a, W: Source> Parser<'a, W> {
         let mut value = match self.source_info.top.tok {
             Token::IntegerLiteral(_, _) | Token::FloatLiteral(_, _) => self.parse_numeric_literal(),
             Token::Fn => self.parse_fn(true),
+            Token::AddressOf => {
+                self.pop(); // `&`
+                let expr = self.parse_expression_piece()?;
+                let end = self.ctx.ranges[expr.0].end;
+                let addrof = self.ctx.push_node(
+                    Range::new(start, end, self.source_info.source_path),
+                    Node::AddressOf(expr),
+                );
+
+                self.ctx.addressable_nodes.insert(addrof);
+
+                Ok(addrof)
+            }
             _ => self.parse_lvalue(),
         }?;
 
@@ -2408,6 +2696,18 @@ impl<'a, W: Source> Parser<'a, W> {
             );
         }
 
+        // member access?
+        while self.source_info.top.tok == Token::Dot {
+            self.pop(); // `.`
+            let member = self.parse_symbol()?;
+            let end = self.ctx.ranges[member.0].end;
+            value = self.ctx.push_node(
+                Range::new(start, end, self.source_info.source_path),
+                Node::MemberAccess { value, member },
+            );
+            self.ctx.addressable_nodes.insert(value);
+        }
+
         Ok(value)
     }
 
@@ -2421,51 +2721,71 @@ impl<'a, W: Source> Parser<'a, W> {
         } else if self.source_info.top.tok == Token::I8 {
             let range = self.source_info.top.range;
             self.pop();
-            Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::I8)))
+            Ok(self.ctx.push_node(range, Node::Type(Type::I8)))
         } else if self.source_info.top.tok == Token::I16 {
             let range = self.source_info.top.range;
             self.pop();
-            Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::I16)))
+            Ok(self.ctx.push_node(range, Node::Type(Type::I16)))
         } else if self.source_info.top.tok == Token::I32 {
             let range = self.source_info.top.range;
             self.pop();
-            Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::I32)))
+            Ok(self.ctx.push_node(range, Node::Type(Type::I32)))
         } else if self.source_info.top.tok == Token::I64 {
             let range = self.source_info.top.range;
             self.pop();
-            Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::I64)))
+            Ok(self.ctx.push_node(range, Node::Type(Type::I64)))
         } else if self.source_info.top.tok == Token::U8 {
             let range = self.source_info.top.range;
             self.pop();
-            Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::U8)))
+            Ok(self.ctx.push_node(range, Node::Type(Type::U8)))
         } else if self.source_info.top.tok == Token::U16 {
             let range = self.source_info.top.range;
             self.pop();
-            Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::U16)))
+            Ok(self.ctx.push_node(range, Node::Type(Type::U16)))
         } else if self.source_info.top.tok == Token::U32 {
             let range = self.source_info.top.range;
             self.pop();
-            Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::U32)))
+            Ok(self.ctx.push_node(range, Node::Type(Type::U32)))
         } else if self.source_info.top.tok == Token::U64 {
             let range = self.source_info.top.range;
             self.pop();
-            Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::U64)))
+            Ok(self.ctx.push_node(range, Node::Type(Type::U64)))
         } else if self.source_info.top.tok == Token::F32 {
             let range = self.source_info.top.range;
             self.pop();
-            Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::F32)))
+            Ok(self.ctx.push_node(range, Node::Type(Type::F32)))
         } else if self.source_info.top.tok == Token::F64 {
             let range = self.source_info.top.range;
             self.pop();
-            Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::F64)))
+            Ok(self.ctx.push_node(range, Node::Type(Type::F64)))
         } else if let Token::Symbol(_) = self.source_info.top.tok {
-            Ok(self.parse_symbol()?)
+            if self.source_info.second.tok == Token::LCurly {
+                Ok(self.parse_struct_literal()?)
+            } else {
+                Ok(self.parse_symbol()?)
+            }
         } else {
             Err(CompileError::Generic(
-                "Could not parse lvalue",
+                "Could not parse lvalue".to_string(),
                 self.source_info.top.range,
             ))
         }
+    }
+
+    fn parse_struct_literal(&mut self) -> Result<NodeId, CompileError> {
+        let start = self.source_info.top.range.start;
+
+        let name = self.parse_symbol()?;
+
+        self.expect(Token::LCurly)?;
+        let fields = self.parse_value_params()?;
+        let range = self.expect_range(start, Token::RCurly)?;
+
+        let struct_node = self
+            .ctx
+            .push_node(range, Node::StructLiteral { name, fields });
+
+        Ok(struct_node)
     }
 
     fn parse_numeric_literal(&mut self) -> Result<NodeId, CompileError> {
@@ -2481,7 +2801,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 Ok(self.ctx.push_node(range, Node::FloatLiteral(f, s)))
             }
             _ => Err(CompileError::Generic(
-                "Expected numeric literal",
+                "Expected numeric literal".to_string(),
                 self.source_info.top.range,
             )),
         }
@@ -2499,11 +2819,18 @@ impl<'a, W: Source> Parser<'a, W> {
             None
         };
 
-        self.expect(Token::Eq)?;
-
         let expr = match self.source_info.top.tok {
             Token::Semicolon => None,
-            _ => Some(self.parse_expression()?),
+            Token::Eq => {
+                self.pop(); // `=`
+                Some(self.parse_expression()?)
+            }
+            _ => {
+                return Err(CompileError::Generic(
+                    "Expected `;` or `=`".to_string(),
+                    self.source_info.top.range,
+                ));
+            }
         };
         let range = self.expect_range(start, Token::Semicolon)?;
         let let_id = self.ctx.push_node(range, Node::Let { name, ty, expr });
@@ -2570,52 +2897,52 @@ impl<'a, W: Source> Parser<'a, W> {
             Token::I8 => {
                 let range = self.source_info.top.range;
                 self.pop();
-                Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::I8)))
+                Ok(self.ctx.push_node(range, Node::Type(Type::I8)))
             }
             Token::I16 => {
                 let range = self.source_info.top.range;
                 self.pop();
-                Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::I16)))
+                Ok(self.ctx.push_node(range, Node::Type(Type::I16)))
             }
             Token::I32 => {
                 let range = self.source_info.top.range;
                 self.pop();
-                Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::I32)))
+                Ok(self.ctx.push_node(range, Node::Type(Type::I32)))
             }
             Token::I64 => {
                 let range = self.source_info.top.range;
                 self.pop();
-                Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::I64)))
+                Ok(self.ctx.push_node(range, Node::Type(Type::I64)))
             }
             Token::U8 => {
                 let range = self.source_info.top.range;
                 self.pop();
-                Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::U8)))
+                Ok(self.ctx.push_node(range, Node::Type(Type::U8)))
             }
             Token::U16 => {
                 let range = self.source_info.top.range;
                 self.pop();
-                Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::U16)))
+                Ok(self.ctx.push_node(range, Node::Type(Type::U16)))
             }
             Token::U32 => {
                 let range = self.source_info.top.range;
                 self.pop();
-                Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::U32)))
+                Ok(self.ctx.push_node(range, Node::Type(Type::U32)))
             }
             Token::U64 => {
                 let range = self.source_info.top.range;
                 self.pop();
-                Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::U64)))
+                Ok(self.ctx.push_node(range, Node::Type(Type::U64)))
             }
             Token::F32 => {
                 let range = self.source_info.top.range;
                 self.pop();
-                Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::F32)))
+                Ok(self.ctx.push_node(range, Node::Type(Type::F32)))
             }
             Token::F64 => {
                 let range = self.source_info.top.range;
                 self.pop();
-                Ok(self.ctx.push_node(range, Node::TypeLiteral(Type::F64)))
+                Ok(self.ctx.push_node(range, Node::Type(Type::F64)))
             }
             Token::Fn => {
                 let range = self.source_info.top.range;
@@ -2636,7 +2963,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 Ok(self.ctx.push_node(
                     range,
-                    Node::TypeLiteral(Type::Func {
+                    Node::Type(Type::Func {
                         return_ty,
                         input_tys: params,
                     }),
@@ -2645,19 +2972,15 @@ impl<'a, W: Source> Parser<'a, W> {
             Token::Underscore => {
                 let range = self.source_info.top.range;
                 self.pop();
-                Ok(self
-                    .ctx
-                    .push_node(range, Node::TypeLiteral(Type::Unassigned)))
+                Ok(self.ctx.push_node(range, Node::Type(Type::Unassigned)))
             }
-            Token::LParen => {
+            Token::Symbol(sym) => {
                 let range = self.source_info.top.range;
-                self.pop(); // `(`
-                let inner_ty = self.parse_type()?;
-                let range = self.expect_range(range.start, Token::RParen)?;
-                Ok(self.ctx.push_node(range, self.ctx.nodes[inner_ty.0]))
+                self.pop();
+                Ok(self.ctx.push_node(range, Node::Symbol(sym)))
             }
             _ => Err(CompileError::Generic(
-                "Expected type",
+                "Expected type".to_string(),
                 self.source_info.top.range,
             )),
         }
@@ -2669,7 +2992,10 @@ impl<'a, W: Source> Parser<'a, W> {
         err_node_id: NodeId,
     ) -> Result<NodeId, CompileError> {
         if output.is_empty() {
-            return Err(CompileError::Node("Unfinished expression", err_node_id));
+            return Err(CompileError::Node(
+                "Unfinished expression".to_string(),
+                err_node_id,
+            ));
         }
 
         match output.last().unwrap().clone() {
@@ -2694,9 +3020,9 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     pub fn make_range_spanning(&self, start: NodeId, end: NodeId) -> Range {
-        let start = self.ctx.ranges[start.0].start;
-        let end = self.ctx.ranges[end.0].end;
-        Range::new(start, end, self.source_info.source_path)
+        let start = self.ctx.ranges[start.0];
+        let end = self.ctx.ranges[end.0];
+        Range::spanning(start, end)
     }
 }
 
@@ -2760,7 +3086,7 @@ impl<'a> FunctionCompileContext<'a> {
                 _ => todo!(),
             },
             Node::FloatLiteral(_, _) => todo!(),
-            Node::TypeLiteral(_) => todo!(),
+            Node::Type(_) => todo!(),
             Node::Return(rv) => {
                 if let Some(rv) = rv {
                     self.compile_id(rv)?;
@@ -2895,9 +3221,150 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
-            Node::Func { .. } => Ok(()),
-            // _ => todo!("{:?}", &self.nodes[id.0]),
+            Node::StructLiteral { fields, .. } => {
+                let size = self.ctx.get_type_size(id);
+                let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                    kind: StackSlotKind::ExplicitSlot,
+                    size,
+                });
+                let addr =
+                    self.builder
+                        .ins()
+                        .stack_addr(self.ctx.module.isa().pointer_type(), slot, 0);
+
+                self.ctx.values.insert(id, Value::Value(addr));
+
+                let mut offset = 0;
+                for field in self.ctx.id_vecs[fields.0].clone().borrow().iter() {
+                    self.compile_id(*field)?;
+                    self.store_with_offset(*field, Value::Value(addr), offset);
+                    offset += self.ctx.get_type_size(*field);
+                }
+
+                self.ctx.addressable_nodes.insert(id);
+
+                Ok(())
+            }
+            Node::MemberAccess { value, member } => {
+                self.compile_id(value)?;
+
+                let (offset, mut pointiness) = self.get_member_offset(value, member)?;
+
+                let mut value = self.as_cranelift_value(self.ctx.values[&value]);
+                while pointiness > 0 {
+                    value = self.load(types::I64, value, 0);
+                    pointiness -= 1;
+                }
+                let value = self.builder.ins().iadd_imm(value, offset as i64);
+
+                self.ctx.values.insert(id, Value::Value(value));
+
+                Ok(())
+            }
+            Node::AddressOf(value) => {
+                self.compile_id(value)?;
+
+                let cranelift_value = self.ctx.values.get(&value).unwrap();
+                match cranelift_value {
+                    Value::Value(_) | Value::Func(_) => {
+                        self.ctx.values.insert(id, *cranelift_value)
+                    }
+                    _ => todo!("{:?}", cranelift_value),
+                };
+
+                // if we are meant to be addressable, then we need to store our actual value into something which has an address
+                if self.ctx.addressable_nodes.contains(&id) {
+                    // todo(chad): is there any benefit to creating all of these up front?
+                    let size = self.ctx.module.isa().pointer_bytes() as u32;
+                    let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                        kind: StackSlotKind::ExplicitSlot,
+                        size,
+                    });
+                    let slot_addr = self.builder.ins().stack_addr(
+                        self.ctx.module.isa().pointer_type(),
+                        slot,
+                        0,
+                    );
+                    let value = Value::Value(slot_addr);
+                    self.store_value(id, value, None);
+                    self.ctx.values.insert(id, value);
+                }
+
+                Ok(())
+            }
+            Node::Deref(value) => {
+                self.compile_id(value)?;
+
+                let cranelift_value = self.ctx.values.get(&value).unwrap();
+                let cranelift_value = match cranelift_value {
+                    Value::Value(value) => value,
+                    _ => todo!("load for {:?}", cranelift_value),
+                };
+
+                let ty = &self.ctx.get_type(id);
+                let ty = match ty {
+                    Type::Struct { .. } => self.ctx.module.isa().pointer_type(),
+                    _ => self.ctx.get_cranelift_type(id),
+                };
+
+                let loaded = if self.ctx.addressable_nodes.contains(&value) {
+                    self.load(types::I64, *cranelift_value, 0)
+                } else {
+                    self.load(ty, *cranelift_value, 0)
+                };
+
+                self.ctx.values.insert(id, Value::Value(loaded));
+
+                Ok(())
+            }
+            Node::Func { .. } => Ok(()), // This should have already been handled by the toplevel context
+            _ => todo!("{:?}", &self.ctx.nodes[id.0]),
         }
+    }
+
+    fn load(&mut self, ty: types::Type, value: CraneliftValue, offset: i32) -> CraneliftValue {
+        self.builder.ins().load(ty, MemFlags::new(), value, offset)
+    }
+
+    fn get_member_offset(
+        &mut self,
+        value: NodeId,
+        member: NodeId,
+    ) -> Result<(u32, u32), CompileError> {
+        let member_name = self.ctx.nodes[member.0].as_symbol().unwrap();
+
+        let mut ty = self.ctx.get_type(value);
+        let mut pointiness = 0;
+        while let Type::Pointer(inner) = ty {
+            ty = self.ctx.get_type(inner);
+            pointiness += 1;
+        }
+
+        let Type::Struct { fields } = ty else {
+            panic!("Not a struct");
+        };
+
+        let fields = self.ctx.id_vecs[fields.0].clone();
+
+        let mut offset = 0;
+        for field in fields.borrow().iter() {
+            let field_name = match &self.ctx.nodes[field.0] {
+                Node::DeclParam { name, .. } => *name,
+                _ => panic!("Not a param"),
+            };
+            let field_name = self.ctx.nodes[field_name.0].as_symbol().unwrap();
+
+            if field_name == member_name {
+                return Ok((offset, pointiness));
+            }
+
+            offset += self.ctx.get_type_size(*field);
+        }
+
+        return Err(CompileError::Generic(
+            "Member not found".to_string(),
+            self.ctx.ranges[value.0],
+        ));
     }
 
     fn as_cranelift_value(&mut self, value: Value) -> CraneliftValue {
@@ -2933,6 +3400,22 @@ impl<'a> FunctionCompileContext<'a> {
             self.store_copy(id, dest);
         } else {
             self.store_value(id, dest, None);
+        }
+    }
+
+    fn store_with_offset(&mut self, id: NodeId, dest: Value, offset: u32) {
+        if self.ctx.addressable_nodes.contains(&id) {
+            let dest = if offset == 0 {
+                dest
+            } else {
+                let Value::Value(dest) = dest else { panic!("not a value") };
+                let dest = self.builder.ins().iadd_imm(dest, offset as i64);
+                Value::Value(dest)
+            };
+
+            self.store_copy(id, dest);
+        } else {
+            self.store_value(id, dest, Some(offset as _));
         }
     }
 

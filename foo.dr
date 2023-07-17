@@ -1,0 +1,10 @@
+struct Foo {
+    x: i64,
+}
+
+fn main() i64 {
+    let f = Foo { x: 777 };
+    let pf = &f;
+    let ppf = &pf;
+    return ppf.x;
+}
