@@ -11,12 +11,16 @@
     - [-] syntax highlighter
 -[x] structs
 -[x] pointers
--[ ] enums
 -[ ] generics
+    -[ ] functions
+    -[ ] structs
+    -[ ] enums
+    -[ ] modules
+-[ ] enums
 -[ ] modules
 -[ ] string interpolation
 -[ ] pattern matching
--[ ] async/await
+-[ ] coroutines
 -[ ] any / #astof(...)
 -[ ] c interop
 -[ ] immutability (??)

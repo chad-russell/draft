@@ -168,6 +168,7 @@ pub enum Token {
     Underscore,
     Eq,
     Fn,
+    Extern,
     Let,
     I8,
     I16,
@@ -189,6 +190,7 @@ pub enum Token {
     Return,
     Struct,
     AddressOf,
+    Bang,
     Eof,
 }
 
@@ -262,12 +264,12 @@ pub trait Source: std::fmt::Debug + Sized {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct StaticStrSource<'a> {
+pub struct StrSource<'a> {
     pub original_source: &'a str,
     pub source: &'a str,
 }
 
-impl<'a> StaticStrSource<'a> {
+impl<'a> StrSource<'a> {
     pub fn from_str(source: &'a str) -> Self {
         Self {
             original_source: source,
@@ -276,7 +278,7 @@ impl<'a> StaticStrSource<'a> {
     }
 }
 
-impl<'a> Source for StaticStrSource<'a> {
+impl<'a> Source for StrSource<'a> {
     fn char_count(&self) -> usize {
         self.source.chars().count()
     }
@@ -381,11 +383,11 @@ pub struct SourceInfo<W: Source> {
 }
 
 impl<W: Source> SourceInfo<W> {
-    pub fn from_file(file_name: &str) -> SourceInfo<StaticStrSource> {
+    pub fn from_file(file_name: &str) -> SourceInfo<StrSource> {
         let source_path = PathBuf::from(file_name);
         let source = std::fs::read_to_string(&source_path).unwrap();
         let source: &'static str = Box::leak(source.into_boxed_str());
-        let source = StaticStrSource::from_str(source);
+        let source = StrSource::from_str(source);
         let chars_left = source.char_count();
         let source_path = Box::leak(source_path.into_boxed_path().to_str().unwrap().into());
 
@@ -417,8 +419,8 @@ impl<W: Source> SourceInfo<W> {
         }
     }
 
-    pub fn from_str(source: &str) -> SourceInfo<StaticStrSource> {
-        let source = StaticStrSource::from_str(source);
+    pub fn from_str(source: &str) -> SourceInfo<StrSource> {
+        let source = StrSource::from_str(source);
         let chars_left = source.char_count();
 
         SourceInfo {
@@ -439,6 +441,25 @@ impl<W: Source> SourceInfo<W> {
             source,
             chars_left,
             loc: Default::default(),
+            top: Default::default(),
+            second: Default::default(),
+        }
+    }
+
+    fn from_range(range: Range) -> SourceInfo<StrSource<'static>> {
+        let source_path = PathBuf::from(range.source_path);
+        let source = std::fs::read_to_string(&source_path).unwrap();
+        let source = source[range.start.char_offset..range.end.char_offset].to_string();
+        let source: &'static str = Box::leak(source.into_boxed_str());
+        let source = StrSource::from_str(source);
+        let chars_left = source.char_count();
+        let source_path = Box::leak(source_path.into_boxed_path().to_str().unwrap().into());
+
+        SourceInfo {
+            source_path,
+            source,
+            chars_left,
+            loc: range.start,
             top: Default::default(),
             second: Default::default(),
         }
@@ -555,6 +576,7 @@ pub enum Type {
         input_tys: IdVec,
     },
     Struct {
+        name: Option<NodeId>,
         fields: IdVec,
     },
     Pointer(NodeId),
@@ -653,6 +675,11 @@ pub enum Node {
         stmts: IdVec,
         returns: IdVec,
     },
+    Extern {
+        name: NodeId,
+        params: IdVec,
+        return_ty: Option<NodeId>,
+    },
     DeclParam {
         name: NodeId,
         ty: Option<NodeId>,
@@ -679,7 +706,7 @@ pub enum Node {
         fields: IdVec,
     },
     StructLiteral {
-        name: NodeId,
+        name: Option<NodeId>,
         fields: IdVec,
     },
     MemberAccess {
@@ -708,6 +735,7 @@ impl Node {
             Node::Let { .. } => "Let".to_string(),
             Node::Set { .. } => "Set".to_string(),
             Node::Func { .. } => "Func".to_string(),
+            Node::Extern { .. } => "Extern".to_string(),
             Node::DeclParam { .. } => "DeclParam".to_string(),
             Node::ValueParam { .. } => "ValueParam".to_string(),
             Node::BinOp { .. } => "BinOp".to_string(),
@@ -742,7 +770,7 @@ pub struct UnificationData {
 }
 
 impl UnificationData {
-    pub fn clear(&mut self) {
+    pub fn reset(&mut self) {
         self.future_matches.clear();
     }
 }
@@ -763,6 +791,9 @@ pub struct Context {
     pub id_vecs: Vec<Rc<RefCell<Vec<NodeId>>>>,
     pub node_scopes: Vec<ScopeId>,
     pub addressable_nodes: HashSet<NodeId>,
+    pub polymorph_target: bool,
+    pub polymorph_sources: HashSet<NodeId>,
+    pub polymorph_copies: HashSet<NodeId>,
 
     pub scopes: Vec<Scope>,
     pub function_scopes: Vec<ScopeId>,
@@ -779,6 +810,7 @@ pub struct Context {
     pub topo: Vec<NodeId>,
     pub circular_dependency_nodes: HashSet<NodeId>,
     pub unification_data: UnificationData,
+    pub deferreds: Vec<NodeId>,
 
     pub module: JITModule,
     pub values: HashMap<NodeId, Value>,
@@ -812,13 +844,13 @@ impl Context {
         // jit_builder.symbol("print_i8", print_i8 as *const u8);
         // jit_builder.symbol("print_i16", print_i16 as *const u8);
         // jit_builder.symbol("print_i32", print_i32 as *const u8);
-        // jit_builder.symbol("print_i64", print_i64 as *const u8);
+        jit_builder.symbol("print_i64", print_i64 as *const u8);
         // jit_builder.symbol("print_u8", print_u8 as *const u8);
         // jit_builder.symbol("print_u16", print_u16 as *const u8);
         // jit_builder.symbol("print_u32", print_u32 as *const u8);
         // jit_builder.symbol("print_u64", print_u64 as *const u8);
         // jit_builder.symbol("print_f32", print_f32 as *const u8);
-        // jit_builder.symbol("print_f64", print_f64 as *const u8);
+        jit_builder.symbol("print_f64", print_f64 as *const u8);
         // jit_builder.symbol("print_string", print_string as *const u8);
         // jit_builder.symbol("alloc", libc::malloc as *const u8);
         // jit_builder.symbol("realloc", libc::realloc as *const u8);
@@ -836,6 +868,9 @@ impl Context {
             id_vecs: Default::default(),
             node_scopes: Default::default(),
             addressable_nodes: Default::default(),
+            polymorph_target: false,
+            polymorph_sources: Default::default(),
+            polymorph_copies: Default::default(),
 
             scopes: vec![Scope::new_top()],
             function_scopes: Default::default(),
@@ -852,13 +887,14 @@ impl Context {
             topo: Default::default(),
             circular_dependency_nodes: Default::default(),
             unification_data: Default::default(),
+            deferreds: Default::default(),
 
             module: Self::make_module(),
             values: Default::default(),
         }
     }
 
-    pub fn clear(&mut self) {
+    pub fn reset(&mut self) {
         self.string_interner = StringInterner::new();
 
         self.nodes.clear();
@@ -866,8 +902,12 @@ impl Context {
         self.id_vecs.clear();
         self.node_scopes.clear();
         self.addressable_nodes.clear();
+        self.polymorph_target = false;
+        self.polymorph_sources.clear();
+        self.polymorph_copies.clear();
 
-        self.scopes = vec![Scope::new_top()];
+        self.scopes.clear();
+        self.scopes.push(Scope::new_top());
         self.function_scopes.clear();
         self.top_scope = ScopeId(0);
 
@@ -881,14 +921,15 @@ impl Context {
         self.completes.clear();
         self.topo.clear();
         self.circular_dependency_nodes.clear();
-        self.unification_data.clear();
+        self.unification_data.reset();
+        self.deferreds.clear();
 
         self.module = Self::make_module();
         self.values.clear();
     }
 
     pub fn parse_file(&mut self, file_name: &str) -> Result<(), CompileError> {
-        let mut source = SourceInfo::<StaticStrSource>::from_file(file_name);
+        let mut source = SourceInfo::<StrSource>::from_file(file_name);
         let mut parser = Parser::from_source(self, &mut source);
         parser.parse()
     }
@@ -900,7 +941,7 @@ impl Context {
     }
 
     pub fn parse_str(&mut self, source: &'static str) -> Result<(), CompileError> {
-        let mut source = SourceInfo::<StaticStrSource>::from_str(source);
+        let mut source = SourceInfo::<StrSource>::from_str(source);
         let mut parser = Parser::from_source(self, &mut source);
         parser.parse()
     }
@@ -998,6 +1039,16 @@ impl Context {
             self.circular_dependency_nodes.clear();
         }
 
+        let mut hardstop = 0;
+        while hardstop < 100 && !self.deferreds.is_empty() {
+            for node in std::mem::take(&mut self.deferreds) {
+                self.assign_type(node);
+                self.unify_types();
+            }
+
+            hardstop += 1;
+        }
+
         // Check if any types are still unassigned
         for (id, ty) in self.types.iter() {
             if *ty == Type::Unassigned {
@@ -1007,6 +1058,12 @@ impl Context {
             if *ty == Type::IntLiteral {
                 self.errors.push(CompileError::Node(
                     "Int literal not assigned".to_string(),
+                    *id,
+                ));
+            }
+            if *ty == Type::FloatLiteral {
+                self.errors.push(CompileError::Node(
+                    "Float literal not assigned".to_string(),
                     *id,
                 ));
             }
@@ -1044,6 +1101,12 @@ impl Context {
         }
         self.circular_dependency_nodes.insert(id);
 
+        if self.assign_type_inner(id) {
+            self.completes.insert(id);
+        }
+    }
+
+    pub fn assign_type_inner(&mut self, id: NodeId) -> bool {
         match self.nodes[id.0] {
             Node::Func {
                 params,
@@ -1052,6 +1115,11 @@ impl Context {
                 returns,
                 ..
             } => {
+                // don't directly codegen a polymorph, wait until it's copied first
+                if self.polymorph_sources.contains(&id) {
+                    return true;
+                }
+
                 if let Some(return_ty) = return_ty {
                     self.assign_type(return_ty);
                 }
@@ -1101,6 +1169,25 @@ impl Context {
                     self.topo.push(id);
                 }
             }
+            Node::Extern {
+                params, return_ty, ..
+            } => {
+                if let Some(return_ty) = return_ty {
+                    self.assign_type(return_ty);
+                }
+
+                for &param in self.id_vecs[params.0].clone().borrow().iter() {
+                    self.assign_type(param);
+                }
+
+                self.types.insert(
+                    id,
+                    Type::Func {
+                        return_ty,
+                        input_tys: params,
+                    },
+                );
+            }
             Node::Type(ty) => {
                 self.types.insert(id, ty);
 
@@ -1118,7 +1205,11 @@ impl Context {
                             self.assign_type(input_ty);
                         }
                     }
-                    Type::Struct { fields } => {
+                    Type::Struct { name, fields } => {
+                        if let Some(name) = name {
+                            self.assign_type(name);
+                        }
+
                         for &field in self.id_vecs[fields.0].clone().borrow().iter() {
                             self.assign_type(field);
                         }
@@ -1193,6 +1284,10 @@ impl Context {
                         if self.addressable_nodes.contains(&resolved) {
                             self.addressable_nodes.insert(id);
                         }
+
+                        if self.polymorph_sources.contains(&resolved) {
+                            self.polymorph_sources.insert(id);
+                        }
                     }
                     None => {
                         self.errors
@@ -1247,7 +1342,7 @@ impl Context {
                         "Under-specified float literal".to_string(),
                         id,
                     ));
-                    return;
+                    return true;
                 }
             },
             Node::Set { name, expr, .. } => {
@@ -1267,8 +1362,24 @@ impl Context {
                     }
                 }
             }
-            Node::Call { func, params, .. } => {
+            Node::Call {
+                mut func, params, ..
+            } => {
                 self.assign_type(func);
+
+                // If func is a polymorph, copy it first
+                if self.polymorph_sources.contains(&func) {
+                    match self.polymorph_copy(func) {
+                        Ok(id) => {
+                            func = id;
+                            self.assign_type(func);
+                        }
+                        Err(err) => {
+                            self.errors.push(err);
+                            return true;
+                        }
+                    }
+                }
 
                 let param_ids = self.id_vecs[params.0].clone();
                 for &param in param_ids.borrow().iter() {
@@ -1310,7 +1421,7 @@ impl Context {
                                     "Cannot have unnamed params after named params".to_string(),
                                     id,
                                 ));
-                                return;
+                                return true;
                             }
                             cgiven_idx += 1;
                         }
@@ -1354,7 +1465,7 @@ impl Context {
                                     "Could not find parameter".to_string(),
                                     id,
                                 ));
-                                return;
+                                return true;
                             }
                         }
                     }
@@ -1394,20 +1505,30 @@ impl Context {
                     self.assign_type(field);
                 }
 
-                self.types.insert(id, Type::Struct { fields });
+                self.types.insert(
+                    id,
+                    Type::Struct {
+                        name: Some(name),
+                        fields,
+                    },
+                );
 
                 self.match_types(id, name);
             }
             Node::StructLiteral { name, fields } => {
-                self.assign_type(name);
+                if let Some(name) = name {
+                    self.assign_type(name);
+                }
 
                 for &field in self.id_vecs[fields.0].clone().borrow().iter() {
                     self.assign_type(field);
                 }
 
-                self.types.insert(id, Type::Struct { fields });
+                self.types.insert(id, Type::Struct { name: name, fields });
 
-                self.match_types(name, id);
+                if let Some(name) = name {
+                    self.match_types(name, id);
+                }
             }
             Node::MemberAccess { value, member } => {
                 self.assign_type(value);
@@ -1421,7 +1542,7 @@ impl Context {
                 }
 
                 match value_ty {
-                    Type::Struct { fields } => {
+                    Type::Struct { fields, .. } => {
                         let field_ids = self.id_vecs[fields.0].clone();
                         let mut found = false;
 
@@ -1429,7 +1550,8 @@ impl Context {
                             let field_name = match &self.nodes[field.0] {
                                 Node::ValueParam {
                                     name: Some(name), ..
-                                } => *name,
+                                }
+                                | Node::DeclParam { name, .. } => *name,
                                 _ => unreachable!(
                                     "Struct field {:?} is not a ValueParam",
                                     &self.nodes[field.0]
@@ -1451,9 +1573,13 @@ impl Context {
                             ));
                         }
                     }
+                    Type::Unassigned => {
+                        self.deferreds.push(id);
+                        return false;
+                    }
                     _ => {
                         self.errors.push(CompileError::Node(
-                            "Member access on non-struct".to_string(),
+                            format!("Member access on a non-struct (type {:?})", value_ty),
                             id,
                         ));
                     }
@@ -1479,7 +1605,29 @@ impl Context {
             }
         }
 
-        self.completes.insert(id);
+        return true;
+    }
+
+    fn polymorph_copy(&mut self, id: NodeId) -> Result<NodeId, CompileError> {
+        let id = match self.nodes[id.0] {
+            Node::Symbol(sym) => self.scope_get(sym, id).ok_or_else(|| {
+                CompileError::Node("Undeclared symbol when copying polymorph".to_string(), id)
+            }),
+            _ => Ok(id),
+        }?;
+
+        // Re-parse the region of the source code that contains the id
+        // todo(chad): @performance
+        let range = self.ranges[id.0];
+        let mut source = SourceInfo::<StrSource>::from_range(range);
+        let mut parser = Parser::from_source(self, &mut source);
+        parser.is_polymorph_copying = true;
+        parser.pop();
+        parser.pop();
+        let copied = parser.parse_fn(false)?;
+        self.polymorph_sources.remove(&copied);
+        self.polymorph_copies.insert(copied);
+        Ok(copied)
     }
 
     fn match_types(&mut self, ty1: NodeId, ty2: NodeId) {
@@ -1501,6 +1649,9 @@ impl Context {
         // );
 
         match (self.get_type(ty1), self.get_type(ty2)) {
+            (Type::Pointer(pt1), Type::Pointer(pt2)) => {
+                self.match_types(pt1, pt2);
+            }
             (
                 Type::Func {
                     return_ty: return_ty1,
@@ -1542,7 +1693,32 @@ impl Context {
                     self.match_types(*it1, *it2);
                 }
             }
-            (Type::Struct { fields: f1 }, Type::Struct { fields: f2 }) => {
+            (
+                Type::Struct {
+                    name: n1,
+                    fields: f1,
+                },
+                Type::Struct {
+                    name: n2,
+                    fields: f2,
+                },
+            ) => {
+                match (n1, n2) {
+                    (Some(n1), Some(n2)) => {
+                        let n1d = self.scope_get(self.get_symbol(n1), n1);
+                        let n2d = self.scope_get(self.get_symbol(n2), n2);
+
+                        if n1d != n2d {
+                            self.errors.push(CompileError::Node2(
+                                "Could not match types: struct declarations differ".to_string(),
+                                n1,
+                                n2,
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+
                 let f1 = self.id_vecs[f1.0].clone();
                 let f2 = self.id_vecs[f2.0].clone();
 
@@ -1559,40 +1735,25 @@ impl Context {
                 }
             }
             (bt1, bt2) if bt1 == bt2 => (),
-            (Type::IntLiteral, bt) if bt.is_basic() => {
+            (Type::IntLiteral, bt) | (bt, Type::IntLiteral) if bt.is_basic() => {
                 if !self.check_int_literal_type(bt) {
-                    self.errors.push(CompileError::Node(
-                        "Expected integer literal".to_string(),
+                    self.errors.push(CompileError::Node2(
+                        format!("Type mismatch - int literal with {:?}", bt),
+                        ty1,
                         ty2,
                     ));
                 }
             }
-            (bt, Type::IntLiteral) if bt.is_basic() => {
-                if !self.check_int_literal_type(bt) {
-                    self.errors.push(CompileError::Node(
-                        "Expected integer literal".to_string(),
-                        ty1,
-                    ));
-                }
-            }
-            (Type::FloatLiteral, bt) if bt.is_basic() => {
+            (Type::FloatLiteral, bt) | (bt, Type::FloatLiteral) if bt.is_basic() => {
                 if !self.check_float_literal_type(bt) {
-                    self.errors.push(CompileError::Node(
-                        "Expected float literal".to_string(),
+                    self.errors.push(CompileError::Node2(
+                        format!("Type mismatch - float literal with {:?}", bt),
+                        ty1,
                         ty2,
                     ));
                 }
             }
-            (bt, Type::FloatLiteral) if bt.is_basic() => {
-                if !self.check_float_literal_type(bt) {
-                    self.errors.push(CompileError::Node(
-                        "Expected float literal".to_string(),
-                        ty1,
-                    ));
-                }
-            }
-            (Type::Unassigned, _) => (),
-            (_, Type::Unassigned) => (),
+            (Type::Unassigned, _) | (_, Type::Unassigned) => (),
             (_, _) => {
                 self.errors.push(CompileError::Node2(
                     format!(
@@ -1813,9 +1974,11 @@ impl Context {
             (Type::IntLiteral, bt) | (bt, Type::IntLiteral) if bt.is_int() => bt,
             (Type::FloatLiteral, bt) | (bt, Type::FloatLiteral) if bt.is_float() => bt,
 
-            // Literally doesn't matter
+            // For aggregate types, the type matcher should have already detected a mismatch
+            // so it doesn't really matter which is chosen
             (Type::Func { .. }, Type::Func { .. }) => first,
             (Type::Struct { .. }, Type::Struct { .. }) => first,
+            (Type::Pointer(_), Type::Pointer(_)) => first,
 
             // Anything else
             _ => {
@@ -1830,7 +1993,7 @@ impl Context {
     }
 
     pub fn unify_types(&mut self) {
-        self.unification_data.clear();
+        self.unification_data.reset();
 
         for uid in 0..self.type_matches.len() {
             if !self.type_matches[uid].changed {
@@ -1907,7 +2070,7 @@ impl Context {
                     .push(AbiParam::new(self.get_cranelift_type(return_ty.unwrap())));
             }
 
-            let func_name = self.func_name(name, id.0);
+            let func_name = self.func_name(name, id);
 
             let func = self
                 .module
@@ -1920,12 +2083,20 @@ impl Context {
         Ok(())
     }
 
-    fn func_name(&self, name: Option<NodeId>, anonymous_id: usize) -> String {
+    fn func_name(&self, name: Option<NodeId>, anonymous_id: NodeId) -> String {
         name.map(|n| {
             let sym = self.nodes[n.0].as_symbol().unwrap();
-            String::from(self.string_interner.resolve(sym.0).unwrap())
+            if self.polymorph_copies.contains(&anonymous_id) {
+                format!(
+                    "{}_polycopy{}",
+                    self.string_interner.resolve(sym.0).unwrap(),
+                    anonymous_id.0
+                )
+            } else {
+                self.string_interner.resolve(sym.0).unwrap().to_string()
+            }
         })
-        .unwrap_or_else(|| format!("anonymous__{}", anonymous_id))
+        .unwrap_or_else(|| format!("anonymous__{}", anonymous_id.0))
     }
 
     pub fn call_fn(&mut self, fn_name: &str) -> Result<(), CompileError> {
@@ -1947,7 +2118,8 @@ impl Context {
             let code = self.module.get_finalized_function(self.get_func_id(id));
 
             let func = unsafe { std::mem::transmute::<_, fn() -> i64>(code) };
-            dbg!(func());
+            // dbg!(func());
+            func();
         }
 
         Ok(())
@@ -1981,7 +2153,7 @@ impl Context {
             Type::F64 => 8,
             Type::Func { .. } => 8,
             Type::Pointer(_) => 8,
-            Type::Struct { fields } => {
+            Type::Struct { fields, .. } => {
                 // todo(chad): c struct packing rules if annotated
                 self.id_vecs[fields.0]
                     .clone()
@@ -2032,6 +2204,7 @@ impl Context {
 pub struct Parser<'a, W: Source> {
     pub source_info: &'a mut SourceInfo<W>,
     pub ctx: &'a mut Context,
+    pub is_polymorph_copying: bool,
 
     // stack of returns - pushed when entering parsing a function, popped when exiting
     // todo(chad): parsers should be cheap to create. Consider moving this to the context?
@@ -2043,6 +2216,7 @@ impl<'a, W: Source> Parser<'a, W> {
         Self {
             source_info,
             ctx: context,
+            is_polymorph_copying: false,
             returns: Default::default(),
         }
     }
@@ -2054,6 +2228,9 @@ impl<'a, W: Source> Parser<'a, W> {
         self.source_info.top = self.source_info.second;
 
         if self.source_info.prefix_keyword("fn", Token::Fn) {
+            return;
+        }
+        if self.source_info.prefix_keyword("extern", Token::Extern) {
             return;
         }
         if self.source_info.prefix_keyword("let", Token::Let) {
@@ -2138,6 +2315,9 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
         if self.source_info.prefix("/", Token::Slash) {
+            return;
+        }
+        if self.source_info.prefix("!", Token::Bang) {
             return;
         }
 
@@ -2311,6 +2491,7 @@ impl<'a, W: Source> Parser<'a, W> {
     pub fn parse_top_level(&mut self) -> Result<NodeId, CompileError> {
         let tl = match self.source_info.top.tok {
             Token::Fn => Ok(self.parse_fn(false)?),
+            Token::Extern => Ok(self.parse_extern()?),
             Token::Struct => Ok(self.parse_struct_definition()?),
             _ => {
                 let msg = format!("expected 'fn', found '{:?}'", self.source_info.top.tok);
@@ -2450,9 +2631,12 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     pub fn parse_fn(&mut self, anonymous: bool) -> Result<NodeId, CompileError> {
+        let old_polymorph_target = self.ctx.polymorph_target;
+        self.ctx.polymorph_target = false;
+
         let start = self.source_info.top.range.start;
 
-        self.pop();
+        self.pop(); // `fn`
 
         let name = if anonymous {
             None
@@ -2504,14 +2688,53 @@ impl<'a, W: Source> Parser<'a, W> {
         // pop the top scope
         self.ctx.pop_scope(pushed_scope);
 
-        if let Some(name_sym) = name_sym {
-            self.ctx.scope_insert(name_sym, func);
+        if !self.is_polymorph_copying {
+            if let Some(name_sym) = name_sym {
+                self.ctx.scope_insert(name_sym, func);
+            }
         }
-        // self.top_level_map.insert(name, func);
 
-        // self.funcs.push(func);
+        if self.ctx.polymorph_target {
+            self.ctx.polymorph_sources.insert(func);
+        }
+
+        self.ctx.polymorph_target = old_polymorph_target;
 
         Ok(func)
+    }
+
+    pub fn parse_extern(&mut self) -> Result<NodeId, CompileError> {
+        let start = self.source_info.top.range.start;
+
+        self.pop(); // `extern`
+
+        let name = self.parse_symbol()?;
+        let name_sym = self.ctx.nodes[name.0].as_symbol().unwrap();
+
+        self.expect(Token::LParen)?;
+        let params = self.parse_decl_params()?;
+        self.expect(Token::RParen)?;
+
+        let return_ty = if self.source_info.top.tok != Token::Semicolon {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        let range = self.expect_range(start, Token::Semicolon)?;
+
+        let id = self.ctx.push_node(
+            range,
+            Node::Extern {
+                name,
+                params,
+                return_ty,
+            },
+        );
+
+        self.ctx.scope_insert(name_sym, id);
+
+        Ok(id)
     }
 
     pub fn parse_expression(&mut self) -> Result<NodeId, CompileError> {
@@ -2529,6 +2752,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 | Token::LCurly
                 | Token::LParen
                 | Token::Symbol(_)
+                | Token::Struct
                 | Token::AddressOf
                 | Token::Fn
                 | Token::I8
@@ -2758,6 +2982,8 @@ impl<'a, W: Source> Parser<'a, W> {
             let range = self.source_info.top.range;
             self.pop();
             Ok(self.ctx.push_node(range, Node::Type(Type::F64)))
+        } else if let Token::Struct = self.source_info.top.tok {
+            Ok(self.parse_struct_literal()?)
         } else if let Token::Symbol(_) = self.source_info.top.tok {
             if self.source_info.second.tok == Token::LCurly {
                 Ok(self.parse_struct_literal()?)
@@ -2775,7 +3001,12 @@ impl<'a, W: Source> Parser<'a, W> {
     fn parse_struct_literal(&mut self) -> Result<NodeId, CompileError> {
         let start = self.source_info.top.range.start;
 
-        let name = self.parse_symbol()?;
+        let name = if self.source_info.top.tok == Token::Struct {
+            self.pop(); // `struct`
+            None
+        } else {
+            Some(self.parse_symbol()?)
+        };
 
         self.expect(Token::LCurly)?;
         let fields = self.parse_value_params()?;
@@ -2969,9 +3200,24 @@ impl<'a, W: Source> Parser<'a, W> {
                     }),
                 ))
             }
+            Token::Star => {
+                let mut range = self.source_info.top.range;
+                self.pop(); // `*`
+                let ty = self.parse_type()?;
+                range.end = self.ctx.ranges[ty.0].end;
+                Ok(self.ctx.push_node(range, Node::Type(Type::Pointer(ty))))
+            }
             Token::Underscore => {
                 let range = self.source_info.top.range;
-                self.pop();
+                self.pop(); // `_`
+                Ok(self.ctx.push_node(range, Node::Type(Type::Unassigned)))
+            }
+            Token::Bang => {
+                let mut range = self.source_info.top.range;
+                self.pop(); // `!`
+                let name = self.parse_symbol()?;
+                range.end = self.ctx.ranges[name.0].end;
+                self.ctx.polymorph_target = true;
                 Ok(self.ctx.push_node(range, Node::Type(Type::Unassigned)))
             }
             Token::Symbol(sym) => {
@@ -3083,9 +3329,26 @@ impl<'a> FunctionCompileContext<'a> {
                     self.ctx.values.insert(id, Value::Value(value));
                     Ok(())
                 }
+                Type::I32 => {
+                    let value = self.builder.ins().iconst(types::I32, n);
+                    self.ctx.values.insert(id, Value::Value(value));
+                    Ok(())
+                }
                 _ => todo!(),
             },
-            Node::FloatLiteral(_, _) => todo!(),
+            Node::FloatLiteral(n, _) => match self.ctx.types[&id] {
+                Type::F64 => {
+                    let value = self.builder.ins().f64const(n);
+                    self.ctx.values.insert(id, Value::Value(value));
+                    Ok(())
+                }
+                Type::F32 => {
+                    let value = self.builder.ins().f32const(n as f32);
+                    self.ctx.values.insert(id, Value::Value(value));
+                    Ok(())
+                }
+                _ => todo!(),
+            },
             Node::Type(_) => todo!(),
             Node::Return(rv) => {
                 if let Some(rv) = rv {
@@ -3216,8 +3479,16 @@ impl<'a> FunctionCompileContext<'a> {
                     self.builder.ins().call_indirect(sig, callee, &param_values)
                 };
 
-                let value = self.builder.func.dfg.first_result(call_inst);
-                self.ctx.values.insert(id, Value::Value(value));
+                if self
+                    .ctx
+                    .types
+                    .get(&id)
+                    .map(|t| *t != Type::Unassigned)
+                    .unwrap_or_default()
+                {
+                    let value = self.builder.func.dfg.first_result(call_inst);
+                    self.ctx.values.insert(id, Value::Value(value));
+                }
 
                 Ok(())
             }
@@ -3317,6 +3588,43 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
+            Node::Extern {
+                name,
+                params,
+                return_ty,
+            } => {
+                let mut sig = self.ctx.module.make_signature();
+
+                let return_size = return_ty.map(|rt| self.ctx.get_type_size(rt)).unwrap_or(0);
+                if return_size > 0 {
+                    sig.returns.push(AbiParam::new(
+                        self.ctx.get_cranelift_type(return_ty.unwrap()),
+                    ));
+                }
+
+                for param in self.ctx.id_vecs[params.0].borrow().iter() {
+                    sig.params
+                        .push(AbiParam::new(self.ctx.get_cranelift_type(*param)));
+                }
+
+                let name = self.ctx.get_symbol(name);
+                let name = self
+                    .ctx
+                    .string_interner
+                    .resolve(name.0)
+                    .unwrap()
+                    .to_string();
+
+                let func_id = self
+                    .ctx
+                    .module
+                    .declare_function(&name, Linkage::Import, &sig)
+                    .unwrap();
+
+                self.ctx.values.insert(id, Value::Func(func_id));
+
+                Ok(())
+            }
             Node::Func { .. } => Ok(()), // This should have already been handled by the toplevel context
             _ => todo!("{:?}", &self.ctx.nodes[id.0]),
         }
@@ -3340,7 +3648,7 @@ impl<'a> FunctionCompileContext<'a> {
             pointiness += 1;
         }
 
-        let Type::Struct { fields } = ty else {
+        let Type::Struct { fields, .. } = ty else {
             panic!("Not a struct");
         };
 
@@ -3480,9 +3788,10 @@ impl<'a> ToplevelCompileContext<'a> {
                 name,
                 stmts,
                 params,
+                return_ty,
                 ..
             } => {
-                let name_str = self.ctx.func_name(name, id.0);
+                let name_str = self.ctx.func_name(name, id);
 
                 let mut sig = self.ctx.module.make_signature();
 
@@ -3491,7 +3800,10 @@ impl<'a> ToplevelCompileContext<'a> {
                         .push(AbiParam::new(self.ctx.get_cranelift_type(param)));
                 }
 
-                sig.returns.push(AbiParam::new(types::I64));
+                if let Some(return_ty) = return_ty {
+                    sig.returns
+                        .push(AbiParam::new(self.ctx.get_cranelift_type(return_ty)));
+                }
 
                 let func_id = self
                     .ctx
@@ -3521,7 +3833,7 @@ impl<'a> ToplevelCompileContext<'a> {
                 builder_ctx.builder.seal_all_blocks();
                 builder_ctx.builder.finalize();
 
-                println!("{}", self.codegen_ctx.func.display());
+                // println!("{}", self.codegen_ctx.func.display());
 
                 self.ctx
                     .module
@@ -3535,4 +3847,12 @@ impl<'a> ToplevelCompileContext<'a> {
             _ => todo!(),
         }
     }
+}
+
+pub fn print_i64(n: i64) {
+    print!("{}\n", n);
+}
+
+pub fn print_f64(n: f64) {
+    print!("{}\n", n);
 }

@@ -1,9 +1,19 @@
-struct Foo {
-    x: i64,
+extern print_i64(n: i64);
+extern print_f64(n: i64);
+
+fn id(n: !T) _ {
+    return n;
 }
 
 fn main() i64 {
-    let f = Foo { x: 777 };
-    let px = &f.x;
-    return *px;
+    let ni: i64 = 3;
+    let nf: f64 = 3.14;
+
+    let i = id(ni);
+    print_i64(i);
+
+    let f = id(nf);
+    print_f64(i);
+
+    return i;
 }
