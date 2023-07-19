@@ -12,7 +12,7 @@
 -[x] structs
 -[x] pointers
 -[ ] generics
-    -[ ] functions
+    -[x] functions
     -[ ] structs
     -[ ] enums
     -[ ] modules

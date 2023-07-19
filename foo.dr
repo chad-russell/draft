@@ -1,19 +1,27 @@
 extern print_i64(n: i64);
-extern print_f64(n: i64);
+extern print_f64(n: f64);
 
-fn id(n: !T) _ {
-    return n;
+struct Foo {
+    x: i64,
+    y: i64,
+}
+
+struct Bar {
+    x: i64,
+    y: i64,
+}
+
+fn subfoo(f: Foo) _ {
+    return f.x - f.y;
+}
+
+fn subbar(b: Bar) _ {
+    return b.x - b.y;
 }
 
 fn main() i64 {
-    let ni: i64 = 3;
-    let nf: f64 = 3.14;
-
-    let i = id(ni);
-    print_i64(i);
-
-    let f = id(nf);
-    print_f64(i);
-
-    return i;
+    let f = _{ y: 777, x: 444 };
+    print_i64(subfoo(f));
+    print_i64(subbar(f));
+    return 0;
 }

@@ -1,10 +1,16 @@
+use clap::Parser;
 use draft::*;
 
 fn run(context: &mut Context) -> Result<(), CompileError> {
-    // let mut source = SourceInfo::<RopeySource>::ropey_from_file("foo.dr");
-    // context.debug_tokens::<RopeySource>(&mut source)?;
-
     context.parse_file("foo.dr")?;
+
+    if context.args.dump_tokens {
+        let mut source = SourceInfo::<StrSource>::from_file("foo.dr");
+        context.debug_tokens(&mut source)?;
+        return Ok(());
+    }
+
+    // context.debug_tokens::<RopeySource>(&mut source)?;
     context.prepare()?;
     if !context.errors.is_empty() {
         dbg!(&context.errors);
@@ -12,20 +18,13 @@ fn run(context: &mut Context) -> Result<(), CompileError> {
     }
     context.call_fn("main")?;
 
-    // context.clear();
-    // context.parse_str("fn main() i64 { return 3; }")?;
-    // context.prepare()?;
-    // if !context.errors.is_empty() {
-    //     dbg!(&context.errors);
-    //     return Ok(());
-    // }
-    // context.call_fn("main")?;
-
     Ok(())
 }
 
 fn main() {
-    let mut context = Context::new();
+    let args = Args::parse();
+
+    let mut context = Context::new(args);
 
     match run(&mut context) {
         Ok(_) => {}

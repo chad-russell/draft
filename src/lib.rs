@@ -5,6 +5,8 @@ use std::{
     rc::Rc,
 };
 
+use clap::Parser as ClapParser;
+
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use string_interner::{symbol::SymbolU32, StringInterner};
 
@@ -166,6 +168,7 @@ pub enum Token {
     Comma,
     Dot,
     Underscore,
+    UnderscoreSymbol(Sym),
     Eq,
     Fn,
     Extern,
@@ -191,6 +194,8 @@ pub enum Token {
     Struct,
     AddressOf,
     Bang,
+    BangSymbol(Sym),
+    UnderscoreLCurly,
     Eof,
 }
 
@@ -212,7 +217,7 @@ impl Default for Lexeme {
     }
 }
 
-fn is_special(c: char) -> bool {
+fn breaks_symbol(c: char) -> bool {
     c == ' '
         || c == '\t'
         || c == '\n'
@@ -491,7 +496,7 @@ impl<W: Source> SourceInfo<W> {
     fn prefix_keyword(&mut self, pat: &str, tok: Token) -> bool {
         if self.source.char_count() > pat.len()
             && self.source.starts_with(pat)
-            && is_special(self.source.char_at(pat.len()).unwrap())
+            && breaks_symbol(self.source.char_at(pat.len()).unwrap())
         {
             let start = self.loc;
             self.eat(pat.len());
@@ -558,7 +563,7 @@ impl<W: Source> SourceInfo<W> {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Type {
-    Unassigned,
+    Infer(Option<Sym>),
     IntLiteral,
     I8,
     I16,
@@ -680,7 +685,13 @@ pub enum Node {
         params: IdVec,
         return_ty: Option<NodeId>,
     },
-    DeclParam {
+    StructDeclParam {
+        name: NodeId,
+        ty: Option<NodeId>,
+        default: Option<NodeId>,
+        index: u16,
+    },
+    FuncDeclParam {
         name: NodeId,
         ty: Option<NodeId>,
         default: Option<NodeId>,
@@ -708,6 +719,7 @@ pub enum Node {
     StructLiteral {
         name: Option<NodeId>,
         fields: IdVec,
+        rearranged_fields: Option<IdVec>,
     },
     MemberAccess {
         value: NodeId,
@@ -736,7 +748,8 @@ impl Node {
             Node::Set { .. } => "Set".to_string(),
             Node::Func { .. } => "Func".to_string(),
             Node::Extern { .. } => "Extern".to_string(),
-            Node::DeclParam { .. } => "DeclParam".to_string(),
+            Node::StructDeclParam { .. } => "StructDeclParam".to_string(),
+            Node::FuncDeclParam { .. } => "FuncDeclParam".to_string(),
             Node::ValueParam { .. } => "ValueParam".to_string(),
             Node::BinOp { .. } => "BinOp".to_string(),
             Node::Call { .. } => "Call".to_string(),
@@ -783,7 +796,22 @@ pub enum Value {
     Value(CraneliftValue),
 }
 
+#[derive(ClapParser, Debug, Default)]
+#[command(version, about)]
+pub struct Args {
+    #[arg(long)]
+    pub dump_ir: bool,
+
+    #[arg(long)]
+    pub dump_tokens: bool,
+
+    #[arg(long)]
+    pub print_type_matches: bool,
+}
+
 pub struct Context {
+    pub args: Args,
+
     pub string_interner: StringInterner,
 
     pub nodes: Vec<Node>,
@@ -859,8 +887,9 @@ impl Context {
         JITModule::new(jit_builder)
     }
 
-    pub fn new() -> Self {
+    pub fn new(args: Args) -> Self {
         Self {
+            args,
             string_interner: StringInterner::new(),
 
             nodes: Default::default(),
@@ -931,6 +960,7 @@ impl Context {
     pub fn parse_file(&mut self, file_name: &str) -> Result<(), CompileError> {
         let mut source = SourceInfo::<StrSource>::from_file(file_name);
         let mut parser = Parser::from_source(self, &mut source);
+
         parser.parse()
     }
 
@@ -987,6 +1017,15 @@ impl Context {
     }
 
     pub fn scope_insert(&mut self, sym: Sym, id: NodeId) {
+        if self.scopes[self.top_scope.0].entries.contains_key(&sym) {
+            self.errors.push(CompileError::Node(
+                format!(
+                    "Duplicate symbol definition '{}'",
+                    self.string_interner.resolve(sym.0).unwrap()
+                ),
+                id,
+            ));
+        }
         self.scopes[self.top_scope.0].entries.insert(sym, id);
     }
 
@@ -1029,6 +1068,45 @@ impl Context {
             }
         }
     }
+
+    fn match_fields_to_named_struct(
+        &mut self,
+        fields: IdVec,
+        name: NodeId,
+        struct_literal_id: NodeId,
+    ) -> Result<(), CompileError> {
+        let Some(Type::Struct { fields: decl, .. }) = self.types.get(&name) else { return Ok(()); };
+
+        let given = self.id_vecs[fields.0].clone();
+        let decl = self.id_vecs[decl.0].clone();
+
+        let rearranged = match self.rearrange_params(&given.borrow(), &decl.borrow(), name) {
+            Ok(r) => Some(r),
+            Err(err) => return Err(err),
+        };
+
+        if let Some(rearranged) = rearranged {
+            self.nodes[struct_literal_id.0] = Node::StructLiteral {
+                name: Some(name),
+                fields,
+                rearranged_fields: Some(self.push_id_vec(rearranged.clone())),
+            };
+
+            if rearranged.len() != decl.borrow().len() {
+                self.errors.push(CompileError::Node(
+                    "Incorrect number of parameters".to_string(),
+                    struct_literal_id,
+                ));
+            } else {
+                for (field, decl_field) in rearranged.iter().zip(decl.borrow().iter()) {
+                    self.assign_type(*field);
+                    self.match_types(*field, *decl_field);
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl Context {
@@ -1049,9 +1127,31 @@ impl Context {
             hardstop += 1;
         }
 
+        if self.args.print_type_matches {
+            println!(
+                "type matches: {:?}",
+                self.type_matches
+                    .iter()
+                    .map(|tm| {
+                        tm.ids
+                            .iter()
+                            .map(|id| (self.nodes[id.0].ty(), self.ranges[id.0]))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
+            );
+            //     println!(
+            //         "matching {} ({:?}) with {} ({:?})",
+            //         self.nodes[ty1.0].ty(),
+            //         self.ranges[ty1.0],
+            //         self.nodes[ty2.0].ty(),
+            //         self.ranges[ty2.0]
+            //     );
+        }
+
         // Check if any types are still unassigned
         for (id, ty) in self.types.iter() {
-            if *ty == Type::Unassigned {
+            if let Type::Infer(_) = *ty {
                 self.errors
                     .push(CompileError::Node("Type not assigned".to_string(), *id));
             }
@@ -1126,6 +1226,11 @@ impl Context {
 
                 for &param in self.id_vecs[params.0].clone().borrow().iter() {
                     self.assign_type(param);
+
+                    // All structs passed as function args are passed by address (for now...)
+                    if let Some(Type::Struct { .. }) = &self.types.get(&param) {
+                        self.addressable_nodes.insert(param);
+                    }
                 }
 
                 self.types.insert(
@@ -1229,7 +1334,7 @@ impl Context {
                     | Type::FloatLiteral
                     | Type::F32
                     | Type::F64
-                    | Type::Unassigned => {}
+                    | Type::Infer(_) => {}
                 }
             }
             Node::Return(ret_id) => {
@@ -1295,7 +1400,7 @@ impl Context {
                     }
                 }
             }
-            Node::DeclParam { ty, default, .. } => {
+            Node::StructDeclParam { ty, default, .. } | Node::FuncDeclParam { ty, default, .. } => {
                 if let Some(ty) = ty {
                     self.assign_type(ty);
                 }
@@ -1392,83 +1497,16 @@ impl Context {
                 } = self.get_type(func)
                 {
                     let given = param_ids;
-                    let given_len = given.borrow().len();
-
                     let decl = self.id_vecs[input_tys.0].clone();
 
-                    let mut rearranged_given = Vec::new();
-
-                    // While there are free params, push them into rearranged_given
-                    if given_len > 0 {
-                        let mut given_idx = 0;
-                        while given_idx < given_len
-                            && matches!(
-                                self.nodes[given.borrow()[given_idx].0],
-                                Node::ValueParam { name: None, .. }
-                            )
-                        {
-                            rearranged_given.push(given.borrow()[given_idx]);
-                            given_idx += 1;
-                        }
-
-                        let mut cgiven_idx = given_idx;
-                        while cgiven_idx < given_len {
-                            if matches!(
-                                self.nodes[given.borrow()[cgiven_idx].0],
-                                Node::ValueParam { name: None, .. }
-                            ) {
-                                self.errors.push(CompileError::Node(
-                                    "Cannot have unnamed params after named params".to_string(),
-                                    id,
-                                ));
+                    let rearranged_given =
+                        match self.rearrange_params(&given.borrow(), &decl.borrow(), id) {
+                            Ok(r) => r,
+                            Err(err) => {
+                                self.errors.push(err);
                                 return true;
                             }
-                            cgiven_idx += 1;
-                        }
-                    }
-
-                    let starting_rearranged_len = rearranged_given.len();
-
-                    for &d in decl.borrow().iter().skip(starting_rearranged_len) {
-                        let mut found = false;
-
-                        for &g in given.borrow().iter().skip(starting_rearranged_len) {
-                            let decl_name = match &self.nodes[d.0] {
-                                Node::DeclParam { name, .. } => *name,
-                                _ => unreachable!(),
-                            };
-                            let decl_name_sym = self.get_symbol(decl_name);
-
-                            let given_name = match &self.nodes[g.0] {
-                                Node::ValueParam {
-                                    name: Some(name), ..
-                                } => *name,
-                                _ => unreachable!(),
-                            };
-                            let given_name_sym = self.get_symbol(given_name);
-
-                            if given_name_sym == decl_name_sym {
-                                rearranged_given.push(g);
-                                found = true;
-                                break;
-                            }
-                        }
-
-                        if !found {
-                            if let Node::DeclParam {
-                                default: Some(def), ..
-                            } = self.nodes[d.0]
-                            {
-                                rearranged_given.push(def);
-                            } else {
-                                self.errors.push(CompileError::Node(
-                                    "Could not find parameter".to_string(),
-                                    id,
-                                ));
-                                return true;
-                            }
-                        }
-                    }
+                        };
 
                     self.nodes[id.0] = Node::Call {
                         func,
@@ -1515,19 +1553,16 @@ impl Context {
 
                 self.match_types(id, name);
             }
-            Node::StructLiteral { name, fields } => {
+            Node::StructLiteral { name, fields, .. } => {
                 if let Some(name) = name {
                     self.assign_type(name);
-                }
-
-                for &field in self.id_vecs[fields.0].clone().borrow().iter() {
-                    self.assign_type(field);
-                }
-
-                self.types.insert(id, Type::Struct { name: name, fields });
-
-                if let Some(name) = name {
                     self.match_types(name, id);
+                    self.match_fields_to_named_struct(fields, name, id);
+                } else {
+                    for &field in self.id_vecs[fields.0].clone().borrow().iter() {
+                        self.assign_type(field);
+                    }
+                    self.types.insert(id, Type::Struct { name: None, fields });
                 }
             }
             Node::MemberAccess { value, member } => {
@@ -1551,7 +1586,7 @@ impl Context {
                                 Node::ValueParam {
                                     name: Some(name), ..
                                 }
-                                | Node::DeclParam { name, .. } => *name,
+                                | Node::StructDeclParam { name, .. } => *name,
                                 _ => unreachable!(
                                     "Struct field {:?} is not a ValueParam",
                                     &self.nodes[field.0]
@@ -1573,7 +1608,7 @@ impl Context {
                             ));
                         }
                     }
-                    Type::Unassigned => {
+                    Type::Infer(_) => {
                         self.deferreds.push(id);
                         return false;
                     }
@@ -1648,6 +1683,14 @@ impl Context {
         //     self.ranges[ty2.0]
         // );
 
+        // println!(
+        //     "matching {:?} ({:?}) with {:?} ({:?})",
+        //     self.types.get(&ty1),
+        //     self.ranges[ty1.0],
+        //     self.types.get(&ty2),
+        //     self.ranges[ty2.0]
+        // );
+
         match (self.get_type(ty1), self.get_type(ty2)) {
             (Type::Pointer(pt1), Type::Pointer(pt2)) => {
                 self.match_types(pt1, pt2);
@@ -1702,38 +1745,46 @@ impl Context {
                     name: n2,
                     fields: f2,
                 },
-            ) => {
-                match (n1, n2) {
-                    (Some(n1), Some(n2)) => {
-                        let n1d = self.scope_get(self.get_symbol(n1), n1);
-                        let n2d = self.scope_get(self.get_symbol(n2), n2);
+            ) => match (n1, n2) {
+                (Some(n1), Some(n2)) => {
+                    let n1d = self.scope_get(self.get_symbol(n1), n1);
+                    let n2d = self.scope_get(self.get_symbol(n2), n2);
 
-                        if n1d != n2d {
-                            self.errors.push(CompileError::Node2(
-                                "Could not match types: struct declarations differ".to_string(),
-                                n1,
-                                n2,
-                            ));
-                        }
+                    if n1d != n2d {
+                        self.errors.push(CompileError::Node2(
+                            "Could not match types: struct declarations differ".to_string(),
+                            n1,
+                            n2,
+                        ));
                     }
-                    _ => {}
                 }
-
-                let f1 = self.id_vecs[f1.0].clone();
-                let f2 = self.id_vecs[f2.0].clone();
-
-                if f1.borrow().len() != f2.borrow().len() {
-                    self.errors.push(CompileError::Node2(
-                        "Could not match types: struct fields differ in length".to_string(),
-                        ty1,
-                        ty2,
-                    ));
+                (None, Some(n)) => {
+                    if let Err(err) = self.match_fields_to_named_struct(f1, n, ty1) {
+                        self.errors.push(err);
+                    }
                 }
-
-                for (f1, f2) in f1.borrow().iter().zip(f2.borrow().iter()) {
-                    self.match_types(*f1, *f2);
+                (Some(n), None) => {
+                    if let Err(err) = self.match_fields_to_named_struct(f2, n, ty2) {
+                        self.errors.push(err);
+                    }
                 }
-            }
+                (None, None) => {
+                    let f1 = self.id_vecs[f1.0].clone();
+                    let f2 = self.id_vecs[f2.0].clone();
+
+                    if f1.borrow().len() != f2.borrow().len() {
+                        self.errors.push(CompileError::Node2(
+                            "Could not match types: struct fields differ in length".to_string(),
+                            ty1,
+                            ty2,
+                        ));
+                    }
+
+                    for (f1, f2) in f1.borrow().iter().zip(f2.borrow().iter()) {
+                        self.match_types(*f1, *f2);
+                    }
+                }
+            },
             (bt1, bt2) if bt1 == bt2 => (),
             (Type::IntLiteral, bt) | (bt, Type::IntLiteral) if bt.is_basic() => {
                 if !self.check_int_literal_type(bt) {
@@ -1753,7 +1804,7 @@ impl Context {
                     ));
                 }
             }
-            (Type::Unassigned, _) | (_, Type::Unassigned) => (),
+            (Type::Infer(_), _) | (_, Type::Infer(_)) => (),
             (_, _) => {
                 self.errors.push(CompileError::Node2(
                     format!(
@@ -1790,7 +1841,7 @@ impl Context {
     }
 
     fn get_type(&self, id: NodeId) -> Type {
-        return self.types.get(&id).cloned().unwrap_or(Type::Unassigned);
+        return self.types.get(&id).cloned().unwrap_or(Type::Infer(None));
     }
 
     fn is_fully_concrete(&self, id: NodeId) -> bool {
@@ -1798,6 +1849,23 @@ impl Context {
     }
 
     fn is_fully_concrete_ty(&self, ty: Type) -> bool {
+        if let Type::Pointer(pt) = ty {
+            return self.is_fully_concrete(pt);
+        }
+
+        if let Type::Struct {
+            name: Some(_),
+            fields,
+        } = ty
+        {
+            for &field in self.id_vecs[fields.0].borrow().iter() {
+                if !self.is_fully_concrete(field) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         matches!(
             ty,
             Type::I8
@@ -1819,11 +1887,11 @@ impl Context {
 
     fn merge_type_matches(&mut self, ty1: NodeId, ty2: NodeId) {
         match (self.get_type(ty1), self.get_type(ty2)) {
-            (Type::Unassigned, Type::Unassigned) => (),
-            (Type::Unassigned, ty) => {
+            (Type::Infer(_), Type::Infer(_)) => (),
+            (Type::Infer(_), ty) => {
                 self.types.insert(ty1, ty);
             }
-            (ty, Type::Unassigned) => {
+            (ty, Type::Infer(_)) => {
                 self.types.insert(ty2, ty);
             }
             (_, _) => (),
@@ -1968,7 +2036,7 @@ impl Context {
             (a, b) if a == b => a,
 
             // Types/Unassigneds get coerced to anything
-            (Type::Unassigned, other) | (other, Type::Unassigned) => other,
+            (Type::Infer(_), other) | (other, Type::Infer(_)) => other,
 
             // Check int/float literals match
             (Type::IntLiteral, bt) | (bt, Type::IntLiteral) if bt.is_int() => bt,
@@ -1987,7 +2055,7 @@ impl Context {
                     err_ids.0,
                     err_ids.1,
                 ));
-                Type::Unassigned
+                Type::Infer(None)
             }
         }
     }
@@ -2002,7 +2070,7 @@ impl Context {
             self.type_matches[uid].changed = false;
 
             let most_specific_ty = self.type_matches[uid].unified;
-            if matches!(most_specific_ty, Type::Unassigned) {
+            if matches!(most_specific_ty, Type::Infer(_)) {
                 continue;
             }
 
@@ -2015,6 +2083,89 @@ impl Context {
             let (id1, id2) = self.unification_data.future_matches.pop().unwrap();
             self.match_types(id1, id2);
         }
+    }
+
+    fn rearrange_params(
+        &self,
+        given: &[NodeId],
+        decl: &[NodeId],
+        err_id: NodeId,
+    ) -> Result<Vec<NodeId>, CompileError> {
+        let given_len = given.len();
+
+        let mut rearranged_given = Vec::new();
+
+        // While there are free params, push them into rearranged_given
+        if given_len > 0 {
+            let mut given_idx = 0;
+            while given_idx < given_len
+                && matches!(
+                    self.nodes[given[given_idx].0],
+                    Node::ValueParam { name: None, .. }
+                )
+            {
+                rearranged_given.push(given[given_idx]);
+                given_idx += 1;
+            }
+
+            let mut cgiven_idx = given_idx;
+            while cgiven_idx < given_len {
+                if matches!(
+                    self.nodes[given[cgiven_idx].0],
+                    Node::ValueParam { name: None, .. }
+                ) {
+                    return Err(CompileError::Node(
+                        "Cannot have unnamed params after named params".to_string(),
+                        err_id,
+                    ));
+                }
+                cgiven_idx += 1;
+            }
+        }
+
+        let starting_rearranged_len = rearranged_given.len();
+
+        for &d in decl.iter().skip(starting_rearranged_len) {
+            let mut found = false;
+
+            for &g in given.iter().skip(starting_rearranged_len) {
+                let decl_name = match &self.nodes[d.0] {
+                    Node::FuncDeclParam { name, .. } | Node::StructDeclParam { name, .. } => *name,
+                    _ => unreachable!(),
+                };
+                let decl_name_sym = self.get_symbol(decl_name);
+
+                let given_name = match &self.nodes[g.0] {
+                    Node::ValueParam {
+                        name: Some(name), ..
+                    } => *name,
+                    _ => unreachable!(),
+                };
+                let given_name_sym = self.get_symbol(given_name);
+
+                if given_name_sym == decl_name_sym {
+                    rearranged_given.push(g);
+                    found = true;
+                    break;
+                }
+            }
+
+            if !found {
+                if let Node::FuncDeclParam {
+                    default: Some(def), ..
+                } = self.nodes[d.0]
+                {
+                    rearranged_given.push(def);
+                } else {
+                    return Err(CompileError::Node(
+                        "Could not find parameter".to_string(),
+                        err_id,
+                    ));
+                }
+            }
+        }
+
+        Ok(rearranged_given)
     }
 }
 
@@ -2116,9 +2267,7 @@ impl Context {
 
         if let Some(id) = node_id {
             let code = self.module.get_finalized_function(self.get_func_id(id));
-
             let func = unsafe { std::mem::transmute::<_, fn() -> i64>(code) };
-            // dbg!(func());
             func();
         }
 
@@ -2134,7 +2283,7 @@ impl Context {
             Type::F32 => types::F32,
             Type::F64 => types::F64,
             Type::Pointer(_) | Type::Func { .. } | Type::Struct { .. } => self.get_pointer_type(),
-            Type::Unassigned => todo!(),
+            Type::Infer(_) => todo!(),
             _ => todo!("{:?}", &self.types[&param]),
         }
     }
@@ -2162,7 +2311,7 @@ impl Context {
                     .map(|f| self.get_type_size(*f))
                     .sum()
             }
-            Type::Unassigned => todo!(),
+            Type::Infer(_) => todo!(),
             _ => todo!("get_type_size for {:?}", self.types[&param]),
         }
     }
@@ -2226,6 +2375,53 @@ impl<'a, W: Source> Parser<'a, W> {
 
         let start = self.source_info.loc;
         self.source_info.top = self.source_info.second;
+
+        let (is_underscore, is_bang) = if self.source_info.source.char_count() > 1 {
+            (
+                self.source_info.source.starts_with("_")
+                    && !breaks_symbol(self.source_info.source.char_at(1).unwrap()),
+                self.source_info.source.starts_with("!")
+                    && !breaks_symbol(self.source_info.source.char_at(1).unwrap()),
+            )
+        } else {
+            (false, false)
+        };
+
+        if is_underscore || is_bang {
+            let start = self.source_info.loc;
+            self.source_info.eat(1);
+
+            let index = match self.source_info.source.position_of(breaks_symbol) {
+                Some(index) => index,
+                None => self.source_info.source.char_count(),
+            };
+
+            if index == 0 {
+                self.source_info.second = Lexeme::new(Token::Eof, Default::default());
+                return;
+            } else {
+                let sym = self
+                    .ctx
+                    .string_interner
+                    .get_or_intern(&self.source_info.source.slice(0..index));
+                self.source_info.eat(index);
+
+                let end = self.source_info.loc;
+
+                let symtok = if is_underscore {
+                    Token::UnderscoreSymbol(Sym(sym))
+                } else if is_bang {
+                    Token::BangSymbol(Sym(sym))
+                } else {
+                    unreachable!();
+                };
+
+                self.source_info.second =
+                    Lexeme::new(symtok, self.source_info.make_range(start, end));
+
+                return;
+            }
+        }
 
         if self.source_info.prefix_keyword("fn", Token::Fn) {
             return;
@@ -2297,6 +2493,9 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
         if self.source_info.prefix("=", Token::Eq) {
+            return;
+        }
+        if self.source_info.prefix("_{", Token::UnderscoreLCurly) {
             return;
         }
         if self.source_info.prefix("_", Token::Underscore) {
@@ -2419,7 +2618,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 }
             }
             Some(_) => {
-                let index = match self.source_info.source.position_of(is_special) {
+                let index = match self.source_info.source.position_of(breaks_symbol) {
                     Some(index) => index,
                     None => self.source_info.source.char_count(),
                 };
@@ -2553,7 +2752,7 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(self.ctx.push_id_vec(params))
     }
 
-    fn parse_decl_params(&mut self) -> Result<IdVec, CompileError> {
+    fn parse_decl_params(&mut self, is_fn: bool) -> Result<IdVec, CompileError> {
         let mut params = Vec::new();
 
         while self.source_info.top.tok != Token::RParen && self.source_info.top.tok != Token::RCurly
@@ -2589,15 +2788,23 @@ impl<'a, W: Source> Parser<'a, W> {
             let range = self.source_info.make_range(input_start, range_end);
 
             // put the param in scope
-            let param = self.ctx.push_node(
-                range,
-                Node::DeclParam {
+            let node = if is_fn {
+                Node::FuncDeclParam {
                     name,
                     ty,
                     default,
                     index: params.len() as u16,
-                },
-            );
+                }
+            } else {
+                Node::StructDeclParam {
+                    name,
+                    ty,
+                    default,
+                    index: params.len() as u16,
+                }
+            };
+
+            let param = self.ctx.push_node(range, node);
             self.ctx.scope_insert(name_sym, param);
             self.ctx.addressable_nodes.insert(param);
             params.push(param);
@@ -2618,9 +2825,13 @@ impl<'a, W: Source> Parser<'a, W> {
         let name = self.parse_symbol()?;
         let name_sym = self.ctx.nodes[name.0].as_symbol().unwrap();
 
+        let pushed_scope = self.ctx.push_scope(false);
+
         self.expect(Token::LCurly)?;
-        let fields = self.parse_decl_params()?;
+        let fields = self.parse_decl_params(false)?;
         let range = self.expect_range(start, Token::RCurly)?;
+
+        self.ctx.pop_scope(pushed_scope);
 
         let struct_node = self
             .ctx
@@ -2649,7 +2860,7 @@ impl<'a, W: Source> Parser<'a, W> {
         let pushed_scope = self.ctx.push_scope(true);
 
         self.expect(Token::LParen)?;
-        let params = self.parse_decl_params()?;
+        let params = self.parse_decl_params(true)?;
         self.expect(Token::RParen)?;
 
         let return_ty = if self.source_info.top.tok != Token::LCurly {
@@ -2711,9 +2922,13 @@ impl<'a, W: Source> Parser<'a, W> {
         let name = self.parse_symbol()?;
         let name_sym = self.ctx.nodes[name.0].as_symbol().unwrap();
 
+        let pushed_scope = self.ctx.push_scope(false);
+
         self.expect(Token::LParen)?;
-        let params = self.parse_decl_params()?;
+        let params = self.parse_decl_params(true)?;
         self.expect(Token::RParen)?;
+
+        self.ctx.pop_scope(pushed_scope);
 
         let return_ty = if self.source_info.top.tok != Token::Semicolon {
             Some(self.parse_type()?)
@@ -2752,7 +2967,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 | Token::LCurly
                 | Token::LParen
                 | Token::Symbol(_)
-                | Token::Struct
+                | Token::UnderscoreLCurly
                 | Token::AddressOf
                 | Token::Fn
                 | Token::I8
@@ -2982,7 +3197,7 @@ impl<'a, W: Source> Parser<'a, W> {
             let range = self.source_info.top.range;
             self.pop();
             Ok(self.ctx.push_node(range, Node::Type(Type::F64)))
-        } else if let Token::Struct = self.source_info.top.tok {
+        } else if let Token::UnderscoreLCurly = self.source_info.top.tok {
             Ok(self.parse_struct_literal()?)
         } else if let Token::Symbol(_) = self.source_info.top.tok {
             if self.source_info.second.tok == Token::LCurly {
@@ -3001,20 +3216,26 @@ impl<'a, W: Source> Parser<'a, W> {
     fn parse_struct_literal(&mut self) -> Result<NodeId, CompileError> {
         let start = self.source_info.top.range.start;
 
-        let name = if self.source_info.top.tok == Token::Struct {
-            self.pop(); // `struct`
+        let name = if self.source_info.top.tok == Token::UnderscoreLCurly {
+            self.pop(); // `_{`
             None
         } else {
-            Some(self.parse_symbol()?)
+            let sym = self.parse_symbol()?;
+            self.expect(Token::LCurly)?;
+            Some(sym)
         };
 
-        self.expect(Token::LCurly)?;
         let fields = self.parse_value_params()?;
         let range = self.expect_range(start, Token::RCurly)?;
 
-        let struct_node = self
-            .ctx
-            .push_node(range, Node::StructLiteral { name, fields });
+        let struct_node = self.ctx.push_node(
+            range,
+            Node::StructLiteral {
+                name,
+                fields,
+                rearranged_fields: None,
+            },
+        );
 
         Ok(struct_node)
     }
@@ -3180,7 +3401,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 self.pop(); // `fn`
 
                 self.expect(Token::LParen)?;
-                let params = self.parse_decl_params()?;
+                let params = self.parse_decl_params(true)?;
                 self.expect(Token::RParen)?;
 
                 let return_ty = if !matches!(
@@ -3200,6 +3421,23 @@ impl<'a, W: Source> Parser<'a, W> {
                     }),
                 ))
             }
+            Token::Struct => {
+                let range = self.source_info.top.range;
+                self.pop(); // `struct`
+
+                self.expect(Token::LCurly)?;
+
+                let pushed_scope = self.ctx.push_scope(false);
+
+                let fields = self.parse_decl_params(false)?;
+                let range = self.expect_range(range.start, Token::RCurly)?;
+
+                self.ctx.pop_scope(pushed_scope);
+
+                Ok(self
+                    .ctx
+                    .push_node(range, Node::Type(Type::Struct { name: None, fields })))
+            }
             Token::Star => {
                 let mut range = self.source_info.top.range;
                 self.pop(); // `*`
@@ -3210,15 +3448,32 @@ impl<'a, W: Source> Parser<'a, W> {
             Token::Underscore => {
                 let range = self.source_info.top.range;
                 self.pop(); // `_`
-                Ok(self.ctx.push_node(range, Node::Type(Type::Unassigned)))
+                Ok(self.ctx.push_node(range, Node::Type(Type::Infer(None))))
+            }
+            Token::UnderscoreSymbol(sym) => {
+                let range = self.source_info.top.range;
+                self.pop(); // `_T`
+                let id = self
+                    .ctx
+                    .push_node(range, Node::Type(Type::Infer(Some(sym))));
+                self.ctx.scope_insert(sym, id);
+                Ok(id)
             }
             Token::Bang => {
-                let mut range = self.source_info.top.range;
+                let range = self.source_info.top.range;
                 self.pop(); // `!`
-                let name = self.parse_symbol()?;
-                range.end = self.ctx.ranges[name.0].end;
                 self.ctx.polymorph_target = true;
-                Ok(self.ctx.push_node(range, Node::Type(Type::Unassigned)))
+                Ok(self.ctx.push_node(range, Node::Type(Type::Infer(None))))
+            }
+            Token::BangSymbol(sym) => {
+                let range = self.source_info.top.range;
+                self.pop(); // `!T`
+                self.ctx.polymorph_target = true;
+                let id = self
+                    .ctx
+                    .push_node(range, Node::Type(Type::Infer(Some(sym))));
+                self.ctx.scope_insert(sym, id);
+                Ok(id)
             }
             Token::Symbol(sym) => {
                 let range = self.source_info.top.range;
@@ -3393,7 +3648,7 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
-            Node::DeclParam { index, .. } => {
+            Node::StructDeclParam { index, .. } => {
                 // we need our own storage
                 let size = self.ctx.get_type_size(id);
                 let slot = self.builder.create_sized_stack_slot(StackSlotData {
@@ -3406,6 +3661,7 @@ impl<'a> FunctionCompileContext<'a> {
                         .ins()
                         .stack_addr(self.ctx.module.isa().pointer_type(), slot, 0);
                 let value = Value::Value(slot_addr);
+                self.ctx.values.insert(id, value);
 
                 let params = self.builder.block_params(self.current_block);
                 let param_value = params[index as usize];
@@ -3414,7 +3670,47 @@ impl<'a> FunctionCompileContext<'a> {
                     .ins()
                     .store(MemFlags::new(), param_value, slot_addr, 0);
 
+                Ok(())
+            }
+            Node::FuncDeclParam { index, .. } => {
+                // we need our own storage
+                let size = self.ctx.get_type_size(id);
+                let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                    kind: StackSlotKind::ExplicitSlot,
+                    size,
+                });
+
+                let slot_addr =
+                    self.builder
+                        .ins()
+                        .stack_addr(self.ctx.module.isa().pointer_type(), slot, 0);
+                let value = Value::Value(slot_addr);
                 self.ctx.values.insert(id, value);
+
+                let params = self.builder.block_params(self.current_block);
+                let param_value = params[index as usize];
+
+                if self.ctx.addressable_nodes.contains(&id) {
+                    let size = self.ctx.get_type_size(id);
+
+                    let source_value = param_value;
+                    let dest_value = slot_addr;
+
+                    self.builder.emit_small_memory_copy(
+                        self.ctx.module.isa().frontend_config(),
+                        dest_value,
+                        source_value,
+                        size as _,
+                        1,
+                        1,
+                        true, // non-overlapping
+                        MemFlags::new(),
+                    );
+                } else {
+                    self.builder
+                        .ins()
+                        .store(MemFlags::new(), param_value, slot_addr, 0);
+                }
 
                 Ok(())
             }
@@ -3483,7 +3779,7 @@ impl<'a> FunctionCompileContext<'a> {
                     .ctx
                     .types
                     .get(&id)
-                    .map(|t| *t != Type::Unassigned)
+                    .map(|t| !matches!(t, Type::Infer(_)))
                     .unwrap_or_default()
                 {
                     let value = self.builder.func.dfg.first_result(call_inst);
@@ -3492,7 +3788,13 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
-            Node::StructLiteral { fields, .. } => {
+            Node::StructLiteral {
+                fields,
+                rearranged_fields,
+                ..
+            } => {
+                let fields = rearranged_fields.unwrap_or(fields);
+
                 let size = self.ctx.get_type_size(id);
                 let slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
@@ -3657,7 +3959,7 @@ impl<'a> FunctionCompileContext<'a> {
         let mut offset = 0;
         for field in fields.borrow().iter() {
             let field_name = match &self.ctx.nodes[field.0] {
-                Node::DeclParam { name, .. } => *name,
+                Node::StructDeclParam { name, .. } => *name,
                 _ => panic!("Not a param"),
             };
             let field_name = self.ctx.nodes[field_name.0].as_symbol().unwrap();
@@ -3695,7 +3997,9 @@ impl<'a> FunctionCompileContext<'a> {
     fn rvalue(&mut self, id: NodeId) -> CraneliftValue {
         let value = self.as_cranelift_value(self.ctx.values[&id]);
 
-        if self.ctx.addressable_nodes.contains(&id) {
+        let should_pass_by_ref = matches!(self.ctx.get_type(id), Type::Struct { .. });
+
+        if self.ctx.addressable_nodes.contains(&id) && !should_pass_by_ref {
             let ty = self.ctx.get_cranelift_type(id);
             self.builder.ins().load(ty, MemFlags::new(), value, 0)
         } else {
@@ -3833,7 +4137,9 @@ impl<'a> ToplevelCompileContext<'a> {
                 builder_ctx.builder.seal_all_blocks();
                 builder_ctx.builder.finalize();
 
-                // println!("{}", self.codegen_ctx.func.display());
+                if self.ctx.args.dump_ir {
+                    println!("{}", self.codegen_ctx.func.display());
+                }
 
                 self.ctx
                     .module
