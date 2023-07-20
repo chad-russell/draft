@@ -25,6 +25,7 @@
 -[ ] booleans
 -[ ] modules
 -[ ] string interpolation
+-[ ] pipe/threading/ufcs operator
 -[ ] pattern matching
 -[ ] coroutines
 -[ ] any / #astof(...)

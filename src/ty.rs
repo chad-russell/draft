@@ -113,7 +113,7 @@ impl Context {
         match (first, second) {
             (a, b) if a == b => a,
 
-            // Types/Unassigneds get coerced to anything
+            // Types/Inferreds get coerced to anything
             (Type::Infer(_), other) | (other, Type::Infer(_)) => other,
 
             // Check int/float literals match
@@ -871,9 +871,10 @@ impl Context {
                 // If func is a polymorph, copy it first
                 if self.polymorph_sources.contains(&func) {
                     match self.polymorph_copy(func) {
-                        Ok(id) => {
-                            func = id;
+                        Ok(func_id) => {
+                            func = func_id;
                             self.assign_type(func);
+                            self.nodes[id] = Node::Call { func, params };
                         }
                         Err(err) => {
                             self.errors.push(err);
@@ -1017,6 +1018,15 @@ impl Context {
             }
             Node::AddressOf(value) => {
                 self.assign_type(value);
+                if !self.addressable_nodes.contains(&value) {
+                    self.errors.push(CompileError::Node(
+                        format!(
+                            "Cannot take address of non-addressable node ({})",
+                            self.nodes[value].ty()
+                        ),
+                        id,
+                    ));
+                }
                 self.types.insert(id, Type::Pointer(value));
             }
             Node::Deref(value) => {

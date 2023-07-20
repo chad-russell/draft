@@ -201,7 +201,6 @@ impl Context {
                     .map(|f| self.get_type_size(*f))
                     .sum()
             }
-            Type::Infer(_) => todo!(),
             _ => todo!("get_type_size for {:?}", self.types[&param]),
         }
     }

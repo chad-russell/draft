@@ -231,13 +231,6 @@ impl Context {
                     })
                     .collect::<Vec<_>>()
             );
-            //     println!(
-            //         "matching {} ({:?}) with {} ({:?})",
-            //         self.nodes[ty1.0].ty(),
-            //         self.ranges[ty1.0],
-            //         self.nodes[ty2.0].ty(),
-            //         self.ranges[ty2.0]
-            //     );
         }
 
         // Check if any types are still unassigned
