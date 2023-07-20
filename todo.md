@@ -1,4 +1,5 @@
 -[ ] create rust tests which each mimic one of the capabilities of the lsp
+-[ ] test suite
 -[-]  lsp
     -[x] error reporting
     -[ ] symbol outline

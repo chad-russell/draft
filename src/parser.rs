@@ -541,6 +541,7 @@ impl<'a, W: Source> Parser<'a, W> {
             Token::Fn => Ok(self.parse_fn(false)?),
             Token::Extern => Ok(self.parse_extern()?),
             Token::Struct => Ok(self.parse_struct_definition()?),
+            // Token::Enum => Ok(self)
             _ => {
                 let msg = format!("expected 'fn', found '{:?}'", self.source_info.top.tok);
 
@@ -1164,6 +1165,8 @@ impl<'a, W: Source> Parser<'a, W> {
                 Ok(ret_id)
             }
             Token::Let => self.parse_let(start),
+            Token::Struct => self.parse_struct_definition(),
+            Token::Fn => self.parse_fn(false),
             _ => {
                 let lvalue = self.parse_expression()?;
 

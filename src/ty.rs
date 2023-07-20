@@ -622,11 +622,6 @@ impl Context {
 
                 for &param in self.id_vecs[params].clone().borrow().iter() {
                     self.assign_type(param);
-
-                    // All structs passed as function args are passed by address (for now...)
-                    if let Some(Type::Struct { .. }) = &self.types.get(&param) {
-                        self.addressable_nodes.insert(param);
-                    }
                 }
 
                 self.types.insert(
@@ -781,10 +776,6 @@ impl Context {
                     Some(resolved) => {
                         self.assign_type(resolved);
                         self.match_types(id, resolved);
-
-                        if self.addressable_nodes.contains(&resolved) {
-                            self.addressable_nodes.insert(id);
-                        }
 
                         if self.polymorph_sources.contains(&resolved) {
                             self.polymorph_sources.insert(id);
@@ -1018,15 +1009,6 @@ impl Context {
             }
             Node::AddressOf(value) => {
                 self.assign_type(value);
-                if !self.addressable_nodes.contains(&value) {
-                    self.errors.push(CompileError::Node(
-                        format!(
-                            "Cannot take address of non-addressable node ({})",
-                            self.nodes[value].ty()
-                        ),
-                        id,
-                    ));
-                }
                 self.types.insert(id, Type::Pointer(value));
             }
             Node::Deref(value) => {

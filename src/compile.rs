@@ -278,6 +278,11 @@ impl<'a> FunctionCompileContext<'a> {
                             .get(&res)
                             .cloned()
                             .map(|v| self.ctx.values.insert(id, v));
+
+                        if self.ctx.addressable_nodes.contains(&res) {
+                            self.ctx.addressable_nodes.insert(id);
+                        }
+
                         Ok(())
                     }
                     _ => todo!(),
@@ -620,8 +625,7 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
-            Node::Func { .. } => Ok(()), // This should have already been handled by the toplevel context
-            _ => todo!("{:?}", &self.ctx.nodes[id]),
+            Node::Func { .. } | Node::StructDefinition { .. } => Ok(()), // This should have already been handled by the toplevel context
         }
     }
 
@@ -796,6 +800,11 @@ impl<'a> ToplevelCompileContext<'a> {
                 let mut sig = self.ctx.module.make_signature();
 
                 for &param in self.ctx.id_vecs[params].borrow().iter() {
+                    // All structs passed as function args are passed by address (for now...)
+                    if let Some(Type::Struct { .. }) = &self.ctx.types.get(&param) {
+                        self.ctx.addressable_nodes.insert(param);
+                    }
+
                     sig.params
                         .push(AbiParam::new(self.ctx.get_cranelift_type(param)));
                 }
