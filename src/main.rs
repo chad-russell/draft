@@ -2,10 +2,11 @@ use clap::Parser;
 use draft::*;
 
 fn run(context: &mut Context) -> Result<(), CompileError> {
-    context.parse_file("foo.dr")?;
+    let input = context.args.input.clone();
+    context.parse_file(&input)?;
 
     if context.args.dump_tokens {
-        let mut source = SourceInfo::<StrSource>::from_file("foo.dr");
+        let mut source = SourceInfo::<StrSource>::from_file(&input);
         context.debug_tokens(&mut source)?;
         return Ok(());
     }

@@ -83,6 +83,13 @@ impl UnificationData {
     }
 }
 
+#[derive(Debug)]
+pub struct AddressableMatch {
+    pub changed: bool,
+    pub unified: bool,
+    pub ids: Vec<NodeId>,
+}
+
 impl Context {
     pub fn unify_types(&mut self) {
         self.unification_data.reset();
@@ -226,6 +233,138 @@ impl Context {
         self.merge_type_matches(ty1, ty2); // todo(chad): can we just do this once at the end? Would it be faster?
     }
 
+    pub fn match_addressable(&mut self, n1: NodeId, n2: NodeId) {
+        let id1 = self.find_addressable_array_index(n1);
+        let id2 = self.find_addressable_array_index(n2);
+
+        match (id1, id2) {
+            (None, None) => {
+                if self.addressable_nodes.contains(&n1) {
+                    self.addressable_nodes.insert(n2);
+                    return;
+                }
+
+                if self.addressable_nodes.contains(&n2) {
+                    self.addressable_nodes.insert(n1);
+                    return;
+                }
+
+                let unified =
+                    self.addressable_nodes.contains(&n1) || self.addressable_nodes.contains(&n2);
+                self.addressable_matches.push(AddressableMatch {
+                    changed: true,
+                    unified,
+                    ids: vec![n1, n2],
+                });
+
+                self.addressable_array_reverse_map
+                    .insert(n1, self.addressable_matches.len() - 1);
+                self.addressable_array_reverse_map
+                    .insert(n2, self.addressable_matches.len() - 1);
+            }
+            (Some(id), None) => {
+                self.addressable_matches[id].ids.push(n2);
+                self.addressable_array_reverse_map.insert(n2, id);
+                self.addressable_matches[id].changed = true;
+                self.addressable_matches[id].unified =
+                    self.addressable_matches[id].unified || self.addressable_nodes.contains(&n2);
+
+                if self.addressable_nodes.contains(&n1) {
+                    for t in self.addressable_matches[id].ids.clone() {
+                        self.addressable_nodes.insert(t);
+                        self.addressable_array_reverse_map.remove(&t);
+                    }
+                    self.addressable_matches.swap_remove(id);
+                    if self.addressable_matches.len() > id {
+                        for t in self.addressable_matches[id].ids.clone() {
+                            self.addressable_array_reverse_map.insert(t, id);
+                        }
+                    }
+                } else if self.addressable_nodes.contains(&n2) {
+                    for t in self.addressable_matches[id].ids.clone() {
+                        self.addressable_nodes.insert(t);
+                        self.addressable_array_reverse_map.remove(&t);
+                    }
+                    self.addressable_matches.swap_remove(id);
+                    if self.addressable_matches.len() > id {
+                        for t in self.addressable_matches[id].ids.clone() {
+                            self.addressable_array_reverse_map.insert(t, id);
+                        }
+                    }
+                }
+            }
+            (None, Some(id)) => {
+                self.addressable_matches[id].ids.push(n1);
+                self.addressable_array_reverse_map.insert(n1, id);
+                self.addressable_matches[id].changed = true;
+                self.addressable_matches[id].unified =
+                    self.addressable_matches[id].unified || self.addressable_nodes.contains(&n1);
+
+                if self.addressable_nodes.contains(&n2) {
+                    for t in self.addressable_matches[id].ids.clone() {
+                        self.addressable_nodes.insert(t);
+                        self.addressable_array_reverse_map.remove(&t);
+                    }
+                    self.addressable_matches.swap_remove(id);
+                    if self.addressable_matches.len() > id {
+                        for t in self.addressable_matches[id].ids.clone() {
+                            self.addressable_array_reverse_map.insert(t, id);
+                        }
+                    }
+                } else if self.addressable_nodes.contains(&n1) {
+                    for t in self.addressable_matches[id].ids.clone() {
+                        self.addressable_nodes.insert(t);
+                        self.addressable_array_reverse_map.remove(&t);
+                    }
+                    self.addressable_matches.swap_remove(id);
+                    if self.addressable_matches.len() > id {
+                        for t in self.addressable_matches[id].ids.clone() {
+                            self.addressable_array_reverse_map.insert(t, id);
+                        }
+                    }
+                }
+            }
+            (Some(id1), Some(id2)) if id1 != id2 => {
+                let lower = id1.min(id2);
+                let upper = id1.max(id2);
+
+                let unified = self.addressable_matches[lower].unified
+                    || self.addressable_matches[upper].unified;
+
+                let (lower_matches, upper_matches) =
+                    self.addressable_matches.split_at_mut(lower + 1);
+                lower_matches[lower]
+                    .ids
+                    .extend(upper_matches[upper - lower - 1].ids.iter());
+                for t in self.addressable_matches[lower].ids.clone() {
+                    self.addressable_array_reverse_map.insert(t, lower);
+                }
+
+                self.addressable_matches[lower].changed = true;
+                self.addressable_matches[lower].unified = unified;
+
+                self.addressable_matches.swap_remove(upper);
+
+                if self.addressable_matches.len() > upper {
+                    for t in self.addressable_matches[upper].ids.clone() {
+                        self.addressable_array_reverse_map.insert(t, upper);
+                    }
+                }
+
+                if self.addressable_nodes.contains(&n1) {
+                    for t in self.addressable_matches[lower].ids.clone() {
+                        self.addressable_nodes.insert(t);
+                    }
+                } else if self.addressable_nodes.contains(&n2) {
+                    for t in self.addressable_matches[lower].ids.clone() {
+                        self.addressable_nodes.insert(t);
+                    }
+                }
+            }
+            (_, _) => (),
+        }
+    }
+
     pub fn handle_match_types(&mut self, ty1: NodeId, ty2: NodeId) {
         if ty1 == ty2 {
             return;
@@ -233,18 +372,18 @@ impl Context {
 
         // println!(
         //     "matching {} ({:?}) with {} ({:?})",
-        //     self.nodes[ty1.0].ty(),
-        //     self.ranges[ty1.0],
-        //     self.nodes[ty2.0].ty(),
-        //     self.ranges[ty2.0]
+        //     self.nodes[ty1].ty(),
+        //     self.ranges[ty1],
+        //     self.nodes[ty2].ty(),
+        //     self.ranges[ty2]
         // );
 
         // println!(
         //     "matching {:?} ({:?}) with {:?} ({:?})",
         //     self.types.get(&ty1),
-        //     self.ranges[ty1.0],
+        //     self.ranges[ty1],
         //     self.types.get(&ty2),
-        //     self.ranges[ty2.0]
+        //     self.ranges[ty2]
         // );
 
         match (self.get_type(ty1), self.get_type(ty2)) {
@@ -364,11 +503,13 @@ impl Context {
             (_, _) => {
                 self.errors.push(CompileError::Node2(
                     format!(
-                        "Could not match types: {} ({:?}), {} ({:?})",
+                        "Could not match types: {} ({:?}) was {:?}, {} ({:?}) was {:?}",
                         self.nodes[ty1].ty(),
                         self.ranges[ty1],
+                        self.types[&ty1],
                         self.nodes[ty2].ty(),
-                        self.ranges[ty2]
+                        self.ranges[ty2],
+                        self.types[&ty2]
                     ),
                     ty1,
                     ty2,
@@ -441,6 +582,10 @@ impl Context {
         self.type_array_reverse_map.get(&id).cloned()
     }
 
+    pub fn find_addressable_array_index(&self, id: NodeId) -> Option<usize> {
+        self.addressable_array_reverse_map.get(&id).cloned()
+    }
+
     pub fn merge_type_matches(&mut self, ty1: NodeId, ty2: NodeId) {
         match (self.get_type(ty1), self.get_type(ty2)) {
             (Type::Infer(_), Type::Infer(_)) => (),
@@ -450,7 +595,7 @@ impl Context {
             (ty, Type::Infer(_)) => {
                 self.types.insert(ty2, ty);
             }
-            (_, _) => (),
+            _ => (),
         }
 
         let id1 = self.find_type_array_index(ty1);
@@ -776,6 +921,7 @@ impl Context {
                     Some(resolved) => {
                         self.assign_type(resolved);
                         self.match_types(id, resolved);
+                        self.match_addressable(id, resolved);
 
                         if self.polymorph_sources.contains(&resolved) {
                             self.polymorph_sources.insert(id);
@@ -807,6 +953,7 @@ impl Context {
                 if let Some(name) = name {
                     self.match_types(name, value);
                 }
+                self.match_addressable(id, value);
             }
             Node::Let { name: _, ty, expr } => {
                 if let Some(expr) = expr {
@@ -837,7 +984,7 @@ impl Context {
                     return true;
                 }
             },
-            Node::Set { name, expr, .. } => {
+            Node::Assign { name, expr, .. } => {
                 self.assign_type(name);
                 self.assign_type(expr);
                 self.match_types(id, expr);
@@ -974,10 +1121,16 @@ impl Context {
                                     name: Some(name), ..
                                 }
                                 | Node::StructDeclParam { name, .. } => *name,
-                                _ => unreachable!(
-                                    "Struct field {:?} is not a ValueParam",
-                                    &self.nodes[field]
-                                ),
+                                _ => {
+                                    self.errors.push(CompileError::Node(
+                                        format!(
+                                            "Cannot perform member access as this field's name ({:?}) could not be found",
+                                            &self.ranges[field]
+                                        ),
+                                        id,
+                                    ));
+                                    return true;
+                                }
                             };
                             let field_name_sym = self.get_symbol(field_name);
 

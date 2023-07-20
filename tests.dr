@@ -1,0 +1,61 @@
+extern print_i64(n: i64);
+    
+struct Foo {
+    x: i64, 
+    y: i64,
+}
+
+struct Bar {
+    x: i64, 
+    y: i64,
+}
+
+fn foo1(f: _) _ {
+    return f.x + f.y;
+}
+
+fn foo2(f: !) _ {
+    return f.x + f.y;
+}
+
+fn foo3(f: *_) _ {
+    return f.x + f.y;
+}
+
+fn foo4(f: *!) _ {
+    return f.x + f.y;
+}
+
+fn foo5(f: *!T, g: !U) _ {
+    return f.x - f.y + g.x + g.y;
+}
+
+fn main() i64 {
+    let f = Foo { 3, 8 };
+    let pf = &f;
+    let ppf = &pf;
+
+    print_i64(foo1(f) - 10); # 1
+    print_i64(foo2(f) - 9); # 2
+    print_i64(foo3(&f) - 8); # 3
+    print_i64(foo4(&f) - 7); # 4
+    print_i64(foo4(pf) - 6); # 5
+    print_i64(foo4(*&pf) - 5); # 6
+    print_i64(foo4(*&*&*&*&*&pf) - 4); # 7
+
+    f = Foo { y: 3, x: 8 };
+    print_i64(f.x - f.y + 3); # 8
+
+    let g = Bar { 3, 8 };
+    let pg = &&&&&&g;
+    print_i64(foo5(&f, *****pg) - ***&&&7); # 9
+
+    let ten = &&&999;
+    **ten = &10;
+    print_i64(***ten); # 10
+    
+    ***ten = 11;
+    print_i64(***ten); # 11
+
+    return 0;
+}

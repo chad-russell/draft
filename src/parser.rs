@@ -203,10 +203,6 @@ pub struct Parser<'a, W: Source> {
     pub source_info: &'a mut SourceInfo<W>,
     pub ctx: &'a mut Context,
     pub is_polymorph_copying: bool,
-
-    // stack of returns - pushed when entering parsing a function, popped when exiting
-    // todo(chad): parsers should be cheap to create. Consider moving this to the context?
-    pub returns: Vec<Vec<NodeId>>,
 }
 
 impl<'a, W: Source> Parser<'a, W> {
@@ -215,7 +211,6 @@ impl<'a, W: Source> Parser<'a, W> {
             source_info,
             ctx: context,
             is_polymorph_copying: false,
-            returns: Default::default(),
         }
     }
 
@@ -729,7 +724,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
         self.expect(Token::LCurly)?;
 
-        self.returns.push(Vec::new());
+        self.ctx.returns.push(Vec::new());
 
         let mut stmts = Vec::new();
         while self.source_info.top.tok != Token::RCurly {
@@ -740,7 +735,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
         let range = self.expect_range(start, Token::RCurly)?;
 
-        let returns = self.returns.pop().unwrap();
+        let returns = self.ctx.returns.pop().unwrap();
         let returns = self.ctx.push_id_vec(returns);
         let func = self.ctx.push_node(
             range,
@@ -768,6 +763,8 @@ impl<'a, W: Source> Parser<'a, W> {
         }
 
         self.ctx.polymorph_target = old_polymorph_target;
+
+        self.ctx.funcs.push(func);
 
         Ok(func)
     }
@@ -891,17 +888,15 @@ impl<'a, W: Source> Parser<'a, W> {
 
                         self.pop(); // `*`
 
-                        let id = self.parse_expression_piece()?;
+                        let expr = self.parse_expression_piece()?;
                         let id = self.ctx.push_node(
                             Range::new(
                                 start,
-                                self.ctx.ranges[id].end,
+                                self.ctx.ranges[expr].end,
                                 self.source_info.source_path,
                             ),
-                            Node::Deref(id),
+                            Node::Deref(expr),
                         );
-
-                        self.ctx.addressable_nodes.insert(id);
 
                         output.push(Shunting::Id(id))
                     }
@@ -962,18 +957,36 @@ impl<'a, W: Source> Parser<'a, W> {
         let mut value = match self.source_info.top.tok {
             Token::IntegerLiteral(_, _) | Token::FloatLiteral(_, _) => self.parse_numeric_literal(),
             Token::Fn => self.parse_fn(true),
+            Token::Star => {
+                self.pop(); // `*`
+
+                let expr = self.parse_expression_piece()?;
+                let id = self.ctx.push_node(
+                    Range::new(
+                        start,
+                        self.ctx.ranges[expr].end,
+                        self.source_info.source_path,
+                    ),
+                    Node::Deref(expr),
+                );
+
+                Ok(id)
+            }
             Token::AddressOf => {
                 self.pop(); // `&`
+
                 let expr = self.parse_expression_piece()?;
+                self.ctx.addressable_nodes.insert(expr);
+
                 let end = self.ctx.ranges[expr].end;
-                let addrof = self.ctx.push_node(
+                let id = self.ctx.push_node(
                     Range::new(start, end, self.source_info.source_path),
                     Node::AddressOf(expr),
                 );
 
-                // self.ctx.addressable_nodes.insert(addrof);
+                // self.ctx.addressable_nodes.insert(id);
 
-                Ok(addrof)
+                Ok(id)
             }
             _ => self.parse_lvalue(),
         }?;
@@ -1161,7 +1174,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 let range = self.expect_range(start, Token::Semicolon)?;
 
                 let ret_id = self.ctx.push_node(range, Node::Return(expr));
-                self.returns.last_mut().unwrap().push(ret_id);
+                self.ctx.returns.last_mut().unwrap().push(ret_id);
                 Ok(ret_id)
             }
             Token::Let => self.parse_let(start),
@@ -1178,9 +1191,12 @@ impl<'a, W: Source> Parser<'a, W> {
                         let expr = self.parse_expression()?;
                         let range = self.expect_range(start, Token::Semicolon)?;
 
+                        // Assignment lhs never needs to be addressable
+                        self.ctx.addressable_nodes.remove(&lvalue);
+
                         Ok(self.ctx.push_node(
                             range,
-                            Node::Set {
+                            Node::Assign {
                                 name: lvalue,
                                 expr,
                                 is_store: false,

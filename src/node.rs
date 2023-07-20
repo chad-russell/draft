@@ -24,7 +24,7 @@ pub enum Node {
         ty: Option<NodeId>,
         expr: Option<NodeId>,
     },
-    Set {
+    Assign {
         name: NodeId,
         expr: NodeId,
         is_store: bool,
@@ -100,7 +100,7 @@ impl Node {
             Node::Type(_) => "Type".to_string(),
             Node::Return(_) => "Return".to_string(),
             Node::Let { .. } => "Let".to_string(),
-            Node::Set { .. } => "Set".to_string(),
+            Node::Assign { .. } => "Set".to_string(),
             Node::Func { .. } => "Func".to_string(),
             Node::Extern { .. } => "Extern".to_string(),
             Node::StructDeclParam { .. } => "StructDeclParam".to_string(),

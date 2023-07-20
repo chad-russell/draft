@@ -7,10 +7,11 @@ use string_interner::StringInterner;
 use cranelift_jit::JITModule;
 
 use crate::{
-    Args, CompileError, IdVec, Node, NodeId, Range, Scope, ScopeId, Sym, Type, TypeMatch,
-    UnificationData, Value,
+    AddressableMatch, Args, CompileError, IdVec, Node, NodeId, Range, Scope, ScopeId, Sym, Type,
+    TypeMatch, UnificationData, Value,
 };
 
+#[derive(Clone)]
 pub struct DenseStorage<T>(Vec<T>);
 
 impl<T> Default for DenseStorage<T> {
@@ -89,6 +90,12 @@ where
     }
 }
 
+impl From<&IdVec> for IdVec {
+    fn from(id_vec: &IdVec) -> Self {
+        *id_vec
+    }
+}
+
 pub type SecondaryMap<V> = HashMap<NodeId, V>;
 pub type SecondarySet = HashSet<NodeId>;
 
@@ -103,6 +110,9 @@ pub struct Context {
     pub node_scopes: Vec<ScopeId>,
     pub polymorph_target: bool,
 
+    // stack of returns - pushed when entering parsing a function, popped when exiting
+    pub returns: Vec<Vec<NodeId>>,
+
     pub scopes: Vec<Scope>,
     pub function_scopes: Vec<ScopeId>,
     pub top_scope: ScopeId,
@@ -110,6 +120,7 @@ pub struct Context {
     pub errors: Vec<CompileError>,
 
     pub top_level: Vec<NodeId>,
+    pub funcs: Vec<NodeId>,
 
     pub types: SecondaryMap<Type>,
     pub type_matches: Vec<TypeMatch>,
@@ -117,6 +128,8 @@ pub struct Context {
     pub topo: Vec<NodeId>,
     pub unification_data: UnificationData,
     pub deferreds: Vec<NodeId>,
+    pub addressable_matches: Vec<AddressableMatch>,
+    pub addressable_array_reverse_map: SecondaryMap<usize>,
 
     pub module: JITModule,
     pub values: SecondaryMap<Value>,
@@ -145,6 +158,8 @@ impl Context {
             polymorph_sources: Default::default(),
             polymorph_copies: Default::default(),
 
+            returns: Default::default(),
+
             scopes: vec![Scope::new_top()],
             function_scopes: Default::default(),
             top_scope: ScopeId(0),
@@ -152,6 +167,7 @@ impl Context {
             errors: Default::default(),
 
             top_level: Default::default(),
+            funcs: Default::default(),
 
             types: Default::default(),
             type_matches: Default::default(),
@@ -161,6 +177,8 @@ impl Context {
             circular_dependency_nodes: Default::default(),
             unification_data: Default::default(),
             deferreds: Default::default(),
+            addressable_matches: Default::default(),
+            addressable_array_reverse_map: Default::default(),
 
             module: Self::make_module(),
             values: Default::default(),
@@ -178,6 +196,7 @@ impl Context {
         self.polymorph_target = false;
         self.polymorph_sources.clear();
         self.polymorph_copies.clear();
+        self.returns.clear();
 
         self.scopes.clear();
         self.scopes.push(Scope::new_top());
@@ -187,6 +206,7 @@ impl Context {
         self.errors.clear();
 
         self.top_level.clear();
+        self.funcs.clear();
 
         self.types.clear();
         self.type_matches.clear();
@@ -202,14 +222,14 @@ impl Context {
     }
 
     pub fn prepare(&mut self) -> Result<(), CompileError> {
-        for node in self.top_level.clone() {
-            self.assign_type(node);
+        for id in self.top_level.clone() {
+            self.assign_type(id);
             self.unify_types();
             self.circular_dependency_nodes.clear();
         }
 
         let mut hardstop = 0;
-        while hardstop < 100 && !self.deferreds.is_empty() {
+        while hardstop < 3 && !self.deferreds.is_empty() {
             for node in std::mem::take(&mut self.deferreds) {
                 self.assign_type(node);
                 self.unify_types();
@@ -218,15 +238,54 @@ impl Context {
             hardstop += 1;
         }
 
+        for id in self.funcs.clone() {
+            match &self.nodes[id] {
+                Node::Func { params, .. } => {
+                    // don't directly codegen a polymorph, wait until it's copied first
+                    if self.polymorph_sources.contains(&id) {
+                        continue;
+                    }
+
+                    for &param in self.id_vecs[params].clone().borrow().iter() {
+                        // All structs passed as function args are passed by address (for now...)
+                        if let Some(Type::Struct { .. }) = &self.types.get(&param) {
+                            self.addressable_nodes.insert(param);
+                            self.match_addressable(param, param); // todo(chad): @hack?
+                        }
+                    }
+                }
+                _ => (),
+            }
+        }
+
         if self.args.print_type_matches {
+            // println!(
+            //     "type matches: {:#?}",
+            //     self.type_matches
+            //         .iter()
+            //         .map(|tm| {
+            //             tm.ids
+            //                 .iter()
+            //                 .map(|id| (self.nodes[*id].ty(), self.ranges[*id]))
+            //                 .collect::<Vec<_>>()
+            //         })
+            //         .collect::<Vec<_>>()
+            // );
+
             println!(
-                "type matches: {:?}",
-                self.type_matches
+                "addressability matches: {:#?}",
+                self.addressable_matches
                     .iter()
                     .map(|tm| {
                         tm.ids
                             .iter()
-                            .map(|id| (self.nodes[*id].ty(), self.ranges[*id]))
+                            .map(|id| {
+                                (
+                                    self.nodes[*id].ty(),
+                                    self.ranges[*id],
+                                    self.addressable_nodes.contains(id),
+                                )
+                            })
                             .collect::<Vec<_>>()
                     })
                     .collect::<Vec<_>>()

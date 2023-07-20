@@ -7,19 +7,13 @@ extern print_i64(n: i64);
 # }
 
 fn main() i64 {
-    struct Foo {
-        x: i64, 
-    }
-
-    fn foo(f: *_) _ { 
-        return f.x;
-    }
-
     # let fa = Foo::A;
     # let fb = Foo::B(5);
     # let fc = Foo::C { 8, 12 };
 
-    let f = Foo { 3 };
-    print_i64(foo(&f));
+    let wtf = &&3;
+    **wtf = 777;
+    print_i64(**wtf);
+
     return 0;
 }

@@ -257,6 +257,7 @@ struct FunctionCompileContext<'a> {
     pub ctx: &'a mut Context,
     pub builder: FunctionBuilder<'a>,
     pub current_block: Block,
+    pub in_assign_lhs: bool,
 }
 
 impl<'a> FunctionCompileContext<'a> {
@@ -278,42 +279,75 @@ impl<'a> FunctionCompileContext<'a> {
                             .get(&res)
                             .cloned()
                             .map(|v| self.ctx.values.insert(id, v));
-
-                        if self.ctx.addressable_nodes.contains(&res) {
-                            self.ctx.addressable_nodes.insert(id);
-                        }
-
                         Ok(())
                     }
                     _ => todo!(),
                 }
             }
-            Node::IntLiteral(n, _) => match self.ctx.types[&id] {
-                Type::I64 => {
-                    let value = self.builder.ins().iconst(types::I64, n);
-                    self.ctx.values.insert(id, Value::Value(value));
-                    Ok(())
+            Node::IntLiteral(n, _) => {
+                match self.ctx.types[&id] {
+                    Type::I64 => {
+                        let value = self.builder.ins().iconst(types::I64, n);
+                        self.ctx.values.insert(id, Value::Value(value));
+                    }
+                    Type::I32 => {
+                        let value = self.builder.ins().iconst(types::I32, n);
+                        self.ctx.values.insert(id, Value::Value(value));
+                    }
+                    _ => todo!(),
+                };
+
+                if self.ctx.addressable_nodes.contains(&id) {
+                    // todo(chad): is there any benefit to creating all of these up front?
+                    let size = self.ctx.module.isa().pointer_bytes() as u32;
+                    let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                        kind: StackSlotKind::ExplicitSlot,
+                        size,
+                    });
+                    let slot_addr = self.builder.ins().stack_addr(
+                        self.ctx.module.isa().pointer_type(),
+                        slot,
+                        0,
+                    );
+                    let value = Value::Value(slot_addr);
+                    self.store_value(id, value, None);
+                    self.ctx.values.insert(id, value);
                 }
-                Type::I32 => {
-                    let value = self.builder.ins().iconst(types::I32, n);
-                    self.ctx.values.insert(id, Value::Value(value));
-                    Ok(())
+
+                Ok(())
+            }
+            Node::FloatLiteral(n, _) => {
+                match self.ctx.types[&id] {
+                    Type::F64 => {
+                        let value = self.builder.ins().f64const(n);
+                        self.ctx.values.insert(id, Value::Value(value));
+                    }
+                    Type::F32 => {
+                        let value = self.builder.ins().f32const(n as f32);
+                        self.ctx.values.insert(id, Value::Value(value));
+                    }
+                    _ => todo!(),
+                };
+
+                if self.ctx.addressable_nodes.contains(&id) {
+                    // todo(chad): is there any benefit to creating all of these up front?
+                    let size = self.ctx.module.isa().pointer_bytes() as u32;
+                    let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                        kind: StackSlotKind::ExplicitSlot,
+                        size,
+                    });
+                    let slot_addr = self.builder.ins().stack_addr(
+                        self.ctx.module.isa().pointer_type(),
+                        slot,
+                        0,
+                    );
+                    let value = Value::Value(slot_addr);
+                    self.store_value(id, value, None);
+                    self.ctx.values.insert(id, value);
                 }
-                _ => todo!(),
-            },
-            Node::FloatLiteral(n, _) => match self.ctx.types[&id] {
-                Type::F64 => {
-                    let value = self.builder.ins().f64const(n);
-                    self.ctx.values.insert(id, Value::Value(value));
-                    Ok(())
-                }
-                Type::F32 => {
-                    let value = self.builder.ins().f32const(n as f32);
-                    self.ctx.values.insert(id, Value::Value(value));
-                    Ok(())
-                }
-                _ => todo!(),
-            },
+
+                Ok(())
+            }
             Node::Type(_) => todo!(),
             Node::Return(rv) => {
                 if let Some(rv) = rv {
@@ -348,13 +382,24 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
-            Node::Set { name, expr, .. } => {
-                self.compile_id(name)?;
+            Node::Assign { name, expr, .. } => {
+                match self.ctx.nodes[name] {
+                    Node::Deref(_value) => {
+                        self.in_assign_lhs = true;
+                        self.compile_id(name)?;
+                        self.in_assign_lhs = false;
 
-                let addr = self.ctx.values[&name];
-
-                self.compile_id(expr)?;
-                self.store(expr, addr);
+                        let addr = self.ctx.values[&name];
+                        self.compile_id(expr)?;
+                        self.store(expr, addr);
+                    }
+                    _ => {
+                        self.compile_id(name)?;
+                        let addr = self.ctx.values[&name];
+                        self.compile_id(expr)?;
+                        self.store(expr, addr);
+                    }
+                }
 
                 Ok(())
             }
@@ -427,9 +472,6 @@ impl<'a> FunctionCompileContext<'a> {
             Node::ValueParam { value, .. } => {
                 self.compile_id(value)?;
                 self.ctx.values.insert(id, self.ctx.values[&value]);
-                if self.ctx.addressable_nodes.contains(&value) {
-                    self.ctx.addressable_nodes.insert(id);
-                }
                 Ok(())
             }
             Node::BinOp { op, lhs, rhs } => {
@@ -566,10 +608,14 @@ impl<'a> FunctionCompileContext<'a> {
             Node::Deref(value) => {
                 self.compile_id(value)?;
 
-                let cranelift_value = self.ctx.values.get(&value).unwrap();
-                let cranelift_value = match cranelift_value {
-                    Value::Value(value) => value,
-                    _ => todo!("load for {:?}", cranelift_value),
+                let cranelift_value = if self.in_assign_lhs {
+                    let cranelift_value = self.ctx.values.get(&value).unwrap();
+                    match cranelift_value {
+                        Value::Value(value) => *value,
+                        _ => todo!("Deref for {:?}", cranelift_value),
+                    }
+                } else {
+                    self.rvalue(value)
                 };
 
                 let ty = &self.ctx.get_type(id);
@@ -579,12 +625,32 @@ impl<'a> FunctionCompileContext<'a> {
                 };
 
                 let loaded = if self.ctx.addressable_nodes.contains(&value) {
-                    self.load(types::I64, *cranelift_value, 0)
+                    self.load(types::I64, cranelift_value, 0)
                 } else {
-                    self.load(ty, *cranelift_value, 0)
+                    self.load(ty, cranelift_value, 0)
                 };
 
                 self.ctx.values.insert(id, Value::Value(loaded));
+
+                // If we are meant to be addressable, then we need to store our actual value into something which has an address
+                // If however we are in the lhs of an assignment, don't store ourselves in a new slot,
+                // as this would overwrite the value we are trying to assign to
+                if self.ctx.addressable_nodes.contains(&id) {
+                    // todo(chad): is there any benefit to creating all of these up front?
+                    let size = self.ctx.module.isa().pointer_bytes() as u32;
+                    let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                        kind: StackSlotKind::ExplicitSlot,
+                        size,
+                    });
+                    let slot_addr = self.builder.ins().stack_addr(
+                        self.ctx.module.isa().pointer_type(),
+                        slot,
+                        0,
+                    );
+                    let value = Value::Value(slot_addr);
+                    self.store_value(id, value, None);
+                    self.ctx.values.insert(id, value);
+                }
 
                 Ok(())
             }
@@ -800,11 +866,6 @@ impl<'a> ToplevelCompileContext<'a> {
                 let mut sig = self.ctx.module.make_signature();
 
                 for &param in self.ctx.id_vecs[params].borrow().iter() {
-                    // All structs passed as function args are passed by address (for now...)
-                    if let Some(Type::Struct { .. }) = &self.ctx.types.get(&param) {
-                        self.ctx.addressable_nodes.insert(param);
-                    }
-
                     sig.params
                         .push(AbiParam::new(self.ctx.get_cranelift_type(param)));
                 }
@@ -833,6 +894,7 @@ impl<'a> ToplevelCompileContext<'a> {
                     ctx: self.ctx,
                     builder,
                     current_block: ebb,
+                    in_assign_lhs: false,
                 };
 
                 for &stmt in builder_ctx.ctx.id_vecs[stmts].clone().borrow().iter() {
