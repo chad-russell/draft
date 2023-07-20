@@ -10,19 +10,20 @@ fn run(context: &mut Context) -> Result<(), CompileError> {
         return Ok(());
     }
 
-    // context.debug_tokens::<RopeySource>(&mut source)?;
     context.prepare()?;
+
     if !context.errors.is_empty() {
         dbg!(&context.errors);
         return Ok(());
     }
+
     context.call_fn("main")?;
 
     Ok(())
 }
 
 fn main() {
-    let args = Args::parse();
+    let args = args::Args::parse();
 
     let mut context = Context::new(args);
 

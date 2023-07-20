@@ -3,25 +3,14 @@ extern print_f64(n: f64);
 
 struct Foo {
     x: i64,
-    y: i64,
 }
 
-struct Bar {
-    x: i64,
-    y: i64,
-}
-
-fn subfoo(f: Foo) _ {
-    return f.x - f.y;
-}
-
-fn subbar(b: Bar) _ {
-    return b.x - b.y;
+fn foo(f: *Foo) _ {
+    return f.x;
 }
 
 fn main() i64 {
-    let f = _{ y: 777, x: 444 };
-    print_i64(subfoo(f));
-    print_i64(subbar(f));
+    let f = Foo { x: 444 };
+    print_i64(foo(&f));
     return 0;
 }

@@ -1,14 +1,16 @@
+-[ ] create rust tests which each mimic one of the capabilities of the lsp
 -[-]  lsp
-    - [x] error reporting
-    - [ ] symbol outline
-    - [-] completion
+    -[x] error reporting
+    -[ ] symbol outline
+    -[-] completion
         - [x] for symbols in scope
         - [ ] for dots on structs/enums/modules/etc.
         - [ ] for functions (params)
-    - [x] go to definition
-    - [ ] hover
-    - [ ] go to type definition
-    - [-] syntax highlighter
+    -[x] go to definition
+    -[ ] hover
+    -[ ] go to type definition
+    -[ ] run button over main
+    -[x] syntax highlighter
 -[x] structs
 -[x] pointers
 -[ ] generics
@@ -17,12 +19,17 @@
     -[ ] enums
     -[ ] modules
 -[ ] enums
+-[ ] if/else
+-[ ] for loops
+-[ ] `==` operator
+-[ ] booleans
 -[ ] modules
 -[ ] string interpolation
 -[ ] pattern matching
 -[ ] coroutines
 -[ ] any / #astof(...)
 -[ ] c interop
--[ ] immutability (??)
 -[ ] implicit function arguments
 -[ ] formatter
+-[ ] immutability (?)
+-[ ] some kind of story for interfaces/traits (?)
