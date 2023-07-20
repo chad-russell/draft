@@ -1,19 +1,15 @@
 extern print_i64(n: i64);
 
-# enum Foo {
-    # A,
-    # B: i64,
-    # C: struct { x: i64, y: i64 }
-# }
+enum Foo {
+    A,
+    B: i64,
+    C: struct { x: i64, y: i64 }
+}
 
 fn main() i64 {
-    # let fa = Foo::A;
+    let fa = Foo::A();
     # let fb = Foo::B(5);
-    # let fc = Foo::C { 8, 12 };
-
-    let wtf = &&3;
-    **wtf = 777;
-    print_i64(**wtf);
+    # let fc = Foo::C(_{ 8, 12 });
 
     return 0;
 }

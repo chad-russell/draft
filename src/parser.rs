@@ -145,10 +145,11 @@ pub enum Token {
     Slash,
     Return,
     Struct,
+    Enum,
     AddressOf,
     Bang,
     BangSymbol(Sym),
-    UnderscoreLCurly,
+    HashLCurly,
     Eof,
 }
 
@@ -197,6 +198,12 @@ pub fn breaks_symbol(c: char) -> bool {
         || c == '|'
         || c == ','
         || c == ';'
+}
+
+pub enum DeclParamParseType {
+    Fn,
+    Struct,
+    Enum,
 }
 
 pub struct Parser<'a, W: Source> {
@@ -282,6 +289,9 @@ impl<'a, W: Source> Parser<'a, W> {
         if self.source_info.prefix_keyword("struct", Token::Struct) {
             return;
         }
+        if self.source_info.prefix_keyword("enum", Token::Enum) {
+            return;
+        }
         if self.source_info.prefix_keyword("i8", Token::I8) {
             return;
         }
@@ -339,7 +349,7 @@ impl<'a, W: Source> Parser<'a, W> {
         if self.source_info.prefix("=", Token::Eq) {
             return;
         }
-        if self.source_info.prefix("_{", Token::UnderscoreLCurly) {
+        if self.source_info.prefix("#{", Token::HashLCurly) {
             return;
         }
         if self.source_info.prefix("_", Token::Underscore) {
@@ -536,7 +546,7 @@ impl<'a, W: Source> Parser<'a, W> {
             Token::Fn => Ok(self.parse_fn(false)?),
             Token::Extern => Ok(self.parse_extern()?),
             Token::Struct => Ok(self.parse_struct_definition()?),
-            // Token::Enum => Ok(self)
+            Token::Enum => Ok(self.parse_enum_definition()?),
             _ => {
                 let msg = format!("expected 'fn', found '{:?}'", self.source_info.top.tok);
 
@@ -597,7 +607,7 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(self.ctx.push_id_vec(params))
     }
 
-    fn parse_decl_params(&mut self, is_fn: bool) -> Result<IdVec, CompileError> {
+    fn parse_decl_params(&mut self, parse_type: DeclParamParseType) -> Result<IdVec, CompileError> {
         let mut params = Vec::new();
 
         while self.source_info.top.tok != Token::RParen && self.source_info.top.tok != Token::RCurly
@@ -633,26 +643,34 @@ impl<'a, W: Source> Parser<'a, W> {
             let range = self.source_info.make_range(input_start, range_end);
 
             // put the param in scope
-            let node = if is_fn {
-                Node::FuncDeclParam {
+            let node = match parse_type {
+                DeclParamParseType::Fn => Node::FuncDeclParam {
                     name,
                     ty,
                     default,
                     index: params.len() as u16,
-                }
-            } else {
-                Node::StructDeclParam {
+                },
+                DeclParamParseType::Struct => Node::StructDeclParam {
                     name,
                     ty,
                     default,
                     index: params.len() as u16,
+                },
+                DeclParamParseType::Enum => {
+                    if default.is_some() {
+                        return Err(CompileError::Generic(
+                            "enum parameters cannot have default values".to_string(),
+                            range,
+                        ));
+                    }
+                    Node::EnumDeclParam { name, ty }
                 }
             };
 
             let param = self.ctx.push_node(range, node);
             self.ctx.scope_insert(name_sym, param);
 
-            if !is_fn {
+            if !matches!(parse_type, DeclParamParseType::Fn) {
                 self.ctx.addressable_nodes.insert(param);
             }
 
@@ -677,7 +695,7 @@ impl<'a, W: Source> Parser<'a, W> {
         let pushed_scope = self.ctx.push_scope(false);
 
         self.expect(Token::LCurly)?;
-        let fields = self.parse_decl_params(false)?;
+        let fields = self.parse_decl_params(DeclParamParseType::Struct)?;
         let range = self.expect_range(start, Token::RCurly)?;
 
         self.ctx.pop_scope(pushed_scope);
@@ -685,6 +703,34 @@ impl<'a, W: Source> Parser<'a, W> {
         let struct_node = self.ctx.push_node(
             range,
             Node::StructDefinition {
+                name,
+                params: fields,
+            },
+        );
+        self.ctx.scope_insert(name_sym, struct_node);
+
+        Ok(struct_node)
+    }
+
+    pub fn parse_enum_definition(&mut self) -> Result<NodeId, CompileError> {
+        let start = self.source_info.top.range.start;
+
+        self.pop(); // `enum`
+
+        let name = self.parse_symbol()?;
+        let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
+
+        let pushed_scope = self.ctx.push_scope(false);
+
+        self.expect(Token::LCurly)?;
+        let fields = self.parse_decl_params(DeclParamParseType::Enum)?;
+        let range = self.expect_range(start, Token::RCurly)?;
+
+        self.ctx.pop_scope(pushed_scope);
+
+        let struct_node = self.ctx.push_node(
+            range,
+            Node::EnumDefinition {
                 name,
                 params: fields,
             },
@@ -713,7 +759,7 @@ impl<'a, W: Source> Parser<'a, W> {
         let pushed_scope = self.ctx.push_scope(true);
 
         self.expect(Token::LParen)?;
-        let params = self.parse_decl_params(true)?;
+        let params = self.parse_decl_params(DeclParamParseType::Fn)?;
         self.expect(Token::RParen)?;
 
         let return_ty = if self.source_info.top.tok != Token::LCurly {
@@ -780,7 +826,7 @@ impl<'a, W: Source> Parser<'a, W> {
         let pushed_scope = self.ctx.push_scope(false);
 
         self.expect(Token::LParen)?;
-        let params = self.parse_decl_params(true)?;
+        let params = self.parse_decl_params(DeclParamParseType::Fn)?;
         self.expect(Token::RParen)?;
 
         self.ctx.pop_scope(pushed_scope);
@@ -822,7 +868,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 | Token::LCurly
                 | Token::LParen
                 | Token::Symbol(_)
-                | Token::UnderscoreLCurly
+                | Token::HashLCurly
                 | Token::AddressOf
                 | Token::Fn
                 | Token::I8
@@ -991,30 +1037,32 @@ impl<'a, W: Source> Parser<'a, W> {
             _ => self.parse_lvalue(),
         }?;
 
-        // function call?
-        while self.source_info.top.tok == Token::LParen {
-            self.pop(); // `(`
-            let params = self.parse_value_params()?;
-            let end = self.expect_range(start, Token::RParen)?.end;
-            value = self.ctx.push_node(
-                Range::new(start, end, self.source_info.source_path),
-                Node::Call {
-                    func: value,
-                    params,
-                },
-            );
-        }
+        while self.source_info.top.tok == Token::LParen || self.source_info.top.tok == Token::Dot {
+            // function call?
+            while self.source_info.top.tok == Token::LParen {
+                self.pop(); // `(`
+                let params = self.parse_value_params()?;
+                let end = self.expect_range(start, Token::RParen)?.end;
+                value = self.ctx.push_node(
+                    Range::new(start, end, self.source_info.source_path),
+                    Node::Call {
+                        func: value,
+                        params,
+                    },
+                );
+            }
 
-        // member access?
-        while self.source_info.top.tok == Token::Dot {
-            self.pop(); // `.`
-            let member = self.parse_symbol()?;
-            let end = self.ctx.ranges[member].end;
-            value = self.ctx.push_node(
-                Range::new(start, end, self.source_info.source_path),
-                Node::MemberAccess { value, member },
-            );
-            self.ctx.addressable_nodes.insert(value);
+            // member access?
+            while self.source_info.top.tok == Token::Dot {
+                self.pop(); // `.`
+                let member = self.parse_symbol()?;
+                let end = self.ctx.ranges[member].end;
+                value = self.ctx.push_node(
+                    Range::new(start, end, self.source_info.source_path),
+                    Node::MemberAccess { value, member },
+                );
+                self.ctx.addressable_nodes.insert(value);
+            }
         }
 
         Ok(value)
@@ -1067,7 +1115,7 @@ impl<'a, W: Source> Parser<'a, W> {
             let range = self.source_info.top.range;
             self.pop();
             Ok(self.ctx.push_node(range, Node::Type(Type::F64)))
-        } else if let Token::UnderscoreLCurly = self.source_info.top.tok {
+        } else if let Token::HashLCurly = self.source_info.top.tok {
             Ok(self.parse_struct_literal()?)
         } else if let Token::Symbol(_) = self.source_info.top.tok {
             if self.source_info.second.tok == Token::LCurly {
@@ -1086,7 +1134,7 @@ impl<'a, W: Source> Parser<'a, W> {
     fn parse_struct_literal(&mut self) -> Result<NodeId, CompileError> {
         let start = self.source_info.top.range.start;
 
-        let name = if self.source_info.top.tok == Token::UnderscoreLCurly {
+        let name = if self.source_info.top.tok == Token::HashLCurly {
             self.pop(); // `_{`
             None
         } else {
@@ -1179,6 +1227,7 @@ impl<'a, W: Source> Parser<'a, W> {
             }
             Token::Let => self.parse_let(start),
             Token::Struct => self.parse_struct_definition(),
+            Token::Enum => self.parse_enum_definition(),
             Token::Fn => self.parse_fn(false),
             _ => {
                 let lvalue = self.parse_expression()?;
@@ -1271,7 +1320,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 self.pop(); // `fn`
 
                 self.expect(Token::LParen)?;
-                let params = self.parse_decl_params(true)?;
+                let params = self.parse_decl_params(DeclParamParseType::Fn)?;
                 self.expect(Token::RParen)?;
 
                 let return_ty = if !matches!(
@@ -1299,7 +1348,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 let pushed_scope = self.ctx.push_scope(false);
 
-                let params = self.parse_decl_params(false)?;
+                let params = self.parse_decl_params(DeclParamParseType::Struct)?;
                 let range = self.expect_range(range.start, Token::RCurly)?;
 
                 self.ctx.pop_scope(pushed_scope);
@@ -1307,6 +1356,23 @@ impl<'a, W: Source> Parser<'a, W> {
                 Ok(self
                     .ctx
                     .push_node(range, Node::Type(Type::Struct { name: None, params })))
+            }
+            Token::Enum => {
+                let range = self.source_info.top.range;
+                self.pop(); // `enum`
+
+                self.expect(Token::LCurly)?;
+
+                let pushed_scope = self.ctx.push_scope(false);
+
+                let params = self.parse_decl_params(DeclParamParseType::Enum)?;
+                let range = self.expect_range(range.start, Token::RCurly)?;
+
+                self.ctx.pop_scope(pushed_scope);
+
+                Ok(self
+                    .ctx
+                    .push_node(range, Node::Type(Type::Enum { name: None, params })))
             }
             Token::Star => {
                 let mut range = self.source_info.top.range;

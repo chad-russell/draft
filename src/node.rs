@@ -48,6 +48,10 @@ pub enum Node {
         default: Option<NodeId>,
         index: u16,
     },
+    EnumDeclParam {
+        name: NodeId,
+        ty: Option<NodeId>,
+    },
     FuncDeclParam {
         name: NodeId,
         ty: Option<NodeId>,
@@ -74,6 +78,10 @@ pub enum Node {
     },
     StructLiteral {
         name: Option<NodeId>,
+        params: IdVec,
+    },
+    EnumDefinition {
+        name: NodeId,
         params: IdVec,
     },
     MemberAccess {
@@ -104,11 +112,13 @@ impl Node {
             Node::Func { .. } => "Func".to_string(),
             Node::Extern { .. } => "Extern".to_string(),
             Node::StructDeclParam { .. } => "StructDeclParam".to_string(),
+            Node::EnumDeclParam { .. } => "EnumDeclParam".to_string(),
             Node::FuncDeclParam { .. } => "FuncDeclParam".to_string(),
             Node::ValueParam { .. } => "ValueParam".to_string(),
             Node::BinOp { .. } => "BinOp".to_string(),
             Node::Call { .. } => "Call".to_string(),
             Node::StructDefinition { .. } => "StructDefinition".to_string(),
+            Node::EnumDefinition { .. } => "EnumDefinition".to_string(),
             Node::StructLiteral { .. } => "StructLiteral".to_string(),
             Node::MemberAccess { .. } => "MemberAccess".to_string(),
             Node::AddressOf(_) => "AddressOf".to_string(),

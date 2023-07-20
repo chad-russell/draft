@@ -23,6 +23,10 @@ pub enum Type {
         name: Option<NodeId>,
         params: IdVec,
     },
+    Enum {
+        name: Option<NodeId>,
+        params: IdVec,
+    },
     Pointer(NodeId),
 }
 
@@ -855,6 +859,15 @@ impl Context {
                             self.assign_type(field);
                         }
                     }
+                    Type::Enum { name, params } => {
+                        if let Some(name) = name {
+                            self.assign_type(name);
+                        }
+
+                        for &field in self.id_vecs[params].clone().borrow().iter() {
+                            self.assign_type(field);
+                        }
+                    }
                     Type::Pointer(ty) => {
                         self.assign_type(ty);
                     }
@@ -941,6 +954,15 @@ impl Context {
                 if let Some(default) = default {
                     self.assign_type(default);
                     self.match_types(id, default);
+                }
+
+                if let Some(ty) = ty {
+                    self.match_types(id, ty);
+                }
+            }
+            Node::EnumDeclParam { ty, .. } => {
+                if let Some(ty) = ty {
+                    self.assign_type(ty);
                 }
 
                 if let Some(ty) = ty {
@@ -1077,6 +1099,22 @@ impl Context {
                 self.types.insert(
                     id,
                     Type::Struct {
+                        name: Some(name),
+                        params,
+                    },
+                );
+
+                self.match_types(id, name);
+            }
+            Node::EnumDefinition { name, params } => {
+                let param_ids = self.id_vecs[params].clone();
+                for &param in param_ids.borrow().iter() {
+                    self.assign_type(param);
+                }
+
+                self.types.insert(
+                    id,
+                    Type::Enum {
                         name: Some(name),
                         params,
                     },

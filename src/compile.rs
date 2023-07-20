@@ -403,30 +403,6 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
-            Node::StructDeclParam { index, .. } => {
-                // we need our own storage
-                let size = self.ctx.get_type_size(id);
-                let slot = self.builder.create_sized_stack_slot(StackSlotData {
-                    kind: StackSlotKind::ExplicitSlot,
-                    size,
-                });
-
-                let slot_addr =
-                    self.builder
-                        .ins()
-                        .stack_addr(self.ctx.module.isa().pointer_type(), slot, 0);
-                let value = Value::Value(slot_addr);
-                self.ctx.values.insert(id, value);
-
-                let params = self.builder.block_params(self.current_block);
-                let param_value = params[index as usize];
-
-                self.builder
-                    .ins()
-                    .store(MemFlags::new(), param_value, slot_addr, 0);
-
-                Ok(())
-            }
             Node::FuncDeclParam { index, .. } => {
                 // we need our own storage
                 let size = self.ctx.get_type_size(id);
@@ -691,7 +667,10 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
-            Node::Func { .. } | Node::StructDefinition { .. } => Ok(()), // This should have already been handled by the toplevel context
+            Node::Func { .. } | Node::StructDefinition { .. } | Node::EnumDefinition { .. } => {
+                Ok(())
+            } // This should have already been handled by the toplevel context
+            _ => todo!("compile_id for {:?}", &self.ctx.nodes[id]),
         }
     }
 
