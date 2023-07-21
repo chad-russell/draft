@@ -53,6 +53,19 @@ fn idppp(n: ***i64) i64 {
     return ***n;
 }
 
+fn fac(n: i64) i64 {
+    if n == 1 {
+        return n;
+    } else {
+        return n * fac(n - 1);
+    }
+}
+
+struct List {
+    value: i64,
+    next: *List,
+}
+
 fn main() i64 {
     let f = Foo { 3, 8 };
     let pf = &f;
@@ -110,6 +123,14 @@ fn main() i64 {
     print_i64(id(16)); # 16
     print_i64(idp(&17)); # 17
     print_i64(idppp(*&&&&18)); # 18
+    
+    print_i64(fac(4));
+
+    let lst: List;
+    lst.value = 999;
+    lst.next = &lst;
+    lst.next.next.next.next.next.value = 21;
+    print_i64(lst.next.next.next.next.next.next.next.next.next.value);
 
     return 0;
 }

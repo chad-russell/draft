@@ -1,7 +1,8 @@
--[ ] test returning structs from a function
--[ ] clean up 'store if addressable' logic if possible
+-[x] test returning structs from a function
+-[x] clean up 'store if addressable' logic if possible
 -[x] test suite
-    -[ ] test for recursive structs (linked list)
+    -[x] test for recursive structs (linked list)
+-[x] test recursive functions
 -[ ] create rust tests which each mimic one of the capabilities of the lsp
 -[-]  lsp
     -[x] error reporting
@@ -23,8 +24,8 @@
     -[ ] structs
     -[ ] enums
     -[ ] modules
--[ ] booleans
--[ ] if/else
+-[x] booleans
+-[x] if/else
     -[ ] as expressions
 -[ ] `==` operator
 -[ ] enums
