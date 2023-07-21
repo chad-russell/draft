@@ -435,16 +435,7 @@ impl<'a> FunctionCompileContext<'a> {
                     let source_value = param_value;
                     let dest_value = slot_addr;
 
-                    self.builder.emit_small_memory_copy(
-                        self.ctx.module.isa().frontend_config(),
-                        dest_value,
-                        source_value,
-                        size as _,
-                        1,
-                        1,
-                        true, // non-overlapping
-                        MemFlags::new(),
-                    );
+                    self.emit_small_memory_copy(dest_value, source_value, size as _);
                 } else {
                     self.builder
                         .ins()
@@ -569,23 +560,7 @@ impl<'a> FunctionCompileContext<'a> {
                     _ => todo!("{:?}", cranelift_value),
                 };
 
-                // if we are meant to be addressable, then we need to store our actual value into something which has an address
-                if self.ctx.addressable_nodes.contains(&id) {
-                    // todo(chad): is there any benefit to creating all of these up front?
-                    let size = self.ctx.module.isa().pointer_bytes() as u32;
-                    let slot = self.builder.create_sized_stack_slot(StackSlotData {
-                        kind: StackSlotKind::ExplicitSlot,
-                        size,
-                    });
-                    let slot_addr = self.builder.ins().stack_addr(
-                        self.ctx.module.isa().pointer_type(),
-                        slot,
-                        0,
-                    );
-                    let value = Value::Value(slot_addr);
-                    self.store_value(id, value, None);
-                    self.ctx.values.insert(id, value);
-                }
+                self.store_in_slot_if_addressable(id);
 
                 Ok(())
             }
@@ -619,22 +594,7 @@ impl<'a> FunctionCompileContext<'a> {
                 // If we are meant to be addressable, then we need to store our actual value into something which has an address
                 // If however we are in the lhs of an assignment, don't store ourselves in a new slot,
                 // as this would overwrite the value we are trying to assign to
-                if self.ctx.addressable_nodes.contains(&id) {
-                    // todo(chad): is there any benefit to creating all of these up front?
-                    let size = self.ctx.module.isa().pointer_bytes() as u32;
-                    let slot = self.builder.create_sized_stack_slot(StackSlotData {
-                        kind: StackSlotKind::ExplicitSlot,
-                        size,
-                    });
-                    let slot_addr = self.builder.ins().stack_addr(
-                        self.ctx.module.isa().pointer_type(),
-                        slot,
-                        0,
-                    );
-                    let value = Value::Value(slot_addr);
-                    self.store_value(id, value, None);
-                    self.ctx.values.insert(id, value);
-                }
+                self.store_in_slot_if_addressable(id);
 
                 Ok(())
             }
@@ -808,16 +768,7 @@ impl<'a> FunctionCompileContext<'a> {
         let source_value = self.as_cranelift_value(self.ctx.values[&id]);
         let dest_value = self.as_cranelift_value(dest);
 
-        self.builder.emit_small_memory_copy(
-            self.ctx.module.isa().frontend_config(),
-            dest_value,
-            source_value,
-            size as _,
-            1,
-            1,
-            true, // non-overlapping
-            MemFlags::new(),
-        );
+        self.emit_small_memory_copy(dest_value, source_value, size as _);
     }
 
     fn store_value(&mut self, id: NodeId, dest: Value, offset: Option<i32>) {
@@ -846,6 +797,24 @@ impl<'a> FunctionCompileContext<'a> {
             }
             _ => todo!("store_value dest for {:?}", dest),
         }
+    }
+
+    fn emit_small_memory_copy(
+        &mut self,
+        dest_value: CraneliftValue,
+        source_value: CraneliftValue,
+        size: u64,
+    ) {
+        self.builder.emit_small_memory_copy(
+            self.ctx.module.isa().frontend_config(),
+            dest_value,
+            source_value,
+            size as _,
+            1,
+            1,
+            true, // non-overlapping
+            MemFlags::new(),
+        );
     }
 }
 

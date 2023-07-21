@@ -14,6 +14,7 @@
     -[ ] hover
     -[ ] go to type definition
     -[ ] run button over main
+    -[ ] generate missing function
     -[x] syntax highlighter
 -[x] structs
 -[x] pointers
