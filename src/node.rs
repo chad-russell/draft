@@ -13,6 +13,12 @@ impl From<&NodeId> for NodeId {
 pub struct IdVec(pub usize);
 
 #[derive(Debug, Clone, Copy)]
+pub enum StaticMemberResolution {
+    Node(NodeId),
+    EnumConstructor { base: NodeId, index: u16 },
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum Node {
     Symbol(Sym),
     IntLiteral(i64, NumericSpecification),
@@ -88,6 +94,11 @@ pub enum Node {
         value: NodeId,
         member: NodeId,
     },
+    StaticMemberAccess {
+        value: NodeId,
+        member: NodeId,
+        resolved: Option<StaticMemberResolution>,
+    },
     AddressOf(NodeId),
     Deref(NodeId),
 }
@@ -121,6 +132,7 @@ impl Node {
             Node::EnumDefinition { .. } => "EnumDefinition".to_string(),
             Node::StructLiteral { .. } => "StructLiteral".to_string(),
             Node::MemberAccess { .. } => "MemberAccess".to_string(),
+            Node::StaticMemberAccess { .. } => "StaticMemberAccess".to_string(),
             Node::AddressOf(_) => "AddressOf".to_string(),
             Node::Deref(_) => "Deref".to_string(),
         }

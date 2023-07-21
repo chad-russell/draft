@@ -9,7 +9,7 @@ use cranelift_codegen::Context as CodegenContext;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
 
-use crate::{CompileError, Context, Node, NodeId, Op, Type};
+use crate::{CompileError, Context, Node, NodeId, Op, StaticMemberResolution, Type};
 
 #[derive(Clone, Copy, Debug)]
 pub enum Value {
@@ -56,6 +56,7 @@ impl Context {
         // jit_builder.symbol("alloc", libc::malloc as *const u8);
         // jit_builder.symbol("realloc", libc::realloc as *const u8);
         // jit_builder.symbol("debug_data", &semantic as *const _ as *const u8);
+        jit_builder.symbol("print_enum_tag", print_enum_tag as *const u8);
 
         JITModule::new(jit_builder)
     }
@@ -172,7 +173,9 @@ impl Context {
             Type::I64 => types::I64,
             Type::F32 => types::F32,
             Type::F64 => types::F64,
-            Type::Pointer(_) | Type::Func { .. } | Type::Struct { .. } => self.get_pointer_type(),
+            Type::Pointer(_) | Type::Func { .. } | Type::Struct { .. } | Type::Enum { .. } => {
+                self.get_pointer_type()
+            }
             Type::Infer(_) => todo!(),
             _ => todo!("{:?}", &self.types[&param]),
         }
@@ -180,6 +183,10 @@ impl Context {
 
     fn get_pointer_type(&self) -> CraneliftType {
         self.module.isa().pointer_type()
+    }
+
+    fn enum_tag_size(&self) -> u32 {
+        std::mem::size_of::<u16>() as u32
     }
 
     fn get_type_size(&self, param: NodeId) -> StackSize {
@@ -201,6 +208,17 @@ impl Context {
                     .map(|f| self.get_type_size(*f))
                     .sum()
             }
+            Type::Enum { params, .. } => {
+                self.id_vecs[params]
+                    .clone()
+                    .borrow()
+                    .iter()
+                    .map(|f| self.get_type_size(*f))
+                    .max()
+                    .unwrap_or_default()
+                    + self.enum_tag_size()
+            }
+            Type::EnumNoneType => 0,
             _ => todo!("get_type_size for {:?}", self.types[&param]),
         }
     }
@@ -237,14 +255,28 @@ impl Context {
 
         sig
     }
+
+    pub fn should_pass_by_ref(&self, id: NodeId) -> bool {
+        matches!(self.get_type(id), Type::Struct { .. } | Type::Enum { .. })
+    }
 }
 
 pub fn print_i64(n: i64) {
-    print!("{}\n", n);
+    println!("{}", n);
 }
 
 pub fn print_f64(n: f64) {
-    print!("{}\n", n);
+    println!("{}", n);
+}
+
+#[repr(C)]
+pub struct Enum {
+    pub tag: u16,
+    pub value: i64,
+}
+
+pub fn print_enum_tag(n: *const Enum) {
+    println!("{}", unsafe { (*n).tag });
 }
 
 struct ToplevelCompileContext<'a> {
@@ -667,9 +699,10 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
-            Node::Func { .. } | Node::StructDefinition { .. } | Node::EnumDefinition { .. } => {
-                Ok(())
-            } // This should have already been handled by the toplevel context
+            Node::Func { .. }
+            | Node::StructDefinition { .. }
+            | Node::EnumDefinition { .. }
+            | Node::StaticMemberAccess { .. } => Ok(()), // This should have already been handled by the toplevel context
             _ => todo!("compile_id for {:?}", &self.ctx.nodes[id]),
         }
     }
@@ -742,9 +775,7 @@ impl<'a> FunctionCompileContext<'a> {
     fn rvalue(&mut self, id: NodeId) -> CraneliftValue {
         let value = self.as_cranelift_value(self.ctx.values[&id]);
 
-        let should_pass_by_ref = matches!(self.ctx.get_type(id), Type::Struct { .. });
-
-        if self.ctx.addressable_nodes.contains(&id) && !should_pass_by_ref {
+        if self.ctx.addressable_nodes.contains(&id) && !self.ctx.should_pass_by_ref(id) {
             let ty = self.ctx.get_cranelift_type(id);
             self.builder.ins().load(ty, MemFlags::new(), value, 0)
         } else {
@@ -895,6 +926,120 @@ impl<'a> ToplevelCompileContext<'a> {
                 self.ctx.module.clear_context(self.codegen_ctx);
 
                 Ok(())
+            }
+            Node::StaticMemberAccess { resolved, .. } => {
+                let resolved = resolved.unwrap();
+
+                match resolved {
+                    StaticMemberResolution::EnumConstructor { base, index } => {
+                        // We need to generate a function which takes one or zero parameters, and outputs an enum of this type
+                        let Type::Enum { params, .. } = self.ctx.types[&base] else { todo!("{:?}", self.ctx.nodes[base]) };
+                        let params = self.ctx.id_vecs[params].clone();
+                        let param = params.borrow()[index as usize];
+                        let Node::EnumDeclParam { name, ty } = self.ctx.nodes[param] else { todo!() };
+
+                        let name_str = format!(
+                            "__enum_constructor_{}_{}",
+                            self.ctx
+                                .string_interner
+                                .resolve(self.ctx.get_symbol(name).0)
+                                .unwrap(),
+                            index
+                        );
+
+                        let mut sig = self.ctx.module.make_signature();
+
+                        if let Some(ty) = ty {
+                            sig.params
+                                .push(AbiParam::new(self.ctx.get_cranelift_type(ty)));
+                        }
+
+                        sig.returns
+                            .push(AbiParam::new(self.ctx.get_cranelift_type(base)));
+
+                        let func_id = self
+                            .ctx
+                            .module
+                            .declare_function(&name_str, Linkage::Export, &sig)
+                            .unwrap();
+
+                        let mut builder =
+                            FunctionBuilder::new(&mut self.codegen_ctx.func, self.func_ctx);
+                        builder.func.signature = sig;
+
+                        self.ctx.values.insert(id, Value::Func(func_id));
+
+                        let ebb = builder.create_block();
+                        builder.append_block_params_for_function_params(ebb);
+                        builder.switch_to_block(ebb);
+
+                        let enum_type_size = self.ctx.get_type_size(base);
+
+                        // Allocate a slot as big as the enum
+                        let slot = builder.create_sized_stack_slot(StackSlotData {
+                            kind: StackSlotKind::ExplicitSlot,
+                            size: enum_type_size,
+                        });
+                        let slot_addr =
+                            builder
+                                .ins()
+                                .stack_addr(self.ctx.module.isa().pointer_type(), slot, 0);
+
+                        // Assign the enum tag to the first 2 bytes
+                        let tag = builder.ins().iconst(types::I16, index as i64);
+                        builder.ins().store(MemFlags::new(), tag, slot_addr, 0);
+
+                        if ty.is_some() {
+                            // Assign the value to the rest of however many bytes it needs
+                            // builder.ins().store(MemFlags::new(), ???, slot_addr, 2);
+                            let params = builder.block_params(ebb);
+                            let param_value = params[0];
+
+                            if self.ctx.should_pass_by_ref(param) {
+                                let size = self.ctx.get_type_size(param);
+
+                                let source_value = param_value;
+
+                                let dest_value = slot_addr;
+                                let dest_value = builder.ins().iadd_imm(dest_value, 2);
+
+                                builder.emit_small_memory_copy(
+                                    self.ctx.module.isa().frontend_config(),
+                                    dest_value,
+                                    source_value,
+                                    size as _,
+                                    1,
+                                    1,
+                                    true, // non-overlapping
+                                    MemFlags::new(),
+                                );
+                            } else {
+                                builder
+                                    .ins()
+                                    .store(MemFlags::new(), param_value, slot_addr, 2);
+                            }
+                        }
+
+                        builder.ins().return_(&[slot_addr]);
+
+                        builder.seal_all_blocks();
+                        builder.finalize();
+
+                        if self.ctx.args.dump_ir {
+                            println!("{}", self.codegen_ctx.func.display());
+                        }
+
+                        self.ctx
+                            .module
+                            .define_function(func_id, self.codegen_ctx)
+                            .unwrap();
+
+                        self.ctx.module.clear_context(self.codegen_ctx);
+
+                        Ok(())
+                    }
+                    _ => todo!(),
+                }
             }
             _ => todo!(),
         }

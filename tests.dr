@@ -30,6 +30,10 @@ fn foo5(f: *!T, g: !U) _ {
     return f.x - f.y + g.x + g.y;
 }
 
+fn foo6() Foo {
+    return _{ 10, 2 };
+}
+
 fn main() i64 {
     let f = Foo { 3, 8 };
     let pf = &f;
@@ -56,6 +60,9 @@ fn main() i64 {
     
     ***ten = 11;
     print_i64(***ten); # 11
+
+    let f6 = foo6();
+    print_i64(f6.x + f6.y); # 12
 
     return 0;
 }

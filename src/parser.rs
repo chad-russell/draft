@@ -91,7 +91,12 @@ impl Range {
 
 impl std::fmt::Debug for Range {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}-{:?}", self.start, self.end)
+        // write!(f, "{:?}-{:?}", self.start, self.end)
+        write!(
+            f,
+            "{}:{}:{}",
+            self.source_path, self.start.line, self.start.col
+        )
     }
 }
 
@@ -117,6 +122,7 @@ pub enum Token {
     LCurly,
     RCurly,
     Semicolon,
+    DoubleColon,
     Colon,
     Comma,
     Dot,
@@ -149,7 +155,7 @@ pub enum Token {
     AddressOf,
     Bang,
     BangSymbol(Sym),
-    HashLCurly,
+    UnderscoreLCurly,
     Eof,
 }
 
@@ -343,13 +349,16 @@ impl<'a, W: Source> Parser<'a, W> {
         if self.source_info.prefix(";", Token::Semicolon) {
             return;
         }
+        if self.source_info.prefix("::", Token::DoubleColon) {
+            return;
+        }
         if self.source_info.prefix(":", Token::Colon) {
             return;
         }
         if self.source_info.prefix("=", Token::Eq) {
             return;
         }
-        if self.source_info.prefix("#{", Token::HashLCurly) {
+        if self.source_info.prefix("_{", Token::UnderscoreLCurly) {
             return;
         }
         if self.source_info.prefix("_", Token::Underscore) {
@@ -573,7 +582,9 @@ impl<'a, W: Source> Parser<'a, W> {
 
         while self.source_info.top.tok != Token::RParen && self.source_info.top.tok != Token::RCurly
         {
-            if let Token::Colon = self.source_info.second.tok {
+            if let (Token::Symbol(_), Token::Colon) =
+                (self.source_info.top.tok, self.source_info.second.tok)
+            {
                 let name = self.parse_symbol()?;
                 self.expect(Token::Colon)?;
                 let value = self.parse_expression()?;
@@ -868,7 +879,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 | Token::LCurly
                 | Token::LParen
                 | Token::Symbol(_)
-                | Token::HashLCurly
+                | Token::UnderscoreLCurly
                 | Token::AddressOf
                 | Token::Fn
                 | Token::I8
@@ -1030,14 +1041,15 @@ impl<'a, W: Source> Parser<'a, W> {
                     Node::AddressOf(expr),
                 );
 
-                // self.ctx.addressable_nodes.insert(id);
-
                 Ok(id)
             }
             _ => self.parse_lvalue(),
         }?;
 
-        while self.source_info.top.tok == Token::LParen || self.source_info.top.tok == Token::Dot {
+        while self.source_info.top.tok == Token::LParen
+            || self.source_info.top.tok == Token::Dot
+            || self.source_info.top.tok == Token::DoubleColon
+        {
             // function call?
             while self.source_info.top.tok == Token::LParen {
                 self.pop(); // `(`
@@ -1060,6 +1072,22 @@ impl<'a, W: Source> Parser<'a, W> {
                 value = self.ctx.push_node(
                     Range::new(start, end, self.source_info.source_path),
                     Node::MemberAccess { value, member },
+                );
+                self.ctx.addressable_nodes.insert(value);
+            }
+
+            // static member access?
+            while self.source_info.top.tok == Token::DoubleColon {
+                self.pop(); // `::`
+                let member = self.parse_symbol()?;
+                let end = self.ctx.ranges[member].end;
+                value = self.ctx.push_node(
+                    Range::new(start, end, self.source_info.source_path),
+                    Node::StaticMemberAccess {
+                        value,
+                        member,
+                        resolved: None,
+                    },
                 );
                 self.ctx.addressable_nodes.insert(value);
             }
@@ -1115,7 +1143,7 @@ impl<'a, W: Source> Parser<'a, W> {
             let range = self.source_info.top.range;
             self.pop();
             Ok(self.ctx.push_node(range, Node::Type(Type::F64)))
-        } else if let Token::HashLCurly = self.source_info.top.tok {
+        } else if let Token::UnderscoreLCurly = self.source_info.top.tok {
             Ok(self.parse_struct_literal()?)
         } else if let Token::Symbol(_) = self.source_info.top.tok {
             if self.source_info.second.tok == Token::LCurly {
@@ -1134,8 +1162,8 @@ impl<'a, W: Source> Parser<'a, W> {
     fn parse_struct_literal(&mut self) -> Result<NodeId, CompileError> {
         let start = self.source_info.top.range.start;
 
-        let name = if self.source_info.top.tok == Token::HashLCurly {
-            self.pop(); // `_{`
+        let name = if self.source_info.top.tok == Token::UnderscoreLCurly {
+            self.pop(); // `#{`
             None
         } else {
             let sym = self.parse_symbol()?;

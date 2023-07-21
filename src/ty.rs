@@ -1,4 +1,7 @@
-use crate::{CompileError, Context, IdVec, Node, NodeId, NumericSpecification, Op, Sym};
+use crate::{
+    CompileError, Context, IdVec, Node, NodeId, NumericSpecification, Op, StaticMemberResolution,
+    Sym,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Type {
@@ -16,8 +19,8 @@ pub enum Type {
     F32,
     F64,
     Func {
-        return_ty: Option<NodeId>,
         input_tys: IdVec,
+        return_ty: Option<NodeId>,
     },
     Struct {
         name: Option<NodeId>,
@@ -27,6 +30,7 @@ pub enum Type {
         name: Option<NodeId>,
         params: IdVec,
     },
+    EnumNoneType, // Type given to enum members with no storage. We need a distinct type to differentiate it from being unassigned
     Pointer(NodeId),
 }
 
@@ -215,16 +219,19 @@ impl Context {
             }
 
             if !found {
-                if let Node::FuncDeclParam {
-                    default: Some(def), ..
-                } = self.nodes[d]
-                {
-                    rearranged_given.push(def);
-                } else {
-                    return Err(CompileError::Node(
-                        "Could not find parameter".to_string(),
-                        err_id,
-                    ));
+                match self.nodes[d] {
+                    Node::FuncDeclParam {
+                        default: Some(def), ..
+                    } => rearranged_given.push(def),
+                    Node::EnumDeclParam { ty: None, .. } => {
+                        // this is okay, as the enum *should* be constructed without a parameter. This is the name-only case
+                    }
+                    _ => {
+                        return Err(CompileError::Node(
+                            "Could not find parameter".to_string(),
+                            err_id,
+                        ));
+                    }
                 }
             }
         }
@@ -458,12 +465,12 @@ impl Context {
                     }
                 }
                 (None, Some(n)) => {
-                    if let Err(err) = self.match_fields_to_named_struct(f1, n, ty1) {
+                    if let Err(err) = self.match_params_to_named_struct(f1, n, ty1) {
                         self.errors.push(err);
                     }
                 }
                 (Some(n), None) => {
-                    if let Err(err) = self.match_fields_to_named_struct(f2, n, ty2) {
+                    if let Err(err) = self.match_params_to_named_struct(f2, n, ty2) {
                         self.errors.push(err);
                     }
                 }
@@ -883,6 +890,7 @@ impl Context {
                     | Type::FloatLiteral
                     | Type::F32
                     | Type::F64
+                    | Type::EnumNoneType
                     | Type::Infer(_) => {}
                 }
             }
@@ -1048,46 +1056,53 @@ impl Context {
                     self.assign_type(param);
                 }
 
-                if let Type::Func {
-                    return_ty,
-                    input_tys,
-                } = self.get_type(func)
-                {
-                    let given = param_ids;
-                    let decl = self.id_vecs[input_tys].clone();
+                match self.get_type(func) {
+                    Type::Func {
+                        input_tys,
+                        return_ty,
+                    } => {
+                        let given = param_ids;
+                        let decl = self.id_vecs[input_tys].clone();
 
-                    let rearranged_given =
-                        match self.rearrange_params(&given.borrow(), &decl.borrow(), id) {
-                            Ok(r) => r,
-                            Err(err) => {
-                                self.errors.push(err);
-                                return true;
+                        let rearranged_given =
+                            match self.rearrange_params(&given.borrow(), &decl.borrow(), id) {
+                                Ok(r) => r,
+                                Err(err) => {
+                                    self.errors.push(err);
+                                    return true;
+                                }
+                            };
+
+                        *self.id_vecs[params].borrow_mut() = rearranged_given.clone();
+
+                        let input_ty_ids = self.id_vecs[input_tys].clone();
+
+                        if input_ty_ids.borrow().len() != rearranged_given.len() {
+                            self.errors.push(CompileError::Node(
+                                "Incorrect number of parameters".to_string(),
+                                id,
+                            ));
+                            return true;
+                        } else {
+                            for (param, input_ty) in
+                                rearranged_given.iter().zip(input_ty_ids.borrow().iter())
+                            {
+                                self.match_types(*param, *input_ty);
                             }
-                        };
 
-                    *self.id_vecs[params].borrow_mut() = rearranged_given.clone();
+                            if let Some(return_ty) = return_ty {
+                                self.match_types(id, return_ty);
 
-                    let input_ty_ids = self.id_vecs[input_tys].clone();
-
-                    if input_ty_ids.borrow().len() != rearranged_given.len() {
-                        self.errors.push(CompileError::Node(
-                            "Incorrect number of parameters".to_string(),
-                            id,
-                        ));
-                    } else {
-                        for (param, input_ty) in
-                            rearranged_given.iter().zip(input_ty_ids.borrow().iter())
-                        {
-                            self.match_types(*param, *input_ty);
-                        }
-
-                        if let Some(return_ty) = return_ty {
-                            self.match_types(id, return_ty);
+                                if self.should_pass_by_ref(return_ty) {
+                                    self.addressable_nodes.insert(id);
+                                }
+                            }
                         }
                     }
-                } else {
-                    self.errors
-                        .push(CompileError::Node("Not a function".to_string(), id));
+                    ty => {
+                        self.errors
+                            .push(CompileError::Node(format!("Not a function: {:?}", ty), id));
+                    }
                 }
             }
             Node::StructDefinition { name, params } => {
@@ -1109,7 +1124,11 @@ impl Context {
             Node::EnumDefinition { name, params } => {
                 let param_ids = self.id_vecs[params].clone();
                 for &param in param_ids.borrow().iter() {
-                    self.assign_type(param);
+                    if let Node::EnumDeclParam { ty: None, .. } = self.nodes[param] {
+                        self.types.insert(param, Type::EnumNoneType);
+                    } else {
+                        self.assign_type(param);
+                    }
                 }
 
                 self.types.insert(
@@ -1126,7 +1145,7 @@ impl Context {
                 if let Some(name) = name {
                     self.assign_type(name);
                     self.match_types(name, id);
-                    if let Err(err) = self.match_fields_to_named_struct(params, name, id) {
+                    if let Err(err) = self.match_params_to_named_struct(params, name, id) {
                         self.errors.push(err);
                         return true;
                     }
@@ -1198,6 +1217,90 @@ impl Context {
                     }
                 }
             }
+            Node::StaticMemberAccess { value, member, .. } => {
+                self.assign_type(value);
+
+                let mut value_ty = self.get_type(value);
+
+                while let Type::Pointer(ty) = value_ty {
+                    value_ty = self.get_type(ty);
+                }
+
+                match value_ty {
+                    Type::Enum { params, .. } => {
+                        let field_ids = self.id_vecs[params].clone();
+                        let mut found = false;
+
+                        for (index, &field) in field_ids.borrow().iter().enumerate() {
+                            self.assign_type(field);
+
+                            let (field_name, is_none_type) = match &self.nodes[field] {
+                                Node::EnumDeclParam { name, ty } => (*name, ty.is_none()),
+                                _ => {
+                                    self.errors.push(CompileError::Node(
+                                        format!(
+                                            "Cannot perform member access as this field's name ({:?}) could not be found",
+                                            &self.ranges[field]
+                                        ),
+                                        id,
+                                    ));
+                                    return true;
+                                }
+                            };
+
+                            let field_name_sym = self.get_symbol(field_name);
+                            let member_name_sym = self.get_symbol(member);
+
+                            if field_name_sym == member_name_sym {
+                                // If the field is a name-only enum param, then there are no input types
+                                let input_tys = if is_none_type { vec![] } else { vec![field] };
+                                let input_tys = self.push_id_vec(input_tys);
+
+                                self.types.insert(
+                                    id,
+                                    Type::Func {
+                                        input_tys,
+                                        return_ty: Some(value),
+                                    },
+                                );
+
+                                self.nodes[id] = Node::StaticMemberAccess {
+                                    value: value,
+                                    member: member,
+                                    resolved: Some(StaticMemberResolution::EnumConstructor {
+                                        base: value,
+                                        index: index as _,
+                                    }),
+                                };
+
+                                if !self.topo.contains(&id) {
+                                    self.topo.push(id);
+                                }
+
+                                found = true;
+                                break;
+                            }
+                        }
+
+                        if !found {
+                            self.errors.push(CompileError::Node(
+                                "Could not find member".to_string(),
+                                member,
+                            ));
+                        }
+                    }
+                    Type::Infer(_) => {
+                        self.deferreds.push(id);
+                        return false;
+                    }
+                    _ => {
+                        self.errors.push(CompileError::Node(
+                            format!("Member access on a non-struct (type {:?})", value_ty),
+                            id,
+                        ));
+                    }
+                }
+            }
             Node::AddressOf(value) => {
                 self.assign_type(value);
                 self.types.insert(id, Type::Pointer(value));
@@ -1221,15 +1324,15 @@ impl Context {
         return true;
     }
 
-    fn match_fields_to_named_struct(
+    fn match_params_to_named_struct(
         &mut self,
-        fields: IdVec,
+        params: IdVec,
         name: NodeId,
         struct_literal_id: NodeId,
     ) -> Result<(), CompileError> {
         let Some(Type::Struct { params: decl, .. }) = self.types.get(&name) else { return Ok(()); };
 
-        let given = self.id_vecs[fields].clone();
+        let given = self.id_vecs[params].clone();
         let decl = self.id_vecs[*decl].clone();
 
         let rearranged = match self.rearrange_params(&given.borrow(), &decl.borrow(), name) {
@@ -1238,7 +1341,7 @@ impl Context {
         };
 
         if let Some(rearranged) = rearranged {
-            *self.id_vecs[fields].borrow_mut() = rearranged.clone();
+            *self.id_vecs[params].borrow_mut() = rearranged.clone();
 
             if rearranged.len() != decl.borrow().len() {
                 self.errors.push(CompileError::Node(

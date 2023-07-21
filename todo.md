@@ -1,4 +1,7 @@
--[ ] test suite
+-[ ] test returning structs from a function
+-[ ] clean up 'store if addressable' logic if possible
+-[x] test suite
+    -[ ] test for recursive structs (linked list)
 -[ ] create rust tests which each mimic one of the capabilities of the lsp
 -[-]  lsp
     -[x] error reporting
@@ -19,11 +22,12 @@
     -[ ] structs
     -[ ] enums
     -[ ] modules
--[ ] enums
--[ ] if/else
--[ ] for loops
--[ ] `==` operator
 -[ ] booleans
+-[ ] if/else
+-[ ] `==` operator
+-[ ] enums
+-[ ] question mark operator (how would this work? do we need interfaces after all?)
+-[ ] for loops
 -[ ] modules
 -[ ] string interpolation
 -[ ] pipe/threading/ufcs operator

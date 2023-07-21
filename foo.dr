@@ -1,15 +1,22 @@
 extern print_i64(n: i64);
+extern print_enum_tag(f: *Foo);
 
-enum Foo {
-    A,
-    B: i64,
-    C: struct { x: i64, y: i64 }
-}
+# enum Foo {
+    # A,
+    # B: i64,
+    # C: struct { x: i64, y: i64 },
+# }
 
 fn main() i64 {
-    let fa = Foo::A();
+    # let fa = Foo::A();
     # let fb = Foo::B(5);
-    # let fc = Foo::C(_{ 8, 12 });
+    # let fc = Foo::C(_{ 888, 999 });
+
+    # print_enum_tag(&fa);
+    # print_enum_tag(&fb);
+    # print_enum_tag(&fc);
+
+    let a = true;
 
     return 0;
 }
