@@ -1,14 +1,16 @@
 extern print_i64(n: i64);
+extern print_enum_tag(f: *Foo);
 
-struct Foo {
-    x: i64,
-}
-
-fn id(n: *Foo) _ {
-    return n.x;
+enum Foo {
+    A,
+    B: i64,
+    C: struct { n: i64 }
 }
 
 fn main() i64 {
-    print_i64(id(&Foo{ 5 }));
+    let make_fb = Foo::B;
+    let fb = make_fb(88);
+    print_enum_tag(&fb);
+    
     return 0;
 }

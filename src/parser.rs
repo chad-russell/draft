@@ -1214,7 +1214,7 @@ impl<'a, W: Source> Parser<'a, W> {
                         resolved: None,
                     },
                 );
-                self.ctx.addressable_nodes.insert(value);
+                // self.ctx.addressable_nodes.insert(value);
             }
         }
 

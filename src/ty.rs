@@ -558,8 +558,9 @@ impl Context {
     }
 
     pub fn is_fully_concrete_ty(&self, ty: Type) -> bool {
-        if let Type::Pointer(pt) = ty {
-            return self.is_fully_concrete(pt);
+        if let Type::Pointer(_pt) = ty {
+            // return self.is_fully_concrete(pt);
+            return true; // todo(chad): @hack - probably need a full idempotent solution, as pointers are not always fully concrete
         }
 
         if let Type::Struct {

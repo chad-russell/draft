@@ -167,9 +167,9 @@ impl Context {
     fn get_cranelift_type(&self, param: NodeId) -> CraneliftType {
         match self.types[&param] {
             Type::I8 | Type::Bool => types::I8,
-            Type::I16 => types::I16,
-            Type::I32 => types::I32,
-            Type::I64 => types::I64,
+            Type::I16 | Type::U16 => types::I16,
+            Type::I32 | Type::U32 => types::I32,
+            Type::I64 | Type::U64 => types::I64,
             Type::F32 => types::F32,
             Type::F64 => types::F64,
             Type::Pointer(_) | Type::Func { .. } | Type::Struct { .. } | Type::Enum { .. } => {
@@ -190,10 +190,10 @@ impl Context {
 
     fn get_type_size(&self, param: NodeId) -> StackSize {
         match self.types[&param] {
-            Type::I8 | Type::Bool => 1,
-            Type::I16 => 2,
-            Type::I32 | Type::F32 => 4,
-            Type::I64 | Type::F64 => 8,
+            Type::I8 | Type::U8 | Type::Bool => 1,
+            Type::I16 | Type::U16 => 2,
+            Type::I32 | Type::U32 | Type::F32 => 4,
+            Type::I64 | Type::U64 | Type::F64 => 8,
             Type::Func { .. } => 8,
             Type::Pointer(_) => 8,
             Type::Struct { params, .. } => {
@@ -267,7 +267,7 @@ impl Context {
     }
 }
 
-pub fn print_i64(n: i64) {
+pub fn print_i64(n: u64) {
     println!("{}", n);
 }
 
@@ -325,11 +325,11 @@ impl<'a> FunctionCompileContext<'a> {
             }
             Node::IntLiteral(n, _) => {
                 match self.ctx.types[&id] {
-                    Type::I64 => {
+                    Type::I64 | Type::U64 => {
                         let value = self.builder.ins().iconst(types::I64, n);
                         self.ctx.values.insert(id, Value::Value(value));
                     }
-                    Type::I32 => {
+                    Type::I32 | Type::U32 => {
                         let value = self.builder.ins().iconst(types::I32, n);
                         self.ctx.values.insert(id, Value::Value(value));
                     }
@@ -473,7 +473,14 @@ impl<'a> FunctionCompileContext<'a> {
                 let rhs_value = self.rvalue(rhs);
 
                 match self.ctx.types[&lhs] {
-                    Type::I8 | Type::I16 | Type::I32 | Type::I64 => {
+                    Type::I8
+                    | Type::I16
+                    | Type::I32
+                    | Type::I64
+                    | Type::U8
+                    | Type::U16
+                    | Type::U32
+                    | Type::U64 => {
                         let value = match op {
                             Op::Add => self.builder.ins().iadd(lhs_value, rhs_value),
                             Op::Sub => self.builder.ins().isub(lhs_value, rhs_value),
@@ -964,12 +971,13 @@ impl<'a> ToplevelCompileContext<'a> {
                         let Node::EnumDeclParam { name, ty } = self.ctx.nodes[param] else { todo!() };
 
                         let name_str = format!(
-                            "__enum_constructor_{}_{}",
+                            "__enum_constructor_{}_{}__{}",
                             self.ctx
                                 .string_interner
                                 .resolve(self.ctx.get_symbol(name).0)
                                 .unwrap(),
-                            index
+                            index,
+                            id.0
                         );
 
                         let mut sig = self.ctx.module.make_signature();
