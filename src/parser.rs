@@ -1293,6 +1293,7 @@ impl<'a, W: Source> Parser<'a, W> {
             let stmt = self.parse_fn_stmt()?;
             if_stmts.push(stmt);
         }
+        self.expect(Token::RCurly)?;
         let then_stmts = self.ctx.push_id_vec(if_stmts);
 
         let mut else_stmts = Vec::new();
