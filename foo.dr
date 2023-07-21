@@ -1,5 +1,5 @@
 extern print_i64(n: i64);
-extern print_enum_tag(f: *Foo);
+# extern print_enum_tag(f: *Foo);
 
 # enum Foo {
     # A,
@@ -17,6 +17,9 @@ fn main() i64 {
     # print_enum_tag(&fc);
 
     let a = true;
+    if a {
+        print_i64(123);
+    }
 
     return 0;
 }

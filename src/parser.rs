@@ -132,6 +132,8 @@ pub enum Token {
     Fn,
     Extern,
     Let,
+    If,
+    Else,
     I8,
     I16,
     I32,
@@ -291,6 +293,12 @@ impl<'a, W: Source> Parser<'a, W> {
         if self.source_info.prefix_keyword("let", Token::Let) {
             return;
         }
+        if self.source_info.prefix_keyword("if", Token::If) {
+            return;
+        }
+        if self.source_info.prefix_keyword("else", Token::Else) {
+            return;
+        }
         if self.source_info.prefix_keyword("return", Token::Return) {
             return;
         }
@@ -330,10 +338,10 @@ impl<'a, W: Source> Parser<'a, W> {
         if self.source_info.prefix_keyword("f64", Token::F64) {
             return;
         }
-        if self.source_info.prefix_keyword("true", Token::F64) {
+        if self.source_info.prefix_keyword("true", Token::True) {
             return;
         }
-        if self.source_info.prefix_keyword("false", Token::F64) {
+        if self.source_info.prefix_keyword("false", Token::False) {
             return;
         }
         if self.source_info.prefix("(", Token::LParen) {
@@ -595,7 +603,7 @@ impl<'a, W: Source> Parser<'a, W> {
             {
                 let name = self.parse_symbol()?;
                 self.expect(Token::Colon)?;
-                let value = self.parse_expression()?;
+                let value = self.parse_expression(true)?;
                 params.push(self.ctx.push_node(
                     self.make_range_spanning(name, value),
                     Node::ValueParam {
@@ -605,7 +613,7 @@ impl<'a, W: Source> Parser<'a, W> {
                     },
                 ));
             } else {
-                let value = self.parse_expression()?;
+                let value = self.parse_expression(true)?;
                 params.push(self.ctx.push_node(
                     self.ctx.ranges[value],
                     Node::ValueParam {
@@ -643,7 +651,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 let mut default = None;
                 if self.source_info.top.tok == Token::Eq {
                     self.pop(); // `=`
-                    default = Some(self.parse_expression()?);
+                    default = Some(self.parse_expression(true)?);
                 }
 
                 (Some(ty), default)
@@ -872,7 +880,10 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(id)
     }
 
-    pub fn parse_expression(&mut self) -> Result<NodeId, CompileError> {
+    pub fn parse_expression(
+        &mut self,
+        struct_literals_allowed: bool,
+    ) -> Result<NodeId, CompileError> {
         let mut operators = Vec::<Op>::new();
         let mut output = Vec::new();
 
@@ -906,7 +917,7 @@ impl<'a, W: Source> Parser<'a, W> {
                         break;
                     }
 
-                    let id = self.parse_expression_piece()?;
+                    let id = self.parse_expression_piece(struct_literals_allowed)?;
                     output.push(Shunting::Id(id))
                 }
                 Token::Plus => {
@@ -955,7 +966,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
                         self.pop(); // `*`
 
-                        let expr = self.parse_expression_piece()?;
+                        let expr = self.parse_expression_piece(struct_literals_allowed)?;
                         let id = self.ctx.push_node(
                             Range::new(
                                 start,
@@ -1018,7 +1029,10 @@ impl<'a, W: Source> Parser<'a, W> {
         }
     }
 
-    pub fn parse_expression_piece(&mut self) -> Result<NodeId, CompileError> {
+    pub fn parse_expression_piece(
+        &mut self,
+        struct_literals_allowed: bool,
+    ) -> Result<NodeId, CompileError> {
         let start = self.source_info.top.range.start;
 
         let mut value = match self.source_info.top.tok {
@@ -1041,7 +1055,7 @@ impl<'a, W: Source> Parser<'a, W> {
             Token::Star => {
                 self.pop(); // `*`
 
-                let expr = self.parse_expression_piece()?;
+                let expr = self.parse_expression_piece(true)?;
                 let id = self.ctx.push_node(
                     Range::new(
                         start,
@@ -1056,7 +1070,7 @@ impl<'a, W: Source> Parser<'a, W> {
             Token::AddressOf => {
                 self.pop(); // `&`
 
-                let expr = self.parse_expression_piece()?;
+                let expr = self.parse_expression_piece(true)?;
                 self.ctx.addressable_nodes.insert(expr);
 
                 let end = self.ctx.ranges[expr].end;
@@ -1067,7 +1081,75 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 Ok(id)
             }
-            _ => self.parse_lvalue(),
+            Token::LParen => {
+                self.pop(); // `(`
+                let expr = self.parse_expression(true)?;
+                self.expect(Token::RParen)?;
+
+                Ok(expr)
+            }
+            Token::I8 => {
+                let range = self.source_info.top.range;
+                self.pop();
+                Ok(self.ctx.push_node(range, Node::Type(Type::I8)))
+            }
+            Token::I16 => {
+                let range = self.source_info.top.range;
+                self.pop();
+                Ok(self.ctx.push_node(range, Node::Type(Type::I16)))
+            }
+            Token::I32 => {
+                let range = self.source_info.top.range;
+                self.pop();
+                Ok(self.ctx.push_node(range, Node::Type(Type::I32)))
+            }
+            Token::I64 => {
+                let range = self.source_info.top.range;
+                self.pop();
+                Ok(self.ctx.push_node(range, Node::Type(Type::I64)))
+            }
+            Token::U8 => {
+                let range = self.source_info.top.range;
+                self.pop();
+                Ok(self.ctx.push_node(range, Node::Type(Type::U8)))
+            }
+            Token::U16 => {
+                let range = self.source_info.top.range;
+                self.pop();
+                Ok(self.ctx.push_node(range, Node::Type(Type::U16)))
+            }
+            Token::U32 => {
+                let range = self.source_info.top.range;
+                self.pop();
+                Ok(self.ctx.push_node(range, Node::Type(Type::U32)))
+            }
+            Token::U64 => {
+                let range = self.source_info.top.range;
+                self.pop();
+                Ok(self.ctx.push_node(range, Node::Type(Type::U64)))
+            }
+            Token::F32 => {
+                let range = self.source_info.top.range;
+                self.pop();
+                Ok(self.ctx.push_node(range, Node::Type(Type::F32)))
+            }
+            Token::F64 => {
+                let range = self.source_info.top.range;
+                self.pop();
+                Ok(self.ctx.push_node(range, Node::Type(Type::F64)))
+            }
+            Token::UnderscoreLCurly => Ok(self.parse_struct_literal()?),
+            Token::Symbol(_) => {
+                if struct_literals_allowed && self.source_info.second.tok == Token::LCurly {
+                    Ok(self.parse_struct_literal()?)
+                } else {
+                    Ok(self.parse_symbol()?)
+                }
+            }
+            _ => Err(CompileError::Generic(
+                "Could not parse lvalue".to_string(),
+                self.source_info.top.range,
+            )),
         }?;
 
         while self.source_info.top.tok == Token::LParen
@@ -1120,69 +1202,6 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(value)
     }
 
-    fn parse_lvalue(&mut self) -> Result<NodeId, CompileError> {
-        if self.source_info.top.tok == Token::LParen {
-            self.pop(); // `(`
-            let expr = self.parse_expression()?;
-            self.expect(Token::RParen)?;
-
-            Ok(expr)
-        } else if self.source_info.top.tok == Token::I8 {
-            let range = self.source_info.top.range;
-            self.pop();
-            Ok(self.ctx.push_node(range, Node::Type(Type::I8)))
-        } else if self.source_info.top.tok == Token::I16 {
-            let range = self.source_info.top.range;
-            self.pop();
-            Ok(self.ctx.push_node(range, Node::Type(Type::I16)))
-        } else if self.source_info.top.tok == Token::I32 {
-            let range = self.source_info.top.range;
-            self.pop();
-            Ok(self.ctx.push_node(range, Node::Type(Type::I32)))
-        } else if self.source_info.top.tok == Token::I64 {
-            let range = self.source_info.top.range;
-            self.pop();
-            Ok(self.ctx.push_node(range, Node::Type(Type::I64)))
-        } else if self.source_info.top.tok == Token::U8 {
-            let range = self.source_info.top.range;
-            self.pop();
-            Ok(self.ctx.push_node(range, Node::Type(Type::U8)))
-        } else if self.source_info.top.tok == Token::U16 {
-            let range = self.source_info.top.range;
-            self.pop();
-            Ok(self.ctx.push_node(range, Node::Type(Type::U16)))
-        } else if self.source_info.top.tok == Token::U32 {
-            let range = self.source_info.top.range;
-            self.pop();
-            Ok(self.ctx.push_node(range, Node::Type(Type::U32)))
-        } else if self.source_info.top.tok == Token::U64 {
-            let range = self.source_info.top.range;
-            self.pop();
-            Ok(self.ctx.push_node(range, Node::Type(Type::U64)))
-        } else if self.source_info.top.tok == Token::F32 {
-            let range = self.source_info.top.range;
-            self.pop();
-            Ok(self.ctx.push_node(range, Node::Type(Type::F32)))
-        } else if self.source_info.top.tok == Token::F64 {
-            let range = self.source_info.top.range;
-            self.pop();
-            Ok(self.ctx.push_node(range, Node::Type(Type::F64)))
-        } else if let Token::UnderscoreLCurly = self.source_info.top.tok {
-            Ok(self.parse_struct_literal()?)
-        } else if let Token::Symbol(_) = self.source_info.top.tok {
-            if self.source_info.second.tok == Token::LCurly {
-                Ok(self.parse_struct_literal()?)
-            } else {
-                Ok(self.parse_symbol()?)
-            }
-        } else {
-            Err(CompileError::Generic(
-                "Could not parse lvalue".to_string(),
-                self.source_info.top.range,
-            ))
-        }
-    }
-
     fn parse_struct_literal(&mut self) -> Result<NodeId, CompileError> {
         let start = self.source_info.top.range.start;
 
@@ -1224,7 +1243,9 @@ impl<'a, W: Source> Parser<'a, W> {
         }
     }
 
-    pub fn parse_let(&mut self, start: Location) -> Result<NodeId, CompileError> {
+    pub fn parse_let(&mut self) -> Result<NodeId, CompileError> {
+        let start = self.source_info.top.range.start;
+
         self.pop(); // `let`
         let name = self.parse_symbol()?;
         let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
@@ -1240,7 +1261,7 @@ impl<'a, W: Source> Parser<'a, W> {
             Token::Semicolon => None,
             Token::Eq => {
                 self.pop(); // `=`
-                Some(self.parse_expression()?)
+                Some(self.parse_expression(true)?)
             }
             _ => {
                 return Err(CompileError::Generic(
@@ -1258,6 +1279,50 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(let_id)
     }
 
+    pub fn parse_if(&mut self) -> Result<NodeId, CompileError> {
+        let start = self.source_info.top.range.start;
+
+        self.pop(); // `if`
+
+        let cond = self.parse_expression(false)?;
+
+        self.expect(Token::LCurly)?;
+
+        let mut if_stmts = Vec::new();
+        while self.source_info.top.tok != Token::RCurly {
+            let stmt = self.parse_fn_stmt()?;
+            if_stmts.push(stmt);
+        }
+        let then_stmts = self.ctx.push_id_vec(if_stmts);
+
+        let mut else_stmts = Vec::new();
+        if self.source_info.top.tok == Token::Else {
+            self.pop(); // `else`
+
+            if self.source_info.top.tok == Token::If {
+                else_stmts = vec![self.parse_if()?];
+            } else {
+                self.expect(Token::LCurly)?;
+                while self.source_info.top.tok != Token::RCurly {
+                    let stmt = self.parse_fn_stmt()?;
+                    else_stmts.push(stmt);
+                }
+            }
+        }
+        let else_stmts = self.ctx.push_id_vec(else_stmts);
+
+        let range = self.expect_range(start, Token::RCurly)?;
+
+        Ok(self.ctx.push_node(
+            range,
+            Node::If {
+                cond,
+                then_stmts,
+                else_stmts,
+            },
+        ))
+    }
+
     pub fn parse_fn_stmt(&mut self) -> Result<NodeId, CompileError> {
         let start = self.source_info.top.range.start;
 
@@ -1266,7 +1331,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 self.pop(); // `return`
 
                 let expr = if self.source_info.top.tok != Token::Semicolon {
-                    Some(self.parse_expression()?)
+                    Some(self.parse_expression(true)?)
                 } else {
                     None
                 };
@@ -1277,19 +1342,20 @@ impl<'a, W: Source> Parser<'a, W> {
                 self.ctx.returns.last_mut().unwrap().push(ret_id);
                 Ok(ret_id)
             }
-            Token::Let => self.parse_let(start),
+            Token::Let => self.parse_let(),
+            Token::If => self.parse_if(),
             Token::Struct => self.parse_struct_definition(),
             Token::Enum => self.parse_enum_definition(),
             Token::Fn => self.parse_fn(false),
             _ => {
-                let lvalue = self.parse_expression()?;
+                let lvalue = self.parse_expression(true)?;
 
                 match self.source_info.top.tok {
                     // Assignment?
                     Token::Eq => {
                         // parsing something like "foo = expr;";
                         self.expect(Token::Eq)?;
-                        let expr = self.parse_expression()?;
+                        let expr = self.parse_expression(true)?;
                         let range = self.expect_range(start, Token::Semicolon)?;
 
                         // Assignment lhs never needs to be addressable

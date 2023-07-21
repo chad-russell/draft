@@ -23,6 +23,11 @@ fn run(context: &mut Context) -> Result<(), CompileError> {
     Ok(())
 }
 
+#[derive(PartialEq)]
+struct Foo {
+    x: i64,
+}
+
 fn main() {
     let args = args::Args::parse();
 

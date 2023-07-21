@@ -1324,6 +1324,22 @@ impl Context {
                     }
                 }
             }
+            Node::If {
+                cond,
+                then_stmts,
+                else_stmts,
+            } => {
+                self.assign_type(cond);
+                self.match_types(cond, id);
+
+                for &stmt in self.id_vecs[then_stmts].clone().borrow().iter() {
+                    self.assign_type(stmt);
+                }
+
+                for &stmt in self.id_vecs[else_stmts].clone().borrow().iter() {
+                    self.assign_type(stmt);
+                }
+            }
         }
 
         return true;

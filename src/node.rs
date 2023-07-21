@@ -102,6 +102,11 @@ pub enum Node {
     },
     AddressOf(NodeId),
     Deref(NodeId),
+    If {
+        cond: NodeId,
+        then_stmts: IdVec,
+        else_stmts: IdVec,
+    },
 }
 
 impl Node {
@@ -137,6 +142,7 @@ impl Node {
             Node::StaticMemberAccess { .. } => "StaticMemberAccess".to_string(),
             Node::AddressOf(_) => "AddressOf".to_string(),
             Node::Deref(_) => "Deref".to_string(),
+            Node::If { .. } => "If".to_string(),
         }
     }
 }

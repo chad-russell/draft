@@ -167,7 +167,7 @@ impl Context {
 
     fn get_cranelift_type(&self, param: NodeId) -> CraneliftType {
         match self.types[&param] {
-            Type::I8 => types::I8,
+            Type::I8 | Type::Bool => types::I8,
             Type::I16 => types::I16,
             Type::I32 => types::I32,
             Type::I64 => types::I64,
@@ -191,12 +191,10 @@ impl Context {
 
     fn get_type_size(&self, param: NodeId) -> StackSize {
         match self.types[&param] {
-            Type::I8 => 1,
+            Type::I8 | Type::Bool => 1,
             Type::I16 => 2,
-            Type::I32 => 4,
-            Type::I64 => 8,
-            Type::F32 => 4,
-            Type::F64 => 8,
+            Type::I32 | Type::F32 => 4,
+            Type::I64 | Type::F64 => 8,
             Type::Func { .. } => 8,
             Type::Pointer(_) => 8,
             Type::Struct { params, .. } => {
@@ -356,7 +354,6 @@ impl<'a> FunctionCompileContext<'a> {
                 self.store_in_slot_if_addressable(id);
                 Ok(())
             }
-            Node::Type(_) => todo!(),
             Node::Return(rv) => {
                 if let Some(rv) = rv {
                     self.compile_id(rv)?;
@@ -632,6 +629,46 @@ impl<'a> FunctionCompileContext<'a> {
                     .unwrap();
 
                 self.ctx.values.insert(id, Value::Func(func_id));
+
+                Ok(())
+            }
+            Node::If {
+                cond,
+                then_stmts,
+                else_stmts,
+            } => {
+                let block_params = self.builder.block_params(self.current_block).to_vec();
+
+                self.compile_id(cond)?;
+                let cond_value = self.rvalue(cond);
+
+                let then_block = self.builder.create_block();
+                let else_block = self.builder.create_block();
+                let merge_block = self.builder.create_block();
+
+                self.builder.ins().brif(
+                    cond_value,
+                    then_block,
+                    &block_params,
+                    else_block,
+                    &block_params,
+                );
+
+                self.builder.switch_to_block(then_block);
+                let then_stmts = self.ctx.id_vecs[then_stmts].clone();
+                for stmt in then_stmts.borrow().iter() {
+                    self.compile_id(*stmt)?;
+                }
+                self.builder.ins().jump(merge_block, &block_params);
+
+                self.builder.switch_to_block(else_block);
+                let else_stmts = self.ctx.id_vecs[else_stmts].clone();
+                for stmt in else_stmts.borrow().iter() {
+                    self.compile_id(*stmt)?;
+                }
+                self.builder.ins().jump(merge_block, &block_params);
+
+                self.builder.switch_to_block(merge_block);
 
                 Ok(())
             }
