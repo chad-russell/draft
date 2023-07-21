@@ -1034,6 +1034,10 @@ impl Context {
                         self.match_types(lhs, rhs);
                         self.match_types(id, lhs);
                     }
+                    Op::EqEq => {
+                        self.match_types(lhs, rhs);
+                        self.types.insert(id, Type::Bool);
+                    }
                 }
             }
             Node::Call {

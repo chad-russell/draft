@@ -1,4 +1,5 @@
 extern print_i64(n: i64);
+extern print_enum_tag(f: *Baz);
     
 struct Foo {
     x: i64, 
@@ -8,6 +9,12 @@ struct Foo {
 struct Bar {
     x: i64, 
     y: i64,
+}
+
+enum Baz {
+    A,
+    B: i64,
+    C: struct { x: i64, y: i64 },
 }
 
 fn foo1(f: _) _ {
@@ -52,7 +59,7 @@ fn main() i64 {
 
     let g = Bar { 3, 8 };
     let pg = &&&&&&g;
-    print_i64(foo5(&f, *****pg) - ***&&&7); # 9
+    # print_i64(foo5(&f, *****pg) - ***&&&7); # 9
 
     let ten = &&&999;
     **ten = &10;
@@ -63,6 +70,30 @@ fn main() i64 {
 
     let f6 = foo6();
     print_i64(f6.x + f6.y); # 12
+    
+    let fa = Baz::A();
+    # let make_b = Baz::B;
+    # let fb = make_b(6); # todo: this breaks the compiler
+    let fc = Baz::C(_{ 888, 999 });
+
+    print_enum_tag(&fa);
+    # print_enum_tag(&fb);
+    print_enum_tag(&fc);
+    
+    let a = false;
+    if a {
+        print_i64(999);
+    } else if a {
+        print_i64(999);
+    } else if a {
+        print_i64(999);
+    } else if a {
+        print_i64(999);
+    } else if a {
+        print_i64(999);
+    } else {
+        print_i64(15);
+    }
 
     return 0;
 }

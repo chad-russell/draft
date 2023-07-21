@@ -1,3 +1,4 @@
+use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 
 use cranelift_codegen::ir::{
@@ -13,8 +14,6 @@ use crate::{CompileError, Context, Node, NodeId, Op, StaticMemberResolution, Typ
 
 #[derive(Clone, Copy, Debug)]
 pub enum Value {
-    Unassigned,
-    None,
     Func(FuncId),
     Value(CraneliftValue),
 }
@@ -288,13 +287,14 @@ struct FunctionCompileContext<'a> {
     pub builder: FunctionBuilder<'a>,
     pub current_block: Block,
     pub in_assign_lhs: bool,
+    pub visited_returns_count: u32,
 }
 
 impl<'a> FunctionCompileContext<'a> {
     pub fn compile_id(&mut self, id: NodeId) -> Result<(), CompileError> {
         // idempotency
         match self.ctx.values.get(&id) {
-            None | Some(Value::Unassigned) => {}
+            None => {}
             _ => return Ok(()),
         };
 
@@ -355,6 +355,8 @@ impl<'a> FunctionCompileContext<'a> {
                 Ok(())
             }
             Node::Return(rv) => {
+                self.visited_returns_count += 1;
+
                 if let Some(rv) = rv {
                     self.compile_id(rv)?;
                     let value = self.rvalue(rv);
@@ -453,14 +455,19 @@ impl<'a> FunctionCompileContext<'a> {
                 let lhs_value = self.rvalue(lhs);
                 let rhs_value = self.rvalue(rhs);
 
-                let value = match op {
-                    Op::Add => self.builder.ins().iadd(lhs_value, rhs_value),
-                    Op::Sub => self.builder.ins().isub(lhs_value, rhs_value),
-                    Op::Mul => self.builder.ins().imul(lhs_value, rhs_value),
-                    Op::Div => self.builder.ins().sdiv(lhs_value, rhs_value),
-                };
-
-                self.ctx.values.insert(id, Value::Value(value));
+                match self.ctx.types[&lhs] {
+                    Type::I8 | Type::I16 | Type::I32 | Type::I64 => {
+                        let value = match op {
+                            Op::Add => self.builder.ins().iadd(lhs_value, rhs_value),
+                            Op::Sub => self.builder.ins().isub(lhs_value, rhs_value),
+                            Op::Mul => self.builder.ins().imul(lhs_value, rhs_value),
+                            Op::Div => self.builder.ins().sdiv(lhs_value, rhs_value),
+                            Op::EqEq => self.builder.ins().icmp(IntCC::Equal, lhs_value, rhs_value),
+                        };
+                        self.ctx.values.insert(id, Value::Value(value));
+                    }
+                    a => todo!("BinOp for {:?}", a),
+                }
 
                 Ok(())
             }
@@ -554,7 +561,6 @@ impl<'a> FunctionCompileContext<'a> {
                     Value::Value(_) | Value::Func(_) => {
                         self.ctx.values.insert(id, *cranelift_value)
                     }
-                    _ => todo!("{:?}", cranelift_value),
                 };
 
                 self.store_in_slot_if_addressable(id);
@@ -646,27 +652,29 @@ impl<'a> FunctionCompileContext<'a> {
                 let else_block = self.builder.create_block();
                 let merge_block = self.builder.create_block();
 
-                self.builder.ins().brif(
-                    cond_value,
-                    then_block,
-                    &block_params,
-                    else_block,
-                    &block_params,
-                );
+                self.builder
+                    .ins()
+                    .brif(cond_value, then_block, &[], else_block, &[]);
 
                 self.builder.switch_to_block(then_block);
                 let then_stmts = self.ctx.id_vecs[then_stmts].clone();
+                self.visited_returns_count = 0;
                 for stmt in then_stmts.borrow().iter() {
                     self.compile_id(*stmt)?;
                 }
-                self.builder.ins().jump(merge_block, &block_params);
+                if self.visited_returns_count == 0 {
+                    self.builder.ins().jump(merge_block, &[]);
+                }
 
                 self.builder.switch_to_block(else_block);
                 let else_stmts = self.ctx.id_vecs[else_stmts].clone();
+                self.visited_returns_count = 0;
                 for stmt in else_stmts.borrow().iter() {
                     self.compile_id(*stmt)?;
                 }
-                self.builder.ins().jump(merge_block, &block_params);
+                if self.visited_returns_count == 0 {
+                    self.builder.ins().jump(merge_block, &block_params);
+                }
 
                 self.builder.switch_to_block(merge_block);
 
@@ -760,7 +768,6 @@ impl<'a> FunctionCompileContext<'a> {
                     .ins()
                     .func_addr(self.ctx.get_pointer_type(), func_ref)
             }
-            _ => panic!("not a cranelift value: {:?}", value),
         }
     }
 
@@ -820,7 +827,6 @@ impl<'a> FunctionCompileContext<'a> {
                     .ins()
                     .func_addr(self.ctx.get_cranelift_type(id), func_ref)
             }
-            a => todo!("store_value source for {:?}", a),
         };
 
         match dest {
@@ -859,7 +865,7 @@ impl<'a> ToplevelCompileContext<'a> {
     pub fn compile_toplevel_id(&mut self, id: NodeId) -> Result<(), CompileError> {
         // idempotency
         match self.ctx.values.get(&id) {
-            None | Some(Value::Unassigned | Value::Func(_)) => {}
+            None | Some(Value::Func(_)) => {}
             _ => return Ok(()),
         };
 
@@ -906,6 +912,7 @@ impl<'a> ToplevelCompileContext<'a> {
                     builder,
                     current_block: ebb,
                     in_assign_lhs: false,
+                    visited_returns_count: 0,
                 };
 
                 for &stmt in builder_ctx.ctx.id_vecs[stmts].clone().borrow().iter() {

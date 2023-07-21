@@ -128,6 +128,7 @@ pub enum Token {
     Dot,
     Underscore,
     UnderscoreSymbol(Sym),
+    EqEq,
     Eq,
     Fn,
     Extern,
@@ -369,6 +370,9 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
         if self.source_info.prefix(":", Token::Colon) {
+            return;
+        }
+        if self.source_info.prefix("==", Token::EqEq) {
             return;
         }
         if self.source_info.prefix("=", Token::Eq) {
@@ -994,6 +998,21 @@ impl<'a, W: Source> Parser<'a, W> {
 
                     self.pop(); // `/`
                 }
+                Token::EqEq => {
+                    if !parsing_op {
+                        break;
+                    }
+
+                    while !operators.is_empty()
+                        && operators.last().unwrap().precedence()
+                            >= Op::from(self.source_info.top.tok).precedence()
+                    {
+                        output.push(Shunting::Op(operators.pop().unwrap()));
+                    }
+                    operators.push(Op::EqEq);
+
+                    self.pop(); // `==`
+                }
                 _ => break,
             }
 
@@ -1288,34 +1307,38 @@ impl<'a, W: Source> Parser<'a, W> {
 
         self.expect(Token::LCurly)?;
 
-        let mut if_stmts = Vec::new();
+        let mut then_stmts = Vec::new();
         while self.source_info.top.tok != Token::RCurly {
             let stmt = self.parse_fn_stmt()?;
-            if_stmts.push(stmt);
+            then_stmts.push(stmt);
         }
+        let maybe_end = self.source_info.top.range.end;
         self.expect(Token::RCurly)?;
-        let then_stmts = self.ctx.push_id_vec(if_stmts);
+        let then_stmts = self.ctx.push_id_vec(then_stmts);
 
         let mut else_stmts = Vec::new();
-        if self.source_info.top.tok == Token::Else {
+        let range_end = if self.source_info.top.tok == Token::Else {
             self.pop(); // `else`
 
             if self.source_info.top.tok == Token::If {
-                else_stmts = vec![self.parse_if()?];
+                let if_node = self.parse_if()?;
+                else_stmts = vec![if_node];
+                self.ctx.ranges[if_node].end
             } else {
                 self.expect(Token::LCurly)?;
                 while self.source_info.top.tok != Token::RCurly {
                     let stmt = self.parse_fn_stmt()?;
                     else_stmts.push(stmt);
                 }
+                self.expect_range(start, Token::RCurly)?.end
             }
-        }
+        } else {
+            maybe_end
+        };
         let else_stmts = self.ctx.push_id_vec(else_stmts);
 
-        let range = self.expect_range(start, Token::RCurly)?;
-
         Ok(self.ctx.push_node(
-            range,
+            Range::new(start, range_end, self.source_info.source_path),
             Node::If {
                 cond,
                 then_stmts,
@@ -1569,7 +1592,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 let range = self.make_range_spanning(lhs, rhs);
 
                 let value = self.ctx.push_node(range, Node::BinOp { op, lhs, rhs });
-                // self.local_insert(value);
+
                 Ok(value)
             }
         }
@@ -1686,6 +1709,7 @@ pub enum Op {
     Sub,
     Mul,
     Div,
+    EqEq,
 }
 
 impl Op {
@@ -1693,6 +1717,7 @@ impl Op {
         match self {
             Op::Add | Op::Sub => 1,
             Op::Mul | Op::Div => 2,
+            Op::EqEq => 3,
         }
     }
 }
@@ -1704,6 +1729,7 @@ impl From<Token> for Op {
             Token::Dash => Op::Sub,
             Token::Star => Op::Mul,
             Token::Slash => Op::Div,
+            Token::EqEq => Op::EqEq,
             _ => unreachable!(),
         }
     }
