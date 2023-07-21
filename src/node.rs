@@ -23,6 +23,7 @@ pub enum Node {
     Symbol(Sym),
     IntLiteral(i64, NumericSpecification),
     FloatLiteral(f64, NumericSpecification),
+    BoolLiteral(bool),
     Type(Type),
     Return(Option<NodeId>),
     Let {
@@ -116,6 +117,7 @@ impl Node {
             Node::Symbol(_) => "Symbol".to_string(),
             Node::IntLiteral(_, _) => "IntLiteral".to_string(),
             Node::FloatLiteral(_, _) => "FloatLiteral".to_string(),
+            Node::BoolLiteral(_) => "BoolLiteral".to_string(),
             Node::Type(_) => "Type".to_string(),
             Node::Return(_) => "Return".to_string(),
             Node::Let { .. } => "Let".to_string(),

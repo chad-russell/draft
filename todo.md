@@ -24,6 +24,7 @@
     -[ ] modules
 -[ ] booleans
 -[ ] if/else
+    -[ ] as expressions
 -[ ] `==` operator
 -[ ] enums
 -[ ] question mark operator (how would this work? do we need interfaces after all?)

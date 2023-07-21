@@ -18,6 +18,7 @@ pub enum Type {
     FloatLiteral,
     F32,
     F64,
+    Bool,
     Func {
         input_tys: IdVec,
         return_ty: Option<NodeId>,
@@ -890,6 +891,7 @@ impl Context {
                     | Type::FloatLiteral
                     | Type::F32
                     | Type::F64
+                    | Type::Bool
                     | Type::EnumNoneType
                     | Type::Infer(_) => {}
                 }
@@ -935,6 +937,9 @@ impl Context {
                     self.types.insert(id, Type::F64);
                 }
             },
+            Node::BoolLiteral(_) => {
+                self.types.insert(id, Type::Bool);
+            }
             Node::Symbol(sym) => {
                 let resolved = self.scope_get(sym, id);
 

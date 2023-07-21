@@ -142,6 +142,8 @@ pub enum Token {
     U64,
     F32,
     F64,
+    True,
+    False,
     Symbol(Sym),
     IntegerLiteral(i64, NumericSpecification),
     FloatLiteral(f64, NumericSpecification),
@@ -326,6 +328,12 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
         if self.source_info.prefix_keyword("f64", Token::F64) {
+            return;
+        }
+        if self.source_info.prefix_keyword("true", Token::F64) {
+            return;
+        }
+        if self.source_info.prefix_keyword("false", Token::F64) {
             return;
         }
         if self.source_info.prefix("(", Token::LParen) {
@@ -891,7 +899,9 @@ impl<'a, W: Source> Parser<'a, W> {
                 | Token::U32
                 | Token::U64
                 | Token::F32
-                | Token::F64 => {
+                | Token::F64
+                | Token::True
+                | Token::False => {
                     if !parsing_expr {
                         break;
                     }
@@ -1012,6 +1022,20 @@ impl<'a, W: Source> Parser<'a, W> {
         let start = self.source_info.top.range.start;
 
         let mut value = match self.source_info.top.tok {
+            Token::True => {
+                self.pop(); // `true`
+                let id = self
+                    .ctx
+                    .push_node(self.source_info.top.range, Node::BoolLiteral(true));
+                Ok(id)
+            }
+            Token::False => {
+                self.pop(); // `false`
+                let id = self
+                    .ctx
+                    .push_node(self.source_info.top.range, Node::BoolLiteral(false));
+                Ok(id)
+            }
             Token::IntegerLiteral(_, _) | Token::FloatLiteral(_, _) => self.parse_numeric_literal(),
             Token::Fn => self.parse_fn(true),
             Token::Star => {

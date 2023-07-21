@@ -329,22 +329,7 @@ impl<'a> FunctionCompileContext<'a> {
                     _ => todo!(),
                 };
 
-                if self.ctx.addressable_nodes.contains(&id) {
-                    // todo(chad): is there any benefit to creating all of these up front?
-                    let size = self.ctx.module.isa().pointer_bytes() as u32;
-                    let slot = self.builder.create_sized_stack_slot(StackSlotData {
-                        kind: StackSlotKind::ExplicitSlot,
-                        size,
-                    });
-                    let slot_addr = self.builder.ins().stack_addr(
-                        self.ctx.module.isa().pointer_type(),
-                        slot,
-                        0,
-                    );
-                    let value = Value::Value(slot_addr);
-                    self.store_value(id, value, None);
-                    self.ctx.values.insert(id, value);
-                }
+                self.store_in_slot_if_addressable(id);
 
                 Ok(())
             }
@@ -361,23 +346,14 @@ impl<'a> FunctionCompileContext<'a> {
                     _ => todo!(),
                 };
 
-                if self.ctx.addressable_nodes.contains(&id) {
-                    // todo(chad): is there any benefit to creating all of these up front?
-                    let size = self.ctx.module.isa().pointer_bytes() as u32;
-                    let slot = self.builder.create_sized_stack_slot(StackSlotData {
-                        kind: StackSlotKind::ExplicitSlot,
-                        size,
-                    });
-                    let slot_addr = self.builder.ins().stack_addr(
-                        self.ctx.module.isa().pointer_type(),
-                        slot,
-                        0,
-                    );
-                    let value = Value::Value(slot_addr);
-                    self.store_value(id, value, None);
-                    self.ctx.values.insert(id, value);
-                }
+                self.store_in_slot_if_addressable(id);
 
+                Ok(())
+            }
+            Node::BoolLiteral(b) => {
+                let value = self.builder.ins().iconst(types::I8, if b { 1 } else { 0 });
+                self.ctx.values.insert(id, Value::Value(value));
+                self.store_in_slot_if_addressable(id);
                 Ok(())
             }
             Node::Type(_) => todo!(),
@@ -705,6 +681,25 @@ impl<'a> FunctionCompileContext<'a> {
             | Node::StaticMemberAccess { .. } => Ok(()), // This should have already been handled by the toplevel context
             _ => todo!("compile_id for {:?}", &self.ctx.nodes[id]),
         }
+    }
+
+    fn store_in_slot_if_addressable(&mut self, id: NodeId) {
+        if !self.ctx.addressable_nodes.contains(&id) {
+            return;
+        }
+
+        let size = self.ctx.get_pointer_type().bytes() as u32;
+        let slot = self.builder.create_sized_stack_slot(StackSlotData {
+            kind: StackSlotKind::ExplicitSlot,
+            size,
+        });
+        let slot_addr =
+            self.builder
+                .ins()
+                .stack_addr(self.ctx.module.isa().pointer_type(), slot, 0);
+        let value = Value::Value(slot_addr);
+        self.store_value(id, value, None);
+        self.ctx.values.insert(id, value);
     }
 
     fn load(&mut self, ty: types::Type, value: CraneliftValue, offset: i32) -> CraneliftValue {
