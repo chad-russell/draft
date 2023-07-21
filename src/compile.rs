@@ -256,6 +256,15 @@ impl Context {
     pub fn should_pass_by_ref(&self, id: NodeId) -> bool {
         matches!(self.get_type(id), Type::Struct { .. } | Type::Enum { .. })
     }
+
+    pub fn should_pass_base_by_ref(&self, id: NodeId) -> bool {
+        let mut base_ty = self.get_type(id);
+        while let Type::Pointer(inner) = base_ty {
+            base_ty = self.get_type(inner);
+        }
+
+        matches!(base_ty, Type::Struct { .. } | Type::Enum { .. })
+    }
 }
 
 pub fn print_i64(n: i64) {
@@ -414,7 +423,9 @@ impl<'a> FunctionCompileContext<'a> {
                 let params = self.builder.block_params(self.current_block);
                 let param_value = params[index as usize];
 
-                if self.ctx.addressable_nodes.contains(&id) {
+                let pass_base_by_ref = self.ctx.should_pass_base_by_ref(id);
+
+                if self.ctx.addressable_nodes.contains(&id) || pass_base_by_ref {
                     // we need our own storage
                     let size = self.ctx.get_type_size(id);
                     let slot = self.builder.create_sized_stack_slot(StackSlotData {
@@ -435,13 +446,16 @@ impl<'a> FunctionCompileContext<'a> {
                     let source_value = param_value;
                     let dest_value = slot_addr;
 
-                    self.emit_small_memory_copy(dest_value, source_value, size as _);
+                    let is_ptr = matches!(self.ctx.get_type(id), Type::Pointer(_));
+                    if pass_base_by_ref && is_ptr {
+                        self.builder
+                            .ins()
+                            .store(MemFlags::new(), source_value, dest_value, 0);
+                    } else {
+                        self.emit_small_memory_copy(dest_value, source_value, size as _);
+                    }
                 } else {
                     self.ctx.values.insert(id, Value::Value(param_value));
-
-                    // self.builder
-                    //     .ins()
-                    //     .store(MemFlags::new(), param_value, slot_addr, 0);
                 }
 
                 Ok(())

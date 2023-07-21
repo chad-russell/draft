@@ -1,10 +1,14 @@
 extern print_i64(n: i64);
 
-fn id(n: i64) _ {
-    return n;
+struct Foo {
+    x: i64,
+}
+
+fn id(n: *Foo) _ {
+    return n.x;
 }
 
 fn main() i64 {
-    print_i64(id(5));
+    print_i64(id(&Foo{ 5 }));
     return 0;
 }
