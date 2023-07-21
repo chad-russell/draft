@@ -41,6 +41,18 @@ fn foo6() Foo {
     return _{ 10, 2 };
 }
 
+fn id(n: i64) i64 {
+    return n;
+}
+
+fn idp(n: *i64) i64 {
+    return *n;
+}
+
+fn idppp(n: ***i64) i64 {
+    return ***n;
+}
+
 fn main() i64 {
     let f = Foo { 3, 8 };
     let pf = &f;
@@ -94,6 +106,10 @@ fn main() i64 {
     } else {
         print_i64(15);
     }
+
+    print_i64(id(16)); # 16
+    print_i64(idp(&17)); # 17
+    print_i64(idppp(*&&&&18)); # 18
 
     return 0;
 }
