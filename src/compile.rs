@@ -411,24 +411,25 @@ impl<'a> FunctionCompileContext<'a> {
                 Ok(())
             }
             Node::FuncDeclParam { index, .. } => {
-                // we need our own storage
-                let size = self.ctx.get_type_size(id);
-                let slot = self.builder.create_sized_stack_slot(StackSlotData {
-                    kind: StackSlotKind::ExplicitSlot,
-                    size,
-                });
-
-                let slot_addr =
-                    self.builder
-                        .ins()
-                        .stack_addr(self.ctx.module.isa().pointer_type(), slot, 0);
-                let value = Value::Value(slot_addr);
-                self.ctx.values.insert(id, value);
-
                 let params = self.builder.block_params(self.current_block);
                 let param_value = params[index as usize];
 
                 if self.ctx.addressable_nodes.contains(&id) {
+                    // we need our own storage
+                    let size = self.ctx.get_type_size(id);
+                    let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                        kind: StackSlotKind::ExplicitSlot,
+                        size,
+                    });
+
+                    let slot_addr = self.builder.ins().stack_addr(
+                        self.ctx.module.isa().pointer_type(),
+                        slot,
+                        0,
+                    );
+                    let value = Value::Value(slot_addr);
+                    self.ctx.values.insert(id, value);
+
                     let size = self.ctx.get_type_size(id);
 
                     let source_value = param_value;
@@ -436,9 +437,11 @@ impl<'a> FunctionCompileContext<'a> {
 
                     self.emit_small_memory_copy(dest_value, source_value, size as _);
                 } else {
-                    self.builder
-                        .ins()
-                        .store(MemFlags::new(), param_value, slot_addr, 0);
+                    self.ctx.values.insert(id, Value::Value(param_value));
+
+                    // self.builder
+                    //     .ins()
+                    //     .store(MemFlags::new(), param_value, slot_addr, 0);
                 }
 
                 Ok(())
