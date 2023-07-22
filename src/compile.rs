@@ -294,9 +294,11 @@ struct ToplevelCompileContext<'a> {
 struct FunctionCompileContext<'a> {
     pub ctx: &'a mut Context,
     pub builder: FunctionBuilder<'a>,
-    pub current_block: Block,
     pub in_assign_lhs: bool,
-    pub visited_returns_count: u32,
+    pub exited_block: bool, // Have we emitted a terminator for the current block?
+    pub current_block: Block, // where we are currently emitting instructions
+    pub resolve_addr: Option<Value>, // the address of the stack slot where we store the value of any Node::Resolve we encounter
+    pub resolve_jump_target: Option<Block>, // the jump target for any Node::Resolve we encounter
 }
 
 impl<'a> FunctionCompileContext<'a> {
@@ -364,7 +366,7 @@ impl<'a> FunctionCompileContext<'a> {
                 Ok(())
             }
             Node::Return(rv) => {
-                self.visited_returns_count += 1;
+                self.exited_block = true;
 
                 if let Some(rv) = rv {
                     self.compile_id(rv)?;
@@ -664,43 +666,88 @@ impl<'a> FunctionCompileContext<'a> {
             }
             Node::If {
                 cond,
-                then_stmts,
-                else_stmts,
+                then_block,
+                else_block,
             } => {
-                let block_params = self.builder.block_params(self.current_block).to_vec();
-
                 self.compile_id(cond)?;
                 let cond_value = self.rvalue(cond);
 
-                let then_block = self.builder.create_block();
-                let else_block = self.builder.create_block();
-                let merge_block = self.builder.create_block();
+                // Make a stack slot for the result of the if statement
+                let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                    kind: StackSlotKind::ExplicitSlot,
+                    size: self.ctx.get_type_size(id),
+                });
+                let slot_addr =
+                    self.builder
+                        .ins()
+                        .stack_addr(self.ctx.module.isa().pointer_type(), slot, 0);
+                self.ctx.values.insert(id, Value::Value(slot_addr));
+
+                let saved_resolve_addr = self.resolve_addr;
+                self.resolve_addr = Some(Value::Value(slot_addr));
+
+                let then_ebb = self.builder.create_block();
+                let else_ebb = self.builder.create_block();
+                let merge_ebb = self.builder.create_block();
+
+                let saved_resolve_jump_target = self.resolve_jump_target;
+                self.resolve_jump_target = Some(merge_ebb);
 
                 self.builder
                     .ins()
-                    .brif(cond_value, then_block, &[], else_block, &[]);
+                    .brif(cond_value, then_ebb, &[], else_ebb, &[]);
 
-                self.builder.switch_to_block(then_block);
-                let then_stmts = self.ctx.id_vecs[then_stmts].clone();
-                self.visited_returns_count = 0;
-                for stmt in then_stmts.borrow().iter() {
+                self.exited_block = false;
+                self.switch_to_block(then_ebb);
+                self.compile_id(then_block)?;
+                if !self.exited_block {
+                    self.builder.ins().jump(merge_ebb, &[]);
+                }
+
+                self.switch_to_block(else_ebb);
+                match else_block {
+                    crate::NodeElse::Block(b) => {
+                        self.exited_block = false;
+                        self.compile_id(b)?;
+                        if !self.exited_block {
+                            self.builder.ins().jump(merge_ebb, &[]);
+                        }
+                    }
+                    crate::NodeElse::If(else_if) => {
+                        self.compile_id(else_if)?;
+                        self.store(else_if, self.resolve_addr.unwrap());
+                        self.builder.ins().jump(merge_ebb, &[]);
+                    }
+                    crate::NodeElse::None => {
+                        self.builder.ins().jump(merge_ebb, &[]);
+                    }
+                }
+
+                self.builder.switch_to_block(merge_ebb);
+
+                self.resolve_jump_target = saved_resolve_jump_target;
+                self.resolve_addr = saved_resolve_addr;
+
+                Ok(())
+            }
+            Node::Block { stmts, .. } => {
+                for stmt in self.ctx.id_vecs[stmts].clone().borrow().iter() {
                     self.compile_id(*stmt)?;
                 }
-                if self.visited_returns_count == 0 {
-                    self.builder.ins().jump(merge_block, &[]);
+
+                Ok(())
+            }
+            Node::Resolve(r) => {
+                if let Some(r) = r {
+                    self.compile_id(r)?;
+                    self.store(r, self.resolve_addr.unwrap());
                 }
 
-                self.builder.switch_to_block(else_block);
-                let else_stmts = self.ctx.id_vecs[else_stmts].clone();
-                self.visited_returns_count = 0;
-                for stmt in else_stmts.borrow().iter() {
-                    self.compile_id(*stmt)?;
-                }
-                if self.visited_returns_count == 0 {
-                    self.builder.ins().jump(merge_block, &block_params);
-                }
+                self.builder
+                    .ins()
+                    .jump(self.resolve_jump_target.unwrap(), &[]);
 
-                self.builder.switch_to_block(merge_block);
+                self.exited_block = true;
 
                 Ok(())
             }
@@ -710,6 +757,11 @@ impl<'a> FunctionCompileContext<'a> {
             | Node::StaticMemberAccess { .. } => Ok(()), // This should have already been handled by the toplevel context
             _ => todo!("compile_id for {:?}", &self.ctx.nodes[id]),
         }
+    }
+
+    fn switch_to_block(&mut self, block: Block) {
+        self.builder.switch_to_block(block);
+        self.current_block = block;
     }
 
     fn store_in_slot_if_addressable(&mut self, id: NodeId) {
@@ -934,9 +986,11 @@ impl<'a> ToplevelCompileContext<'a> {
                 let mut builder_ctx = FunctionCompileContext {
                     ctx: self.ctx,
                     builder,
-                    current_block: ebb,
                     in_assign_lhs: false,
-                    visited_returns_count: 0,
+                    exited_block: false,
+                    current_block: ebb,
+                    resolve_addr: None,
+                    resolve_jump_target: None,
                 };
 
                 for &stmt in builder_ctx.ctx.id_vecs[stmts].clone().borrow().iter() {

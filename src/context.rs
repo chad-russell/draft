@@ -113,6 +113,9 @@ pub struct Context {
     // stack of returns - pushed when entering parsing a function, popped when exiting
     pub returns: Vec<Vec<NodeId>>,
 
+    // stack of resolves - pushed when entering parsing a resolve block, popped when exiting
+    pub resolves: Vec<Vec<NodeId>>,
+
     pub scopes: Vec<Scope>,
     pub function_scopes: Vec<ScopeId>,
     pub top_scope: ScopeId,
@@ -139,6 +142,7 @@ pub struct Context {
     pub polymorph_copies: SecondarySet,
     pub completes: SecondarySet,
     pub circular_dependency_nodes: SecondarySet,
+    pub circular_concrete_types: SecondarySet,
 }
 
 unsafe impl Send for Context {}
@@ -159,6 +163,7 @@ impl Context {
             polymorph_copies: Default::default(),
 
             returns: Default::default(),
+            resolves: Default::default(),
 
             scopes: vec![Scope::new_top()],
             function_scopes: Default::default(),
@@ -175,6 +180,7 @@ impl Context {
             completes: Default::default(),
             topo: Default::default(),
             circular_dependency_nodes: Default::default(),
+            circular_concrete_types: Default::default(),
             unification_data: Default::default(),
             deferreds: Default::default(),
             addressable_matches: Default::default(),
@@ -197,6 +203,7 @@ impl Context {
         self.polymorph_sources.clear();
         self.polymorph_copies.clear();
         self.returns.clear();
+        self.resolves.clear();
 
         self.scopes.clear();
         self.scopes.push(Scope::new_top());
@@ -214,6 +221,7 @@ impl Context {
         self.completes.clear();
         self.topo.clear();
         self.circular_dependency_nodes.clear();
+        self.circular_concrete_types.clear();
         self.unification_data.reset();
         self.deferreds.clear();
 

@@ -16,6 +16,7 @@
     -[ ] go to type definition
     -[ ] run button over main
     -[ ] generate missing function
+    -[ ] import suggestions
     -[x] syntax highlighter
 -[x] structs
 -[x] pointers
@@ -27,8 +28,8 @@
 -[x] booleans
 -[x] if/else
     -[ ] as expressions
--[ ] `==` operator
--[ ] enums
+-[x] `==` operator
+-[x] enums
 -[ ] question mark operator (how would this work? do we need interfaces after all?)
 -[ ] for loops
 -[ ] modules

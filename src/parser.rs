@@ -3,7 +3,8 @@ use std::{cell::RefCell, rc::Rc};
 use string_interner::symbol::SymbolU32;
 
 use crate::{
-    CompileError, Context, IdVec, Node, NodeId, RopeySource, Source, SourceInfo, StrSource, Type,
+    CompileError, Context, IdVec, Node, NodeElse, NodeId, RopeySource, Source, SourceInfo,
+    StrSource, Type,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
@@ -155,6 +156,7 @@ pub enum Token {
     Star,
     Slash,
     Return,
+    Resolve,
     Struct,
     Enum,
     AddressOf,
@@ -301,6 +303,9 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
         if self.source_info.prefix_keyword("return", Token::Return) {
+            return;
+        }
+        if self.source_info.prefix_keyword("resolve", Token::Resolve) {
             return;
         }
         if self.source_info.prefix_keyword("struct", Token::Struct) {
@@ -805,7 +810,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
         let mut stmts = Vec::new();
         while self.source_info.top.tok != Token::RCurly {
-            let stmt = self.parse_fn_stmt()?;
+            let stmt = self.parse_block_stmt()?;
             stmts.push(stmt);
         }
         let stmts = self.ctx.push_id_vec(stmts);
@@ -916,7 +921,8 @@ impl<'a, W: Source> Parser<'a, W> {
                 | Token::F32
                 | Token::F64
                 | Token::True
-                | Token::False => {
+                | Token::False
+                | Token::If => {
                     if !parsing_expr {
                         break;
                     }
@@ -972,11 +978,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
                         let expr = self.parse_expression_piece(struct_literals_allowed)?;
                         let id = self.ctx.push_node(
-                            Range::new(
-                                start,
-                                self.ctx.ranges[expr].end,
-                                self.source_info.source_path,
-                            ),
+                            Range::new(start, self.ctx.ranges[expr].end, self.source_info.path),
                             Node::Deref(expr),
                         );
 
@@ -1069,6 +1071,7 @@ impl<'a, W: Source> Parser<'a, W> {
                     .push_node(self.source_info.top.range, Node::BoolLiteral(false));
                 Ok(id)
             }
+            Token::If => self.parse_if(),
             Token::IntegerLiteral(_, _) | Token::FloatLiteral(_, _) => self.parse_numeric_literal(),
             Token::Fn => self.parse_fn(true),
             Token::Star => {
@@ -1076,11 +1079,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 let expr = self.parse_expression_piece(true)?;
                 let id = self.ctx.push_node(
-                    Range::new(
-                        start,
-                        self.ctx.ranges[expr].end,
-                        self.source_info.source_path,
-                    ),
+                    Range::new(start, self.ctx.ranges[expr].end, self.source_info.path),
                     Node::Deref(expr),
                 );
 
@@ -1094,7 +1093,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 let end = self.ctx.ranges[expr].end;
                 let id = self.ctx.push_node(
-                    Range::new(start, end, self.source_info.source_path),
+                    Range::new(start, end, self.source_info.path),
                     Node::AddressOf(expr),
                 );
 
@@ -1181,7 +1180,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 let params = self.parse_value_params()?;
                 let end = self.expect_range(start, Token::RParen)?.end;
                 value = self.ctx.push_node(
-                    Range::new(start, end, self.source_info.source_path),
+                    Range::new(start, end, self.source_info.path),
                     Node::Call {
                         func: value,
                         params,
@@ -1195,7 +1194,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 let member = self.parse_symbol()?;
                 let end = self.ctx.ranges[member].end;
                 value = self.ctx.push_node(
-                    Range::new(start, end, self.source_info.source_path),
+                    Range::new(start, end, self.source_info.path),
                     Node::MemberAccess { value, member },
                 );
                 self.ctx.addressable_nodes.insert(value);
@@ -1207,14 +1206,13 @@ impl<'a, W: Source> Parser<'a, W> {
                 let member = self.parse_symbol()?;
                 let end = self.ctx.ranges[member].end;
                 value = self.ctx.push_node(
-                    Range::new(start, end, self.source_info.source_path),
+                    Range::new(start, end, self.source_info.path),
                     Node::StaticMemberAccess {
                         value,
                         member,
                         resolved: None,
                     },
                 );
-                // self.ctx.addressable_nodes.insert(value);
             }
         }
 
@@ -1298,6 +1296,40 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(let_id)
     }
 
+    pub fn parse_block(&mut self) -> Result<NodeId, CompileError> {
+        let start = self.source_info.top.range.start;
+
+        self.expect(Token::LCurly)?;
+
+        let pushed_scope = self.ctx.push_scope(false);
+        let block_scope = self.ctx.top_scope;
+
+        self.ctx.resolves.push(Vec::new());
+
+        let mut stmts = Vec::new();
+        while self.source_info.top.tok != Token::RCurly {
+            let stmt = self.parse_block_stmt()?;
+            stmts.push(stmt);
+        }
+
+        let range = self.expect_range(start, Token::RCurly)?;
+
+        self.ctx.pop_scope(pushed_scope);
+
+        let stmts = self.ctx.push_id_vec(stmts);
+        let resolves = self.ctx.resolves.pop().unwrap();
+        let resolves = self.ctx.push_id_vec(resolves);
+
+        Ok(self.ctx.push_node(
+            range,
+            Node::Block {
+                scope: block_scope,
+                stmts,
+                resolves,
+            },
+        ))
+    }
+
     pub fn parse_if(&mut self) -> Result<NodeId, CompileError> {
         let start = self.source_info.top.range.start;
 
@@ -1305,49 +1337,38 @@ impl<'a, W: Source> Parser<'a, W> {
 
         let cond = self.parse_expression(false)?;
 
-        self.expect(Token::LCurly)?;
+        let then_block = self.parse_block()?;
 
-        let mut then_stmts = Vec::new();
-        while self.source_info.top.tok != Token::RCurly {
-            let stmt = self.parse_fn_stmt()?;
-            then_stmts.push(stmt);
-        }
-        let maybe_end = self.source_info.top.range.end;
-        self.expect(Token::RCurly)?;
-        let then_stmts = self.ctx.push_id_vec(then_stmts);
-
-        let mut else_stmts = Vec::new();
-        let range_end = if self.source_info.top.tok == Token::Else {
+        let (else_block, end) = if self.source_info.top.tok == Token::Else {
             self.pop(); // `else`
 
-            if self.source_info.top.tok == Token::If {
-                let if_node = self.parse_if()?;
-                else_stmts = vec![if_node];
-                self.ctx.ranges[if_node].end
+            if self.source_info.top.tok == Token::LCurly {
+                let else_block = self.parse_block()?;
+                (NodeElse::Block(else_block), self.ctx.ranges[else_block].end)
+            } else if self.source_info.top.tok == Token::If {
+                let else_if = self.parse_if()?;
+                (NodeElse::If(else_if), self.ctx.ranges[else_if].end)
             } else {
-                self.expect(Token::LCurly)?;
-                while self.source_info.top.tok != Token::RCurly {
-                    let stmt = self.parse_fn_stmt()?;
-                    else_stmts.push(stmt);
-                }
-                self.expect_range(start, Token::RCurly)?.end
+                return Err(CompileError::Generic(
+                    "Expected `if` or `{`".to_string(),
+                    self.source_info.top.range,
+                ));
             }
         } else {
-            maybe_end
+            (NodeElse::None, self.ctx.ranges[then_block].end)
         };
-        let else_stmts = self.ctx.push_id_vec(else_stmts);
 
         Ok(self.ctx.push_node(
-            Range::new(start, range_end, self.source_info.source_path),
+            Range::new(start, end, self.source_info.path),
             Node::If {
                 cond,
-                then_stmts,
-                else_stmts,
+                then_block,
+                else_block,
             },
         ))
     }
 
-    pub fn parse_fn_stmt(&mut self) -> Result<NodeId, CompileError> {
+    pub fn parse_block_stmt(&mut self) -> Result<NodeId, CompileError> {
         let start = self.source_info.top.range.start;
 
         let r = match self.source_info.top.tok {
@@ -1364,6 +1385,21 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 let ret_id = self.ctx.push_node(range, Node::Return(expr));
                 self.ctx.returns.last_mut().unwrap().push(ret_id);
+                Ok(ret_id)
+            }
+            Token::Resolve => {
+                self.pop(); // `resolve`
+
+                let expr = if self.source_info.top.tok != Token::Semicolon {
+                    Some(self.parse_expression(true)?)
+                } else {
+                    None
+                };
+
+                let range = self.expect_range(start, Token::Semicolon)?;
+
+                let ret_id = self.ctx.push_node(range, Node::Resolve(expr));
+                self.ctx.resolves.last_mut().unwrap().push(ret_id);
                 Ok(ret_id)
             }
             Token::Let => self.parse_let(),

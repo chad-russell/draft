@@ -1,10 +1,11 @@
 use crate::{
-    CompileError, Context, IdVec, Node, NodeId, NumericSpecification, Op, StaticMemberResolution,
-    Sym,
+    CompileError, Context, IdVec, Node, NodeElse, NodeId, NumericSpecification, Op,
+    StaticMemberResolution, Sym,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Type {
+    Empty,
     Infer(Option<Sym>),
     IntLiteral,
     I8,
@@ -553,14 +554,18 @@ impl Context {
         return self.types.get(&id).cloned().unwrap_or(Type::Infer(None));
     }
 
-    pub fn is_fully_concrete(&self, id: NodeId) -> bool {
+    pub fn is_fully_concrete(&mut self, id: NodeId) -> bool {
         self.is_fully_concrete_ty(self.get_type(id))
     }
 
-    pub fn is_fully_concrete_ty(&self, ty: Type) -> bool {
-        if let Type::Pointer(_pt) = ty {
-            // return self.is_fully_concrete(pt);
-            return true; // todo(chad): @hack - probably need a full idempotent solution, as pointers are not always fully concrete
+    pub fn is_fully_concrete_ty(&mut self, ty: Type) -> bool {
+        if let Type::Pointer(pt) = ty {
+            if self.circular_concrete_types.contains(&pt) {
+                return true;
+            }
+
+            self.circular_concrete_types.insert(pt);
+            return self.is_fully_concrete(pt);
         }
 
         if let Type::Struct {
@@ -568,7 +573,7 @@ impl Context {
             params,
         } = ty
         {
-            for &field in self.id_vecs[params].borrow().iter() {
+            for &field in self.id_vecs[params].clone().borrow().iter() {
                 if !self.is_fully_concrete(field) {
                     return false;
                 }
@@ -802,7 +807,7 @@ impl Context {
                             ret_id,
                         )),
                         Node::Return(None) => Ok(ret_id),
-                        _ => unreachable!(),
+                        a => panic!("Expected return, got {:?}", a),
                     };
 
                     match (ret_id, return_ty) {
@@ -880,7 +885,8 @@ impl Context {
                     Type::Pointer(ty) => {
                         self.assign_type(ty);
                     }
-                    Type::IntLiteral
+                    Type::Empty
+                    | Type::IntLiteral
                     | Type::I8
                     | Type::I16
                     | Type::I32
@@ -1331,18 +1337,56 @@ impl Context {
             }
             Node::If {
                 cond,
-                then_stmts,
-                else_stmts,
+                then_block,
+                else_block,
             } => {
                 self.assign_type(cond);
-                self.match_types(cond, id);
 
-                for &stmt in self.id_vecs[then_stmts].clone().borrow().iter() {
+                self.assign_type(then_block);
+                self.match_types(id, then_block);
+
+                match else_block {
+                    NodeElse::Block(else_block) => {
+                        self.assign_type(else_block);
+                        self.match_types(id, else_block);
+                    }
+                    NodeElse::If(else_if) => {
+                        self.assign_type(else_if);
+                        self.match_types(id, else_if);
+                    }
+                    NodeElse::None => {
+                        // The two arms of the if must have the same type. So if there's no else arm, then enforce that it is an empty type
+                        self.types.insert(id, Type::Empty);
+                    }
+                }
+
+                self.addressable_nodes.insert(id);
+            }
+            Node::Resolve(r) => match r {
+                Some(r) => {
+                    self.assign_type(r);
+                    self.match_types(id, r);
+                }
+                None => {
+                    self.types.insert(id, Type::Empty);
+                }
+            },
+            Node::Block {
+                stmts, resolves, ..
+            } => {
+                for &stmt in self.id_vecs[stmts].clone().borrow().iter() {
                     self.assign_type(stmt);
                 }
 
-                for &stmt in self.id_vecs[else_stmts].clone().borrow().iter() {
-                    self.assign_type(stmt);
+                let resolves = self.id_vecs[resolves].clone();
+
+                if resolves.borrow().is_empty() {
+                    self.types.insert(id, Type::Empty);
+                }
+
+                for &resolve in resolves.borrow().iter() {
+                    self.assign_type(resolve);
+                    self.match_types(id, resolve);
                 }
             }
         }

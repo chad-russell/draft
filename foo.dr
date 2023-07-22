@@ -1,8 +1,23 @@
 extern print_i64(n: i64);
-extern print_enum_tag(f: *Foo);
 
 fn main() i64 {
-    let a = if true { 1 } else { 2 };
+    let a = if false { 
+        resolve 999; 
+    } else if false { 
+        resolve 999; 
+    } else if false { 
+        resolve 999; 
+    } else if false { 
+        resolve 999; 
+    } else if false { 
+        resolve 999; 
+    } else if false { 
+        resolve 999; 
+    } else { 
+        resolve 3; 
+    };
+
     print_i64(a);
+
     return 0;
 }

@@ -134,7 +134,7 @@ impl Source for RopeySource {
 
 #[derive(Debug)]
 pub struct SourceInfo<W: Source> {
-    pub source_path: &'static str,
+    pub path: &'static str,
     pub source: W,
     pub chars_left: usize,
 
@@ -145,15 +145,15 @@ pub struct SourceInfo<W: Source> {
 
 impl<W: Source> SourceInfo<W> {
     pub fn from_file(file_name: &str) -> SourceInfo<StrSource> {
-        let source_path = PathBuf::from(file_name);
-        let source = std::fs::read_to_string(&source_path).unwrap();
+        let path = PathBuf::from(file_name);
+        let source = std::fs::read_to_string(&path).unwrap();
         let source: &'static str = Box::leak(source.into_boxed_str());
         let source = StrSource::from_str(source);
         let chars_left = source.char_count();
-        let source_path = Box::leak(source_path.into_boxed_path().to_str().unwrap().into());
+        let path = Box::leak(path.into_boxed_path().to_str().unwrap().into());
 
         SourceInfo {
-            source_path,
+            path,
             source,
             chars_left,
             loc: Default::default(),
@@ -171,7 +171,7 @@ impl<W: Source> SourceInfo<W> {
         let source_path = Box::leak(source_path.into_boxed_path().to_str().unwrap().into());
 
         SourceInfo {
-            source_path,
+            path: source_path,
             source,
             chars_left,
             loc: Default::default(),
@@ -185,7 +185,7 @@ impl<W: Source> SourceInfo<W> {
         let chars_left = source.char_count();
 
         SourceInfo {
-            source_path: "<none>",
+            path: "<none>",
             source,
             chars_left,
             loc: Default::default(),
@@ -198,7 +198,7 @@ impl<W: Source> SourceInfo<W> {
         let chars_left = source.char_count();
 
         Self {
-            source_path: "<none>",
+            path: "<none>",
             source,
             chars_left,
             loc: Default::default(),
@@ -217,7 +217,7 @@ impl<W: Source> SourceInfo<W> {
         let source_path = Box::leak(source_path.into_boxed_path().to_str().unwrap().into());
 
         SourceInfo {
-            source_path,
+            path: source_path,
             source,
             chars_left,
             loc: range.start,
@@ -235,7 +235,7 @@ impl<W: Source> SourceInfo<W> {
     }
 
     pub fn make_range(&self, start: Location, end: Location) -> Range {
-        Range::new(start, end, self.source_path)
+        Range::new(start, end, self.path)
     }
 
     pub fn prefix(&mut self, pat: &str, tok: Token) -> bool {

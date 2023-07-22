@@ -19,6 +19,13 @@ pub enum StaticMemberResolution {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub enum NodeElse {
+    Block(NodeId),
+    If(NodeId),
+    None,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum Node {
     Symbol(Sym),
     IntLiteral(i64, NumericSpecification),
@@ -26,6 +33,7 @@ pub enum Node {
     BoolLiteral(bool),
     Type(Type),
     Return(Option<NodeId>),
+    Resolve(Option<NodeId>),
     Let {
         name: NodeId,
         ty: Option<NodeId>,
@@ -43,6 +51,11 @@ pub enum Node {
         return_ty: Option<NodeId>,
         stmts: IdVec,
         returns: IdVec,
+    },
+    Block {
+        scope: ScopeId,
+        stmts: IdVec,
+        resolves: IdVec,
     },
     Extern {
         name: NodeId,
@@ -104,8 +117,8 @@ pub enum Node {
     Deref(NodeId),
     If {
         cond: NodeId,
-        then_stmts: IdVec,
-        else_stmts: IdVec,
+        then_block: NodeId,
+        else_block: NodeElse,
     },
 }
 
@@ -128,6 +141,8 @@ impl Node {
             Node::Let { .. } => "Let".to_string(),
             Node::Assign { .. } => "Set".to_string(),
             Node::Func { .. } => "Func".to_string(),
+            Node::Block { .. } => "Block".to_string(),
+            Node::Resolve(_) => "Block".to_string(),
             Node::Extern { .. } => "Extern".to_string(),
             Node::StructDeclParam { .. } => "StructDeclParam".to_string(),
             Node::EnumDeclParam { .. } => "EnumDeclParam".to_string(),
