@@ -71,38 +71,38 @@ fn main() i64 {
     let pf = &f;
     let ppf = &pf;
 
-    print_i64(foo1(f) - 10); # 1
-    print_i64(foo2(f) - 9); # 2
-    print_i64(foo3(&f) - 8); # 3
-    print_i64(foo4(&f) - 7); # 4
-    print_i64(foo4(pf) - 6); # 5
-    print_i64(foo4(*&pf) - 5); # 6
-    print_i64(foo4(*&*&*&*&*&pf) - 4); # 7
+    print_i64(foo1(f) - 10); // 1
+    print_i64(foo2(f) - 9); // 2
+    print_i64(foo3(&f) - 8); // 3
+    print_i64(foo4(&f) - 7); // 4
+    print_i64(foo4(pf) - 6); // 5
+    print_i64(foo4(*&pf) - 5); // 6
+    print_i64(foo4(*&*&*&*&*&pf) - 4); // 7
 
     f = Foo { y: 3, x: 8 };
-    print_i64(f.x - f.y + 3); # 8
+    print_i64(f.x - f.y + 3); // 8
 
     let g = Bar { 3, 8 };
     let pg = &&&&&&g;
-    # print_i64(foo5(&f, *****pg) - ***&&&7); # 9
+    print_i64(foo5(&f, *pg) - ****&&&&7); // 9
 
     let ten = &&&999;
     **ten = &10;
-    print_i64(***ten); # 10
+    print_i64(***ten); // 10
     
     ***ten = 11;
-    print_i64(***ten); # 11
+    print_i64(***ten); // 11
 
     let f6 = foo6();
-    print_i64(f6.x + f6.y); # 12
+    print_i64(f6.x + f6.y); // 12
     
     let fa = Baz::A();
-    # let make_b = Baz::B;
-    # let fb = make_b(6); # todo: this breaks the compiler
+    let make_b = Baz::B;
+    let fb = make_b(6);
     let fc = Baz::C(_{ 888, 999 });
 
     print_enum_tag(&fa);
-    # print_enum_tag(&fb);
+    print_enum_tag(&fb);
     print_enum_tag(&fc);
     
     let a = false;
@@ -120,9 +120,9 @@ fn main() i64 {
         print_i64(15);
     }
 
-    print_i64(id(16)); # 16
-    print_i64(idp(&17)); # 17
-    print_i64(idppp(*&&&&18)); # 18
+    print_i64(id(16)); // 16
+    print_i64(idp(&17)); // 17
+    print_i64(idppp(*&&&&18)); // 18
     
     print_i64(fac(4));
 

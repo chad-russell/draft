@@ -1056,8 +1056,12 @@ impl Context {
                 }
             },
             Node::Assign { name, expr, .. } => {
+                self.in_assign_lhs = true;
                 self.assign_type(name);
+                self.in_assign_lhs = true;
+
                 self.assign_type(expr);
+
                 self.match_types(id, expr);
                 self.match_types(name, expr);
             }
@@ -1405,7 +1409,16 @@ impl Context {
                 self.types.insert(id, Type::Pointer(value));
             }
             Node::Deref(value) => {
+                // In the case where we're compiling something like `*a = 5`, we need to know that `a` is addressable.
+                // However, only a needs to be addressable. So for example in a more complicate case
+                // like `**a = 12`, only the `*a` needs to be made addressable, not necessarily `a` itself
+                if self.in_assign_lhs {
+                    self.addressable_nodes.insert(value);
+                    self.in_assign_lhs = false;
+                }
+
                 self.assign_type(value);
+
                 match self.get_type(value) {
                     Type::Pointer(ty) => {
                         self.match_types(id, ty);

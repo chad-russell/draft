@@ -133,6 +133,7 @@ pub struct Context {
     pub deferreds: Vec<NodeId>,
     pub addressable_matches: Vec<AddressableMatch>,
     pub addressable_array_reverse_map: SecondaryMap<usize>,
+    pub in_assign_lhs: bool,
 
     pub module: JITModule,
     pub values: SecondaryMap<Value>,
@@ -185,6 +186,7 @@ impl Context {
             deferreds: Default::default(),
             addressable_matches: Default::default(),
             addressable_array_reverse_map: Default::default(),
+            in_assign_lhs: false,
 
             module: Self::make_module(),
             values: Default::default(),
@@ -224,6 +226,7 @@ impl Context {
         self.circular_concrete_types.clear();
         self.unification_data.reset();
         self.deferreds.clear();
+        self.in_assign_lhs = false;
 
         self.module = Self::make_module();
         self.values.clear();

@@ -19,7 +19,7 @@
 - [x] `==` operator
 - [x] enums
 - [ ] question mark operator (how would this work? do we need interfaces after all?)
-- [ ] arrays
+- [x] arrays
 - [ ] for loops
 - [ ] while loops
 - [ ] defer

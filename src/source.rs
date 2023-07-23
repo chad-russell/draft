@@ -297,15 +297,21 @@ impl<W: Source> SourceInfo<W> {
     pub fn eat_spaces(&mut self) {
         loop {
             let mut br = true;
+
+            // eat spaces
             while let Some(' ') = self.source.next_char() {
                 br = false;
                 self.eat(1);
             }
+
+            // eat newlines
             while let Some('\r') | Some('\n') = self.source.next_char() {
                 br = false;
                 self.newline();
             }
-            while let Some('#') = self.source.next_char() {
+
+            // eat comments
+            while self.source.starts_with("//") {
                 br = false;
                 self.eat_rest_of_line();
             }

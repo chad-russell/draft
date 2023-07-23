@@ -1307,7 +1307,7 @@ impl<'a, W: Source> Parser<'a, W> {
         let start = self.source_info.top.range.start;
 
         let name = if self.source_info.top.tok == Token::UnderscoreLCurly {
-            self.pop(); // `#{`
+            self.pop(); // `_{`
             None
         } else {
             let sym = self.parse_symbol()?;

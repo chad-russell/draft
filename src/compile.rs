@@ -300,7 +300,6 @@ struct ToplevelCompileContext<'a> {
 struct FunctionCompileContext<'a> {
     pub ctx: &'a mut Context,
     pub builder: FunctionBuilder<'a>,
-    pub in_assign_lhs: bool,
     pub exited_blocks: HashSet<Block>, // which blocks have been terminated
     pub current_block: Block,          // where we are currently emitting instructions
     pub resolve_addr: Option<Value>, // the address of the stack slot where we store the value of any Node::Resolve we encounter
@@ -409,21 +408,18 @@ impl<'a> FunctionCompileContext<'a> {
             Node::Assign { name, expr, .. } => {
                 match self.ctx.nodes[name] {
                     Node::Deref(_value) => {
-                        self.in_assign_lhs = true;
+                        self.ctx.in_assign_lhs = true;
                         self.compile_id(name)?;
-                        self.in_assign_lhs = false;
-
-                        let addr = self.ctx.values[&name];
-                        self.compile_id(expr)?;
-                        self.store(expr, addr);
+                        self.ctx.in_assign_lhs = false;
                     }
                     _ => {
                         self.compile_id(name)?;
-                        let addr = self.ctx.values[&name];
-                        self.compile_id(expr)?;
-                        self.store(expr, addr);
                     }
                 }
+
+                let addr = self.ctx.values[&name];
+                self.compile_id(expr)?;
+                self.store(expr, addr);
 
                 Ok(())
             }
@@ -600,11 +596,12 @@ impl<'a> FunctionCompileContext<'a> {
             Node::Deref(value) => {
                 self.compile_id(value)?;
 
-                let cranelift_value = if self.in_assign_lhs {
-                    let cranelift_value = self.ctx.values.get(&value).unwrap();
-                    match cranelift_value {
+                let cranelift_value = if self.ctx.in_assign_lhs {
+                    self.ctx.in_assign_lhs = false;
+
+                    match self.ctx.values.get(&value).unwrap() {
                         Value::Value(value) => *value,
-                        _ => todo!("Deref for {:?}", cranelift_value),
+                        cv => todo!("Deref for {:?}", cv),
                     }
                 } else {
                     self.rvalue(value)
@@ -1094,7 +1091,6 @@ impl<'a> ToplevelCompileContext<'a> {
                 let mut builder_ctx = FunctionCompileContext {
                     ctx: self.ctx,
                     builder,
-                    in_assign_lhs: false,
                     exited_blocks: Default::default(),
                     current_block: ebb,
                     resolve_addr: None,
