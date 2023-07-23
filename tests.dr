@@ -131,6 +131,34 @@ fn main() i64 {
     lst.next = &lst;
     lst.next.next.next.next.next.value = 21;
     print_i64(lst.next.next.next.next.next.next.next.next.next.value);
+    
+    let if_test = if false { 
+        resolve 999; 
+    } else if false { 
+        resolve 999; 
+    } else if true { 
+        resolve 22; 
+    } else { 
+        resolve 999; 
+    };
+    print_i64(if_test);
 
+    let block_test = {
+        print_i64(22);
+        resolve if false {
+            resolve 999;
+        } else {
+            resolve 3;
+        };
+    };
+    print_i64(block_test);
+
+    struct PStruct {
+        a: !T,
+        b: T,
+    }
+    let pstruct = PStruct { a: 11, b: 12 };
+    print_i64(pstruct.a + pstruct.b);
+    
     return 0;
 }

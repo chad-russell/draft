@@ -122,6 +122,8 @@ pub enum Token {
     RParen,
     LCurly,
     RCurly,
+    LSquare,
+    RSquare,
     Semicolon,
     DoubleColon,
     Colon,
@@ -360,6 +362,12 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
         if self.source_info.prefix("}", Token::RCurly) {
+            return;
+        }
+        if self.source_info.prefix("[", Token::LSquare) {
+            return;
+        }
+        if self.source_info.prefix("]", Token::RSquare) {
             return;
         }
         if self.source_info.prefix(",", Token::Comma) {
@@ -725,6 +733,9 @@ impl<'a, W: Source> Parser<'a, W> {
 
         self.pop(); // `struct`
 
+        let old_polymorph_target = self.ctx.polymorph_target;
+        self.ctx.polymorph_target = false;
+
         let name = self.parse_symbol()?;
         let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
 
@@ -743,7 +754,16 @@ impl<'a, W: Source> Parser<'a, W> {
                 params: fields,
             },
         );
-        self.ctx.scope_insert(name_sym, struct_node);
+
+        if !self.is_polymorph_copying {
+            self.ctx.scope_insert(name_sym, struct_node);
+        }
+
+        if self.ctx.polymorph_target {
+            self.ctx.polymorph_sources.insert(struct_node);
+        }
+
+        self.ctx.polymorph_target = old_polymorph_target;
 
         Ok(struct_node)
     }
@@ -752,6 +772,9 @@ impl<'a, W: Source> Parser<'a, W> {
         let start = self.source_info.top.range.start;
 
         self.pop(); // `enum`
+
+        let old_polymorph_target = self.ctx.polymorph_target;
+        self.ctx.polymorph_target = false;
 
         let name = self.parse_symbol()?;
         let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
@@ -771,7 +794,16 @@ impl<'a, W: Source> Parser<'a, W> {
                 params: fields,
             },
         );
-        self.ctx.scope_insert(name_sym, struct_node);
+
+        if !self.is_polymorph_copying {
+            self.ctx.scope_insert(name_sym, struct_node);
+        }
+
+        if self.ctx.polymorph_target {
+            self.ctx.polymorph_sources.insert(struct_node);
+        }
+
+        self.ctx.polymorph_target = old_polymorph_target;
 
         Ok(struct_node)
     }
@@ -906,6 +938,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 | Token::FloatLiteral(_, _)
                 | Token::LCurly
                 | Token::LParen
+                | Token::LSquare
                 | Token::Symbol(_)
                 | Token::UnderscoreLCurly
                 | Token::AddressOf
@@ -1106,6 +1139,36 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 Ok(expr)
             }
+            Token::LSquare => {
+                let start = self.source_info.top.range.start;
+
+                self.pop(); // `[`
+                let mut exprs = Vec::new();
+                while self.source_info.top.tok != Token::RSquare {
+                    let expr = self.parse_expression(true)?;
+                    exprs.push(expr);
+
+                    if self.source_info.top.tok == Token::Comma {
+                        self.pop(); // `,`
+                    } else {
+                        break;
+                    }
+                }
+
+                let members = self.ctx.push_id_vec(exprs);
+
+                let range = self.expect_range(start, Token::RSquare)?;
+
+                let ty = self.ctx.push_node(range, Node::Type(Type::Infer(None)));
+
+                let id = self
+                    .ctx
+                    .push_node(range, Node::ArrayLiteral { members, ty });
+
+                self.ctx.addressable_nodes.insert(id);
+
+                Ok(id)
+            }
             Token::I8 => {
                 let range = self.source_info.top.range;
                 self.pop();
@@ -1157,6 +1220,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 Ok(self.ctx.push_node(range, Node::Type(Type::F64)))
             }
             Token::UnderscoreLCurly => Ok(self.parse_struct_literal()?),
+            Token::LCurly => Ok(self.parse_block(true)?),
             Token::Symbol(_) => {
                 if struct_literals_allowed && self.source_info.second.tok == Token::LCurly {
                     Ok(self.parse_struct_literal()?)
@@ -1170,9 +1234,8 @@ impl<'a, W: Source> Parser<'a, W> {
             )),
         }?;
 
-        while self.source_info.top.tok == Token::LParen
-            || self.source_info.top.tok == Token::Dot
-            || self.source_info.top.tok == Token::DoubleColon
+        while let Token::LParen | Token::LSquare | Token::Dot | Token::DoubleColon =
+            self.source_info.top.tok
         {
             // function call?
             while self.source_info.top.tok == Token::LParen {
@@ -1188,15 +1251,36 @@ impl<'a, W: Source> Parser<'a, W> {
                 );
             }
 
+            // array access?
+            while self.source_info.top.tok == Token::LSquare {
+                self.pop(); // `[`
+
+                let index = self.parse_expression(true)?;
+                let end = self.expect_range(start, Token::RSquare)?.end;
+
+                value = self.ctx.push_node(
+                    Range::new(start, end, self.source_info.path),
+                    Node::ArrayAccess {
+                        array: value,
+                        index,
+                    },
+                );
+
+                self.ctx.addressable_nodes.insert(value);
+            }
+
             // member access?
             while self.source_info.top.tok == Token::Dot {
                 self.pop(); // `.`
+
                 let member = self.parse_symbol()?;
                 let end = self.ctx.ranges[member].end;
+
                 value = self.ctx.push_node(
                     Range::new(start, end, self.source_info.path),
                     Node::MemberAccess { value, member },
                 );
+
                 self.ctx.addressable_nodes.insert(value);
             }
 
@@ -1237,6 +1321,8 @@ impl<'a, W: Source> Parser<'a, W> {
         let struct_node = self
             .ctx
             .push_node(range, Node::StructLiteral { name, params });
+
+        self.ctx.addressable_nodes.insert(struct_node);
 
         Ok(struct_node)
     }
@@ -1296,13 +1382,12 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(let_id)
     }
 
-    pub fn parse_block(&mut self) -> Result<NodeId, CompileError> {
+    pub fn parse_block(&mut self, is_standalone: bool) -> Result<NodeId, CompileError> {
         let start = self.source_info.top.range.start;
 
         self.expect(Token::LCurly)?;
 
         let pushed_scope = self.ctx.push_scope(false);
-        let block_scope = self.ctx.top_scope;
 
         self.ctx.resolves.push(Vec::new());
 
@@ -1320,14 +1405,20 @@ impl<'a, W: Source> Parser<'a, W> {
         let resolves = self.ctx.resolves.pop().unwrap();
         let resolves = self.ctx.push_id_vec(resolves);
 
-        Ok(self.ctx.push_node(
+        let block_id = self.ctx.push_node(
             range,
             Node::Block {
-                scope: block_scope,
                 stmts,
                 resolves,
+                is_standalone,
             },
-        ))
+        );
+
+        if is_standalone {
+            self.ctx.addressable_nodes.insert(block_id);
+        }
+
+        Ok(block_id)
     }
 
     pub fn parse_if(&mut self) -> Result<NodeId, CompileError> {
@@ -1337,13 +1428,13 @@ impl<'a, W: Source> Parser<'a, W> {
 
         let cond = self.parse_expression(false)?;
 
-        let then_block = self.parse_block()?;
+        let then_block = self.parse_block(false)?;
 
         let (else_block, end) = if self.source_info.top.tok == Token::Else {
             self.pop(); // `else`
 
             if self.source_info.top.tok == Token::LCurly {
-                let else_block = self.parse_block()?;
+                let else_block = self.parse_block(false)?;
                 (NodeElse::Block(else_block), self.ctx.ranges[else_block].end)
             } else if self.source_info.top.tok == Token::If {
                 let else_if = self.parse_if()?;
@@ -1552,6 +1643,14 @@ impl<'a, W: Source> Parser<'a, W> {
                     .ctx
                     .push_node(range, Node::Type(Type::Enum { name: None, params })))
             }
+            Token::LSquare => {
+                let start = self.source_info.top.range.start;
+                self.pop(); // `[`
+                self.expect(Token::RSquare)?;
+                let ty = self.parse_type()?;
+                let range = Range::new(start, self.ctx.ranges[ty].end, self.source_info.path);
+                Ok(self.ctx.push_node(range, Node::Type(Type::Array(ty))))
+            }
             Token::Star => {
                 let mut range = self.source_info.top.range;
                 self.pop(); // `*`
@@ -1716,7 +1815,11 @@ impl Context {
         Ok(())
     }
 
-    pub fn polymorph_copy(&mut self, id: NodeId) -> Result<NodeId, CompileError> {
+    pub fn polymorph_copy(
+        &mut self,
+        id: NodeId,
+        target: ParseTarget,
+    ) -> Result<NodeId, CompileError> {
         let id = match self.nodes[id] {
             Node::Symbol(sym) => self.scope_get(sym, id).ok_or_else(|| {
                 CompileError::Node("Undeclared symbol when copying polymorph".to_string(), id)
@@ -1732,11 +1835,23 @@ impl Context {
         parser.is_polymorph_copying = true;
         parser.pop();
         parser.pop();
-        let copied = parser.parse_fn(false)?;
+
+        let copied = match target {
+            ParseTarget::Fn => parser.parse_fn(false)?,
+            ParseTarget::StructDefinition => parser.parse_struct_definition()?,
+            ParseTarget::EnumDefinition => parser.parse_enum_definition()?,
+        };
+
         self.polymorph_sources.remove(&copied);
         self.polymorph_copies.insert(copied);
         Ok(copied)
     }
+}
+
+pub enum ParseTarget {
+    Fn,
+    StructDefinition,
+    EnumDefinition,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

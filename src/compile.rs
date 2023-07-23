@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 
@@ -10,7 +12,7 @@ use cranelift_codegen::Context as CodegenContext;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
 
-use crate::{CompileError, Context, Node, NodeId, Op, StaticMemberResolution, Type};
+use crate::{CompileError, Context, IdVec, Node, NodeId, Op, StaticMemberResolution, Type};
 
 #[derive(Clone, Copy, Debug)]
 pub enum Value {
@@ -215,7 +217,8 @@ impl Context {
                     .unwrap_or_default()
                     + self.enum_tag_size()
             }
-            Type::EnumNoneType => 0,
+            Type::Array(_) => 16,
+            Type::EnumNoneType | Type::Empty => 0,
             _ => todo!("get_type_size for {:?}", self.types[&param]),
         }
     }
@@ -254,7 +257,10 @@ impl Context {
     }
 
     pub fn should_pass_by_ref(&self, id: NodeId) -> bool {
-        matches!(self.get_type(id), Type::Struct { .. } | Type::Enum { .. })
+        matches!(
+            self.get_type(id),
+            Type::Struct { .. } | Type::Enum { .. } | Type::Array(_)
+        )
     }
 
     pub fn should_pass_base_by_ref(&self, id: NodeId) -> bool {
@@ -295,8 +301,8 @@ struct FunctionCompileContext<'a> {
     pub ctx: &'a mut Context,
     pub builder: FunctionBuilder<'a>,
     pub in_assign_lhs: bool,
-    pub exited_block: bool, // Have we emitted a terminator for the current block?
-    pub current_block: Block, // where we are currently emitting instructions
+    pub exited_blocks: HashSet<Block>, // which blocks have been terminated
+    pub current_block: Block,          // where we are currently emitting instructions
     pub resolve_addr: Option<Value>, // the address of the stack slot where we store the value of any Node::Resolve we encounter
     pub resolve_jump_target: Option<Block>, // the jump target for any Node::Resolve we encounter
 }
@@ -366,7 +372,7 @@ impl<'a> FunctionCompileContext<'a> {
                 Ok(())
             }
             Node::Return(rv) => {
-                self.exited_block = true;
+                self.exit_current_block();
 
                 if let Some(rv) = rv {
                     self.compile_id(rv)?;
@@ -559,8 +565,6 @@ impl<'a> FunctionCompileContext<'a> {
                     offset += self.ctx.get_type_size(*field);
                 }
 
-                self.ctx.addressable_nodes.insert(id);
-
                 Ok(())
             }
             Node::MemberAccess { value, member } => {
@@ -696,20 +700,17 @@ impl<'a> FunctionCompileContext<'a> {
                 self.builder
                     .ins()
                     .brif(cond_value, then_ebb, &[], else_ebb, &[]);
-
-                self.exited_block = false;
                 self.switch_to_block(then_ebb);
                 self.compile_id(then_block)?;
-                if !self.exited_block {
+                if !self.exited_blocks.contains(&self.current_block) {
                     self.builder.ins().jump(merge_ebb, &[]);
                 }
 
                 self.switch_to_block(else_ebb);
                 match else_block {
                     crate::NodeElse::Block(b) => {
-                        self.exited_block = false;
                         self.compile_id(b)?;
-                        if !self.exited_block {
+                        if !self.exited_blocks.contains(&self.current_block) {
                             self.builder.ins().jump(merge_ebb, &[]);
                         }
                     }
@@ -730,9 +731,42 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
-            Node::Block { stmts, .. } => {
-                for stmt in self.ctx.id_vecs[stmts].clone().borrow().iter() {
-                    self.compile_id(*stmt)?;
+            Node::Block {
+                stmts,
+                is_standalone,
+                ..
+            } => {
+                if is_standalone {
+                    // Make a stack slot for the result of the if statement
+                    let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                        kind: StackSlotKind::ExplicitSlot,
+                        size: self.ctx.get_type_size(id),
+                    });
+                    let slot_addr = self.builder.ins().stack_addr(
+                        self.ctx.module.isa().pointer_type(),
+                        slot,
+                        0,
+                    );
+                    self.ctx.values.insert(id, Value::Value(slot_addr));
+
+                    let saved_resolve_addr = self.resolve_addr;
+                    self.resolve_addr = Some(Value::Value(slot_addr));
+
+                    let merge_ebb = self.builder.create_block();
+
+                    let saved_resolve_jump_target = self.resolve_jump_target;
+                    self.resolve_jump_target = Some(merge_ebb);
+                    self.compile_ids(stmts)?;
+                    if !self.exited_blocks.contains(&self.current_block) {
+                        self.builder.ins().jump(merge_ebb, &[]);
+                    }
+
+                    self.switch_to_block(merge_ebb);
+
+                    self.resolve_addr = saved_resolve_addr;
+                    self.resolve_jump_target = saved_resolve_jump_target;
+                } else {
+                    self.compile_ids(stmts)?;
                 }
 
                 Ok(())
@@ -747,7 +781,69 @@ impl<'a> FunctionCompileContext<'a> {
                     .ins()
                     .jump(self.resolve_jump_target.unwrap(), &[]);
 
-                self.exited_block = true;
+                self.exit_current_block();
+
+                Ok(())
+            }
+            Node::ArrayLiteral { members, ty } => {
+                let member_size = self.ctx.get_type_size(ty);
+
+                let members = self.ctx.id_vecs[members].clone();
+
+                // create stack slot big enough for all of the members
+                let size = self.ctx.get_type_size(ty);
+                let member_storage_slot = self.builder.create_sized_stack_slot(StackSlotData {
+                    kind: StackSlotKind::ExplicitSlot,
+                    size: size * members.borrow().len() as u32,
+                });
+                let member_storage_slot_addr = self.builder.ins().stack_addr(
+                    self.ctx.module.isa().pointer_type(),
+                    member_storage_slot,
+                    0,
+                );
+
+                let mut offset = 0;
+                for &member in members.borrow().iter() {
+                    self.compile_id(member)?;
+                    self.store_with_offset(member, Value::Value(member_storage_slot_addr), offset);
+                    offset += member_size;
+                }
+
+                let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                    kind: StackSlotKind::ExplicitSlot,
+                    size: self.ctx.get_type_size(id),
+                });
+                let slot_addr =
+                    self.builder
+                        .ins()
+                        .stack_addr(self.ctx.module.isa().pointer_type(), slot, 0);
+
+                let len = self
+                    .builder
+                    .ins()
+                    .iconst(types::I64, members.borrow().len() as i64);
+                self.builder
+                    .ins()
+                    .store(MemFlags::new(), member_storage_slot_addr, slot_addr, 0);
+                self.builder.ins().store(MemFlags::new(), len, slot_addr, 8);
+
+                self.ctx.values.insert(id, Value::Value(slot_addr));
+
+                Ok(())
+            }
+            Node::ArrayAccess { array, index } => {
+                self.compile_id(array)?;
+                self.compile_id(index)?;
+
+                let member_size = self.ctx.get_type_size(id);
+
+                let array_value = self.rvalue(array);
+                let array_ptr_value = self.load(types::I64, array_value, 0);
+                let index_value = self.rvalue(index);
+                let index_value = self.builder.ins().imul_imm(index_value, member_size as i64);
+                let array_ptr_value = self.builder.ins().iadd(array_ptr_value, index_value);
+
+                self.ctx.values.insert(id, Value::Value(array_ptr_value));
 
                 Ok(())
             }
@@ -759,9 +855,21 @@ impl<'a> FunctionCompileContext<'a> {
         }
     }
 
+    fn compile_ids(&mut self, ids: IdVec) -> Result<(), CompileError> {
+        for id in self.ctx.id_vecs[ids].clone().borrow().iter() {
+            self.compile_id(*id)?;
+        }
+
+        Ok(())
+    }
+
     fn switch_to_block(&mut self, block: Block) {
         self.builder.switch_to_block(block);
         self.current_block = block;
+    }
+
+    fn exit_current_block(&mut self) {
+        self.exited_blocks.insert(self.current_block);
     }
 
     fn store_in_slot_if_addressable(&mut self, id: NodeId) {
@@ -987,7 +1095,7 @@ impl<'a> ToplevelCompileContext<'a> {
                     ctx: self.ctx,
                     builder,
                     in_assign_lhs: false,
-                    exited_block: false,
+                    exited_blocks: Default::default(),
                     current_block: ebb,
                     resolve_addr: None,
                     resolve_jump_target: None,

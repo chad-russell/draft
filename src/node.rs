@@ -53,9 +53,9 @@ pub enum Node {
         returns: IdVec,
     },
     Block {
-        scope: ScopeId,
         stmts: IdVec,
         resolves: IdVec,
+        is_standalone: bool,
     },
     Extern {
         name: NodeId,
@@ -92,6 +92,10 @@ pub enum Node {
         func: NodeId,
         params: IdVec,
     },
+    ArrayAccess {
+        array: NodeId,
+        index: NodeId,
+    },
     StructDefinition {
         name: NodeId,
         params: IdVec,
@@ -103,6 +107,10 @@ pub enum Node {
     EnumDefinition {
         name: NodeId,
         params: IdVec,
+    },
+    ArrayLiteral {
+        members: IdVec,
+        ty: NodeId,
     },
     MemberAccess {
         value: NodeId,
@@ -158,6 +166,8 @@ impl Node {
             Node::AddressOf(_) => "AddressOf".to_string(),
             Node::Deref(_) => "Deref".to_string(),
             Node::If { .. } => "If".to_string(),
+            Node::ArrayLiteral { .. } => "ArrayLiteral".to_string(),
+            Node::ArrayAccess { .. } => "ArrayAccess".to_string(),
         }
     }
 }

@@ -1,5 +1,5 @@
 use crate::{
-    CompileError, Context, IdVec, Node, NodeElse, NodeId, NumericSpecification, Op,
+    CompileError, Context, IdVec, Node, NodeElse, NodeId, NumericSpecification, Op, ParseTarget,
     StaticMemberResolution, Sym,
 };
 
@@ -34,6 +34,7 @@ pub enum Type {
     },
     EnumNoneType, // Type given to enum members with no storage. We need a distinct type to differentiate it from being unassigned
     Pointer(NodeId),
+    Array(NodeId),
 }
 
 impl Type {
@@ -139,14 +140,16 @@ impl Context {
 
             // For aggregate types, the type matcher should have already detected a mismatch
             // so it doesn't really matter which is chosen
-            (Type::Func { .. }, Type::Func { .. }) => first,
-            (Type::Struct { .. }, Type::Struct { .. }) => first,
-            (Type::Pointer(_), Type::Pointer(_)) => first,
+            (Type::Func { .. }, Type::Func { .. })
+            | (Type::Struct { .. }, Type::Struct { .. })
+            | (Type::Enum { .. }, Type::Enum { .. })
+            | (Type::Pointer(_), Type::Pointer(_))
+            | (Type::Array(_), Type::Array(_)) => first,
 
             // Anything else
             _ => {
                 self.errors.push(CompileError::Node2(
-                    "Type mismatch".to_string(),
+                    format!("Type mismatch: {:?} and {:?}", first, second),
                     err_ids.0,
                     err_ids.1,
                 ));
@@ -453,6 +456,16 @@ impl Context {
                     name: n2,
                     params: f2,
                 },
+            )
+            | (
+                Type::Enum {
+                    name: n1,
+                    params: f1,
+                },
+                Type::Enum {
+                    name: n2,
+                    params: f2,
+                },
             ) => match (n1, n2) {
                 (Some(n1), Some(n2)) => {
                     let n1d = self.scope_get(self.get_symbol(n1), n1);
@@ -460,10 +473,20 @@ impl Context {
 
                     if n1d != n2d {
                         self.errors.push(CompileError::Node2(
-                            "Could not match types: struct declarations differ".to_string(),
+                            "Could not match types: declaration sites differ".to_string(),
                             n1,
                             n2,
                         ));
+                    }
+
+                    // Same declaration site means same number of parameters, so we can just match them up
+                    for (f1, f2) in self.id_vecs[f1]
+                        .clone()
+                        .borrow()
+                        .iter()
+                        .zip(self.id_vecs[f2].clone().borrow().iter())
+                    {
+                        self.match_types(*f1, *f2);
                     }
                 }
                 (None, Some(n)) => {
@@ -493,6 +516,9 @@ impl Context {
                     }
                 }
             },
+            (Type::Array(n1), Type::Array(n2)) => {
+                self.match_types(n1, n2);
+            }
             (bt1, bt2) if bt1 == bt2 => (),
             (Type::IntLiteral, bt) | (bt, Type::IntLiteral) if bt.is_basic() => {
                 if !self.check_int_literal_type(bt) {
@@ -885,6 +911,9 @@ impl Context {
                     Type::Pointer(ty) => {
                         self.assign_type(ty);
                     }
+                    Type::Array(ty) => {
+                        self.assign_type(ty);
+                    }
                     Type::Empty
                     | Type::IntLiteral
                     | Type::I8
@@ -1054,7 +1083,7 @@ impl Context {
 
                 // If func is a polymorph, copy it first
                 if self.polymorph_sources.contains(&func) {
-                    match self.polymorph_copy(func) {
+                    match self.polymorph_copy(func, ParseTarget::Fn) {
                         Ok(func_id) => {
                             func = func_id;
                             self.assign_type(func);
@@ -1122,6 +1151,11 @@ impl Context {
                 }
             }
             Node::StructDefinition { name, params } => {
+                // don't directly codegen a polymorph, wait until it's copied first
+                if self.polymorph_sources.contains(&id) {
+                    return true;
+                }
+
                 let param_ids = self.id_vecs[params].clone();
                 for &param in param_ids.borrow().iter() {
                     self.assign_type(param);
@@ -1138,6 +1172,11 @@ impl Context {
                 self.match_types(id, name);
             }
             Node::EnumDefinition { name, params } => {
+                // don't directly codegen a polymorph, wait until it's copied first
+                if self.polymorph_sources.contains(&id) {
+                    return true;
+                }
+
                 let param_ids = self.id_vecs[params].clone();
                 for &param in param_ids.borrow().iter() {
                     if let Node::EnumDeclParam { ty: None, .. } = self.nodes[param] {
@@ -1160,6 +1199,28 @@ impl Context {
             Node::StructLiteral { name, params, .. } => {
                 if let Some(name) = name {
                     self.assign_type(name);
+
+                    // If this is a polymorph, copy it first
+                    let name = if self.polymorph_sources.contains(&name) {
+                        match self.polymorph_copy(name, ParseTarget::StructDefinition) {
+                            Ok(copied) => {
+                                self.assign_type(copied);
+                                self.nodes[id] = Node::StructLiteral {
+                                    name: Some(copied),
+                                    params,
+                                };
+
+                                copied
+                            }
+                            Err(err) => {
+                                self.errors.push(err);
+                                return true;
+                            }
+                        }
+                    } else {
+                        name
+                    };
+
                     self.match_types(name, id);
                     if let Err(err) = self.match_params_to_named_struct(params, name, id) {
                         self.errors.push(err);
@@ -1235,6 +1296,28 @@ impl Context {
             }
             Node::StaticMemberAccess { value, member, .. } => {
                 self.assign_type(value);
+
+                // If this is a polymorph, copy it first
+                let value = if self.polymorph_sources.contains(&value) {
+                    match self.polymorph_copy(value, ParseTarget::EnumDefinition) {
+                        Ok(copied) => {
+                            self.assign_type(copied);
+                            self.nodes[id] = Node::StaticMemberAccess {
+                                value: copied,
+                                member,
+                                resolved: None,
+                            };
+
+                            copied
+                        }
+                        Err(err) => {
+                            self.errors.push(err);
+                            return true;
+                        }
+                    }
+                } else {
+                    value
+                };
 
                 let mut value_ty = self.get_type(value);
 
@@ -1388,6 +1471,56 @@ impl Context {
                     self.assign_type(resolve);
                     self.match_types(id, resolve);
                 }
+            }
+            Node::ArrayLiteral { members, ty } => {
+                for &member in self.id_vecs[members].clone().borrow().iter() {
+                    self.assign_type(member);
+                    self.match_types(member, ty);
+                }
+
+                self.types.insert(id, Type::Array(ty));
+            }
+            Node::ArrayAccess { array, index } => {
+                self.assign_type(array);
+                self.assign_type(index);
+
+                let array_ty = self.get_type(array);
+
+                match array_ty {
+                    Type::Array(ty) => {
+                        // todo(chad): @Hack: there needs to be a way of doing `self.match_types(id, Type::I64);`
+                        // for now just hardcode to i64 for testing purposes
+                        self.types.insert(index, Type::I64);
+                        self.match_types(id, ty);
+                    }
+                    Type::Infer(_) => {
+                        self.deferreds.push(id);
+                        return false;
+                    }
+                    _ => {
+                        self.errors.push(CompileError::Node(
+                            "Array access on non-array".to_string(),
+                            id,
+                        ));
+                    }
+                }
+
+                let index_ty = self.get_type(index);
+                match index_ty {
+                    Type::I64 => (),
+                    Type::Infer(_) => {
+                        self.deferreds.push(id);
+                        return false;
+                    }
+                    _ => {
+                        self.errors.push(CompileError::Node(
+                            "Array access with non-integer index".to_string(),
+                            id,
+                        ));
+                    }
+                }
+
+                self.addressable_nodes.insert(id);
             }
         }
 

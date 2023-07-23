@@ -1,23 +1,24 @@
 extern print_i64(n: i64);
 
+struct Array {
+    data: *i64,
+    len: i64,
+}
+
+struct Foo {
+    x: i64,
+    y: i64,
+}
+
 fn main() i64 {
-    let a = if false { 
-        resolve 999; 
-    } else if false { 
-        resolve 999; 
-    } else if false { 
-        resolve 999; 
-    } else if false { 
-        resolve 999; 
-    } else if false { 
-        resolve 999; 
-    } else if false { 
-        resolve 999; 
-    } else { 
-        resolve 3; 
-    };
-
-    print_i64(a);
-
+    let a = [Foo { 3, 4 }, Foo { 5, 6 }];
+    a[1].y = 888;
+    let px = &a[0].x;
+    *px = 222;
+    print_i64(a[0].x);
+    print_i64(a[0].y);
+    print_i64(a[1].x);
+    print_i64(a[1].y);
+    
     return 0;
 }
