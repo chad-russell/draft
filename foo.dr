@@ -5,10 +5,6 @@ struct Foo {
     x: !T,
 }
 
-struct AlmostFoo {
-    x: !T,
-}
-
 struct Bar {
     f: Foo!,
 }

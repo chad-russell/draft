@@ -1643,7 +1643,7 @@ impl Context {
                 }
             }
 
-            // self.nodes[ty] = self.nodes[copied];
+            self.nodes[ty] = self.nodes[copied];
             // self.assign_type(copied);
 
             copied
