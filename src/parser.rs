@@ -1698,7 +1698,16 @@ impl<'a, W: Source> Parser<'a, W> {
             Token::Symbol(sym) => {
                 let range = self.source_info.top.range;
                 self.pop();
-                Ok(self.ctx.push_node(range, Node::Symbol(sym)))
+                if self.source_info.top.tok == Token::Bang {
+                    let end = self.source_info.top.range.end;
+                    self.pop(); // `!`
+                    let range = Range::new(range.start, end, self.source_info.path);
+                    Ok(self
+                        .ctx
+                        .push_node(range, Node::PolySpecialize { sym, ty: None }))
+                } else {
+                    Ok(self.ctx.push_node(range, Node::Symbol(sym)))
+                }
             }
             _ => Err(CompileError::Generic(
                 "Expected type".to_string(),

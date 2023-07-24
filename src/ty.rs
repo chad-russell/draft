@@ -396,9 +396,9 @@ impl Context {
 
         // println!(
         //     "matching {:?} ({:?}) with {:?} ({:?})",
-        //     self.types.get(&ty1),
+        //     self.get_type(ty1),
         //     self.ranges[ty1],
-        //     self.types.get(&ty2),
+        //     self.get_type(ty2),
         //     self.ranges[ty2]
         // );
 
@@ -781,6 +781,10 @@ impl Context {
             return;
         }
 
+        if self.polymorph_sources.contains_key(&id) {
+            return;
+        }
+
         if self.circular_dependency_nodes.contains(&id) {
             return;
         }
@@ -995,6 +999,30 @@ impl Context {
                     }
                 }
             }
+            Node::PolySpecialize { .. } => {
+                panic!();
+
+                // if ty.is_some() {
+                //     return true;
+                // }
+
+                // let resolved = self.scope_get(sym, id);
+                // match resolved {
+                //     Some(resolved) => {
+                //         let ty = self.copy_polymorph_if_needed(resolved);
+                //         self.assign_type(ty);
+
+                //         self.nodes[id] = self.nodes[ty];
+
+                //         // self.nodes[id] = Node::PolySpecialize { sym, ty: Some(ty) };
+                //         // self.match_types(id, ty);
+                //     }
+                //     None => {
+                //         self.errors
+                //             .push(CompileError::Node("Symbol not found".to_string(), id));
+                //     }
+                // }
+            }
             Node::StructDeclParam { ty, default, .. } | Node::FuncDeclParam { ty, default, .. } => {
                 if let Some(ty) = ty {
                     self.assign_type(ty);
@@ -1026,7 +1054,7 @@ impl Context {
                 }
                 self.match_addressable(id, value);
             }
-            Node::Let { name, ty, expr } => {
+            Node::Let { ty, expr, .. } => {
                 if let Some(expr) = expr {
                     self.assign_type(expr);
                     self.match_types(id, expr);
@@ -1034,30 +1062,6 @@ impl Context {
 
                 if let Some(ty) = ty {
                     self.assign_type(ty);
-
-                    let ty = if let Some(&ty) = self.polymorph_sources.get(&ty) {
-                        let parse_target = match self.nodes[ty] {
-                            Node::StructDefinition { .. } => ParseTarget::StructDefinition,
-                            Node::EnumDefinition { .. } => ParseTarget::EnumDefinition,
-                            Node::FnDefinition { .. } => ParseTarget::FnDefinition,
-                            a => panic!("Expected struct, enum or fn definition: got {:?}", a),
-                        };
-
-                        let copied = self
-                            .polymorph_copy(ty, parse_target) // todo(chad): could also be something other than a struct definition
-                            .unwrap();
-
-                        self.nodes[id] = Node::Let {
-                            name,
-                            ty: Some(copied),
-                            expr,
-                        };
-
-                        copied
-                    } else {
-                        ty
-                    };
-
                     self.match_types(id, ty);
                 }
             }
@@ -1602,5 +1606,27 @@ impl Context {
         }
 
         Ok(())
+    }
+
+    pub fn copy_polymorph_if_needed(&mut self, ty: NodeId) -> NodeId {
+        if let Some(&ty) = self.polymorph_sources.get(&ty) {
+            let parse_target = match self.nodes[ty] {
+                Node::StructDefinition { .. } => ParseTarget::StructDefinition,
+                Node::EnumDefinition { .. } => ParseTarget::EnumDefinition,
+                Node::FnDefinition { .. } => ParseTarget::FnDefinition,
+                a => panic!("Expected struct, enum or fn definition: got {:?}", a),
+            };
+
+            let copied = self
+                .polymorph_copy(ty, parse_target) // todo(chad): could also be something other than a struct definition
+                .unwrap();
+
+            self.nodes[ty] = self.nodes[copied];
+            self.assign_type(copied);
+
+            copied
+        } else {
+            ty
+        }
     }
 }

@@ -5,14 +5,18 @@ struct Foo {
     x: !T,
 }
 
+struct Bar {
+    f: Foo,
+}
+
 fn main() i64 {
-    let f = Foo { x: 42 };
+    let f: Foo!;
+    f.x = 314;
     print_i64(f.x);
-
-    let g = Foo { x: 4.2 };
-    print_f64(g.x);
-
-    // f = g;
+    
+    let ff: Foo!;
+    ff.x = 3.14;
+    print_f64(ff.x);
     
     return 0;
 }
