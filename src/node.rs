@@ -28,10 +28,7 @@ pub enum NodeElse {
 #[derive(Debug, Clone, Copy)]
 pub enum Node {
     Symbol(Sym),
-    PolySpecialize {
-        sym: Sym,
-        ty: Option<NodeId>,
-    },
+    PolySpecialize(Sym),
     IntLiteral(i64, NumericSpecification),
     FloatLiteral(f64, NumericSpecification),
     BoolLiteral(bool),

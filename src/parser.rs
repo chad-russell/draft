@@ -1675,6 +1675,12 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 Ok(self.ctx.push_node(range, Node::Type(Type::Infer(None))))
             }
+            Token::Bang => {
+                let range = self.source_info.top.range;
+                self.pop(); // `!`
+                self.ctx.polymorph_target = true;
+                Ok(self.ctx.push_node(range, Node::Type(Type::Infer(None))))
+            }
             Token::UnderscoreSymbol(sym) => {
                 let mut range = self.source_info.top.range;
                 self.pop(); // `_T`
@@ -1691,22 +1697,6 @@ impl<'a, W: Source> Parser<'a, W> {
                 self.ctx.scope_insert(sym, id);
                 Ok(id)
             }
-            Token::Bang => {
-                let range = self.source_info.top.range;
-                self.pop(); // `!`
-                self.ctx.polymorph_target = true;
-                Ok(self.ctx.push_node(range, Node::Type(Type::Infer(None))))
-            }
-            // Token::BangSymbol(sym) => {
-            //     let range = self.source_info.top.range;
-            //     self.pop(); // `!T`
-            //     self.ctx.polymorph_target = true;
-            //     let id = self
-            //         .ctx
-            //         .push_node(range, Node::Type(Type::Infer(Some(sym))));
-            //     self.ctx.scope_insert(sym, id);
-            //     Ok(id)
-            // }
             Token::Symbol(sym) => {
                 let range = self.source_info.top.range;
                 self.pop();
@@ -1721,9 +1711,7 @@ impl<'a, W: Source> Parser<'a, W> {
                     let end = self.source_info.top.range.end;
                     self.pop(); // `!`
                     let range = Range::new(range.start, end, self.source_info.path);
-                    Ok(self
-                        .ctx
-                        .push_node(range, Node::PolySpecialize { sym, ty: None }))
+                    Ok(self.ctx.push_node(range, Node::PolySpecialize(sym)))
                 } else {
                     Ok(self.ctx.push_node(range, Node::Symbol(sym)))
                 }
@@ -1870,19 +1858,19 @@ impl Context {
                 let parsed = parser.parse_struct_definition()?;
 
                 // if the struct has generic params, we need to copy those too
-                // // todo(chad): @hack_polymorph
-                // let Node::StructDefinition { params, .. } = self.nodes[parsed] else { panic!() };
-                // let params = self.id_vecs[params].clone();
-                // for param in params.borrow().iter() {
-                //     let Node::StructDeclParam { ty, .. } = self.nodes[param] else { panic!() };
-                //     if let Some(ty) = ty {
-                //         // todo(chad): @hack_polymorph
-                //         if let Node::Symbol(_) = self.nodes[ty] {
-                //             let copied = self.copy_polymorph_if_needed(ty);
-                //             self.nodes[ty] = self.nodes[copied];
-                //         }
-                //     }
-                // }
+                // todo(chad): @hack_polymorph
+                let Node::StructDefinition { params, .. } = self.nodes[parsed] else { panic!() };
+                let params = self.id_vecs[params].clone();
+                for param in params.borrow().iter() {
+                    let Node::StructDeclParam { ty, .. } = self.nodes[param] else { panic!() };
+                    if let Some(ty) = ty {
+                        // todo(chad): @hack_polymorph
+                        if let Node::Symbol(_) = self.nodes[ty] {
+                            let copied = self.copy_polymorph_if_needed(ty);
+                            self.nodes[ty] = self.nodes[copied];
+                        }
+                    }
+                }
 
                 parsed
             }

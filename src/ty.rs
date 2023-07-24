@@ -418,19 +418,11 @@ impl Context {
         }
 
         // println!(
-        //     "matching {} ({:?}) with {} ({:?})",
-        //     self.nodes[ty1].ty(),
-        //     self.ranges[ty1],
-        //     self.nodes[ty2].ty(),
-        //     self.ranges[ty2]
-        // );
-
-        // println!(
         //     "matching {:?} ({:?}) with {:?} ({:?})",
         //     self.get_type(ty1),
-        //     self.ranges[ty1],
+        //     self.nodes[ty1].ty(),
         //     self.get_type(ty2),
-        //     self.ranges[ty2]
+        //     self.nodes[ty2].ty()
         // );
 
         match (self.get_type(ty1), self.get_type(ty2)) {
@@ -1575,8 +1567,11 @@ impl Context {
 
                 self.addressable_nodes.insert(id);
             }
-            Node::PolySpecialize { .. } => {
-                panic!();
+            Node::PolySpecialize(sym) => {
+                let resolved = self.scope_get(sym, id).unwrap();
+                let copied = self.copy_polymorph_if_needed(resolved);
+                self.assign_type(copied);
+                self.match_types(id, copied);
             }
         }
 
@@ -1629,21 +1624,19 @@ impl Context {
 
             let copied = self.polymorph_copy(ty, parse_target).unwrap();
 
-            // todo(chad): @hack_polymorph
-            if let Node::StructDefinition { params, .. } = self.nodes[copied] {
-                let params = self.id_vecs[params].clone();
-                for p in params.borrow().iter() {
-                    let Node::StructDeclParam { ty, .. } = self.nodes[p] else { panic!(); };
-                    let Some(ty) = ty else { continue; };
-                    if let Node::PolySpecialize { sym, .. } = self.nodes[ty] {
-                        println!("recursively copying polymorph");
-
-                        let resolved = self.scope_get(sym, ty).unwrap();
-                        let copied = self.copy_polymorph_if_needed(resolved);
-                        self.nodes[ty] = self.nodes[copied];
-                    }
-                }
-            }
+            // // todo(chad): @hack_polymorph
+            // if let Node::StructDefinition { params, .. } = self.nodes[copied] {
+            //     let params = self.id_vecs[params].clone();
+            //     for p in params.borrow().iter() {
+            //         let Node::StructDeclParam { ty, .. } = self.nodes[p] else { panic!(); };
+            //         let Some(ty) = ty else { continue; };
+            //         if let Node::PolySpecialize(sym) = self.nodes[ty] {
+            //             let resolved = self.scope_get(sym, ty).unwrap();
+            //             let copied = self.copy_polymorph_if_needed(resolved);
+            //             self.nodes[ty] = self.nodes[copied];
+            //         }
+            //     }
+            // }
 
             // self.nodes[ty] = self.nodes[copied];
             // self.assign_type(copied);

@@ -239,28 +239,6 @@ impl Context {
     }
 
     pub fn prepare(&mut self) -> Result<(), CompileError> {
-        // todo(chad): @hack_polymorph
-        for id in 0..self.nodes.len() {
-            let id = NodeId(id);
-            if let Node::Let {
-                ty: Some(ty),
-                name,
-                expr,
-            } = self.nodes[id]
-            {
-                if let Node::PolySpecialize { sym, .. } = self.nodes[ty] {
-                    let resolved = self.scope_get(sym, id).unwrap();
-                    let copied = self.copy_polymorph_if_needed(resolved);
-
-                    self.nodes[id] = Node::Let {
-                        ty: Some(copied),
-                        name,
-                        expr,
-                    };
-                }
-            }
-        }
-
         for id in self.top_level.clone() {
             self.assign_type(id);
             self.unify_types();
