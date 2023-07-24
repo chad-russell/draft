@@ -138,10 +138,18 @@ impl Context {
             (Type::IntLiteral, bt) | (bt, Type::IntLiteral) if bt.is_int() => bt,
             (Type::FloatLiteral, bt) | (bt, Type::FloatLiteral) if bt.is_float() => bt,
 
+            (Type::Struct { name: n1, .. }, Type::Struct { name: n2, .. }) => {
+                // prefer named to unnamed structs
+                match (n1, n2) {
+                    (Some(_), None) => first,
+                    (None, Some(_)) => second,
+                    _ => first, // if both are named or both are unnamed, it doesn't matter which is chosen
+                }
+            }
+
             // For aggregate types, the type matcher should have already detected a mismatch
             // so it doesn't really matter which is chosen
             (Type::Func { .. }, Type::Func { .. })
-            | (Type::Struct { .. }, Type::Struct { .. })
             | (Type::Enum { .. }, Type::Enum { .. })
             | (Type::Pointer(_), Type::Pointer(_))
             | (Type::Array(_), Type::Array(_)) => first,
@@ -159,7 +167,7 @@ impl Context {
     }
 
     pub fn rearrange_params(
-        &self,
+        &mut self,
         given: &[NodeId],
         decl: &[NodeId],
         err_id: NodeId,
@@ -177,7 +185,30 @@ impl Context {
                     Node::ValueParam { name: None, .. }
                 )
             {
-                rearranged_given.push(given[given_idx]);
+                let id_to_push = given[given_idx];
+
+                let Node::ValueParam {
+                    value: existing_value,
+                    index: existing_index,
+                    ..
+                } = self.nodes[id_to_push] else { panic!() };
+
+                // Add the name
+                let name = decl[given_idx];
+                match self.nodes[name] {
+                    Node::StructDeclParam { name, .. }
+                    | Node::FuncDeclParam { name, .. }
+                    | Node::EnumDeclParam { name, .. } => {
+                        self.nodes[id_to_push] = Node::ValueParam {
+                            name: Some(name),
+                            value: existing_value,
+                            index: existing_index,
+                        };
+                    }
+                    _ => panic!(),
+                }
+
+                rearranged_given.push(id_to_push);
                 given_idx += 1;
             }
 
@@ -1259,15 +1290,6 @@ impl Context {
                         let field_ids = self.id_vecs[params].clone();
                         let mut found = false;
 
-                        // println!(
-                        //     "params are: {:?}",
-                        //     field_ids
-                        //         .borrow()
-                        //         .iter()
-                        //         .map(|&id| self.nodes[id].ty())
-                        //         .collect::<Vec<_>>()
-                        // );
-
                         for &field in field_ids.borrow().iter() {
                             let field_name = match &self.nodes[field] {
                                 Node::ValueParam {
@@ -1590,14 +1612,6 @@ impl Context {
                     self.assign_type(*field);
                     self.match_types(*field, *decl_field);
                 }
-
-                // println!(
-                //     "rearranged: {:?}",
-                //     rearranged
-                //         .iter()
-                //         .map(|&id| self.nodes[id])
-                //         .collect::<Vec<_>>()
-                // );
             }
         }
 
@@ -1606,8 +1620,6 @@ impl Context {
 
     pub fn copy_polymorph_if_needed(&mut self, ty: NodeId) -> NodeId {
         if let Some(&ty) = self.polymorph_sources.get(&ty) {
-            println!("copying");
-
             let parse_target = match self.nodes[ty] {
                 Node::StructDefinition { .. } => ParseTarget::StructDefinition,
                 Node::EnumDefinition { .. } => ParseTarget::EnumDefinition,
@@ -1618,18 +1630,18 @@ impl Context {
             let copied = self.polymorph_copy(ty, parse_target).unwrap();
 
             // todo(chad): @hack_polymorph
-            // if let Node::StructDefinition { params, .. } = self.nodes[copied] {
-            //     let params = self.id_vecs[params].clone();
-            //     for p in params.borrow().iter() {
-            //         let Node::StructDeclParam { ty, .. } = self.nodes[p] else { panic!(); };
-            //         let Some(ty) = ty else { continue; };
-            //         if let Node::PolySpecialize { sym, .. } = self.nodes[ty] {
-            //             let resolved = self.scope_get(sym, ty).unwrap();
-            //             let copied = self.copy_polymorph_if_needed(resolved);
-            //             self.nodes[ty] = self.nodes[copied];
-            //         }
-            //     }
-            // }
+            if let Node::StructDefinition { params, .. } = self.nodes[copied] {
+                let params = self.id_vecs[params].clone();
+                for p in params.borrow().iter() {
+                    let Node::StructDeclParam { ty, .. } = self.nodes[p] else { panic!(); };
+                    let Some(ty) = ty else { continue; };
+                    if let Node::PolySpecialize { sym, .. } = self.nodes[ty] {
+                        let resolved = self.scope_get(sym, ty).unwrap();
+                        let copied = self.copy_polymorph_if_needed(resolved);
+                        self.nodes[ty] = self.nodes[copied];
+                    }
+                }
+            }
 
             // self.nodes[ty] = self.nodes[copied];
             // self.assign_type(copied);

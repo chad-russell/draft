@@ -764,10 +764,10 @@ impl<'a, W: Source> Parser<'a, W> {
 
         if !self.is_polymorph_copying {
             self.ctx.scope_insert(name_sym, struct_node);
-        }
 
-        if self.ctx.polymorph_target {
-            self.ctx.polymorph_sources.insert(struct_node, struct_node);
+            if self.ctx.polymorph_target {
+                self.ctx.polymorph_sources.insert(struct_node, struct_node);
+            }
         }
 
         self.ctx.polymorph_target = old_polymorph_target;
@@ -1871,7 +1871,6 @@ impl Context {
                 //     if let Some(ty) = ty {
                 //         // todo(chad): @hack_polymorph
                 //         if let Node::Symbol(_) = self.nodes[ty] {
-                //             println!("copying!");
                 //             let copied = self.copy_polymorph_if_needed(ty);
                 //             self.nodes[ty] = self.nodes[copied];
                 //         }
