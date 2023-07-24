@@ -1,22 +1,12 @@
 extern print_i64(n: i64);
-extern print_f64(n: f64);
 
 struct Foo {
-    x: !T,
-}
-
-struct Bar {
-    f: Foo,
+    x: i64,
 }
 
 fn main() i64 {
-    let b: Bar!;
-    b.f = _{ 314 };
-    print_i64(b.f.x);
-    
-    let bb: Bar!;
-    bb.f = _{ 3.14 };
-    print_f64(bb.f.x);
+    let f: Foo = _{ 123 };
+    print_i64(f.x);
     
     return 0;
 }

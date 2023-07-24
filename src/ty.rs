@@ -246,7 +246,7 @@ impl Context {
 
     pub fn match_types(&mut self, ty1: NodeId, ty2: NodeId) {
         self.handle_match_types(ty1, ty2);
-        self.merge_type_matches(ty1, ty2); // todo(chad): can we just do this once at the end? Would it be faster?
+        self.merge_type_matches(ty1, ty2);
     }
 
     pub fn match_addressable(&mut self, n1: NodeId, n2: NodeId) {
@@ -999,30 +999,6 @@ impl Context {
                     }
                 }
             }
-            Node::PolySpecialize { .. } => {
-                panic!();
-
-                // if ty.is_some() {
-                //     return true;
-                // }
-
-                // let resolved = self.scope_get(sym, id);
-                // match resolved {
-                //     Some(resolved) => {
-                //         let ty = self.copy_polymorph_if_needed(resolved);
-                //         self.assign_type(ty);
-
-                //         self.nodes[id] = self.nodes[ty];
-
-                //         // self.nodes[id] = Node::PolySpecialize { sym, ty: Some(ty) };
-                //         // self.match_types(id, ty);
-                //     }
-                //     None => {
-                //         self.errors
-                //             .push(CompileError::Node("Symbol not found".to_string(), id));
-                //     }
-                // }
-            }
             Node::StructDeclParam { ty, default, .. } | Node::FuncDeclParam { ty, default, .. } => {
                 if let Some(ty) = ty {
                     self.assign_type(ty);
@@ -1283,6 +1259,15 @@ impl Context {
                         let field_ids = self.id_vecs[params].clone();
                         let mut found = false;
 
+                        // println!(
+                        //     "params are: {:?}",
+                        //     field_ids
+                        //         .borrow()
+                        //         .iter()
+                        //         .map(|&id| self.nodes[id].ty())
+                        //         .collect::<Vec<_>>()
+                        // );
+
                         for &field in field_ids.borrow().iter() {
                             let field_name = match &self.nodes[field] {
                                 Node::ValueParam {
@@ -1293,7 +1278,7 @@ impl Context {
                                     self.errors.push(CompileError::Node(
                                         format!(
                                             "Cannot perform member access as this field's name ({:?}) could not be found",
-                                            &self.ranges[field]
+                                            &self.ranges[field],
                                         ),
                                         id,
                                     ));
@@ -1568,6 +1553,9 @@ impl Context {
 
                 self.addressable_nodes.insert(id);
             }
+            Node::PolySpecialize { .. } => {
+                panic!();
+            }
         }
 
         return true;
@@ -1602,6 +1590,14 @@ impl Context {
                     self.assign_type(*field);
                     self.match_types(*field, *decl_field);
                 }
+
+                // println!(
+                //     "rearranged: {:?}",
+                //     rearranged
+                //         .iter()
+                //         .map(|&id| self.nodes[id])
+                //         .collect::<Vec<_>>()
+                // );
             }
         }
 
@@ -1609,31 +1605,38 @@ impl Context {
     }
 
     pub fn copy_polymorph_if_needed(&mut self, ty: NodeId) -> NodeId {
-        // todo(chad): @Hack
-        // let ty = if let Node::Symbol(sym) = self.nodes[ty] {
-        //     self.scope_get(sym, ty).unwrap()
-        // } else {
-        //     ty
-        // };
+        if let Some(&ty) = self.polymorph_sources.get(&ty) {
+            println!("copying");
 
-        // if let Some(&ty) = self.polymorph_sources.get(&ty) {
-        let parse_target = match self.nodes[ty] {
-            Node::StructDefinition { .. } => ParseTarget::StructDefinition,
-            Node::EnumDefinition { .. } => ParseTarget::EnumDefinition,
-            Node::FnDefinition { .. } => ParseTarget::FnDefinition,
-            a => panic!("Expected struct, enum or fn definition: got {:?}", a),
-        };
+            let parse_target = match self.nodes[ty] {
+                Node::StructDefinition { .. } => ParseTarget::StructDefinition,
+                Node::EnumDefinition { .. } => ParseTarget::EnumDefinition,
+                Node::FnDefinition { .. } => ParseTarget::FnDefinition,
+                a => panic!("Expected struct, enum or fn definition: got {:?}", a),
+            };
 
-        let copied = self
-            .polymorph_copy(ty, parse_target) // todo(chad): could also be something other than a struct definition
-            .unwrap();
+            let copied = self.polymorph_copy(ty, parse_target).unwrap();
 
-        self.nodes[ty] = self.nodes[copied];
-        self.assign_type(copied);
+            // todo(chad): @hack_polymorph
+            // if let Node::StructDefinition { params, .. } = self.nodes[copied] {
+            //     let params = self.id_vecs[params].clone();
+            //     for p in params.borrow().iter() {
+            //         let Node::StructDeclParam { ty, .. } = self.nodes[p] else { panic!(); };
+            //         let Some(ty) = ty else { continue; };
+            //         if let Node::PolySpecialize { sym, .. } = self.nodes[ty] {
+            //             let resolved = self.scope_get(sym, ty).unwrap();
+            //             let copied = self.copy_polymorph_if_needed(resolved);
+            //             self.nodes[ty] = self.nodes[copied];
+            //         }
+            //     }
+            // }
 
-        copied
-        // } else {
-        // ty
-        // }
+            // self.nodes[ty] = self.nodes[copied];
+            // self.assign_type(copied);
+
+            copied
+        } else {
+            ty
+        }
     }
 }

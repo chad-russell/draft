@@ -239,13 +239,25 @@ impl Context {
     }
 
     pub fn prepare(&mut self) -> Result<(), CompileError> {
-        // todo(chad): @Hack
+        // todo(chad): @hack_polymorph
         // for id in 0..self.nodes.len() {
         //     let id = NodeId(id);
-        //     if let Node::PolySpecialize { sym, .. } = self.nodes[id] {
-        //         let resolved = self.scope_get(sym, id).unwrap();
-        //         let copied = self.copy_polymorph_if_needed(resolved);
-        //         self.nodes[id] = self.nodes[copied];
+        //     if let Node::Let {
+        //         ty: Some(ty),
+        //         name,
+        //         expr,
+        //     } = self.nodes[id]
+        //     {
+        //         if let Node::PolySpecialize { sym, .. } = self.nodes[ty] {
+        //             let resolved = self.scope_get(sym, id).unwrap();
+        //             let copied = self.copy_polymorph_if_needed(resolved);
+
+        //             self.nodes[id] = Node::Let {
+        //                 ty: Some(copied),
+        //                 name,
+        //                 expr,
+        //             };
+        //         }
         //     }
         // }
 

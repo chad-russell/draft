@@ -225,6 +225,7 @@ pub struct Parser<'a, W: Source> {
     pub source_info: &'a mut SourceInfo<W>,
     pub ctx: &'a mut Context,
     pub is_polymorph_copying: bool,
+    pub in_struct_decl: bool,
 }
 
 impl<'a, W: Source> Parser<'a, W> {
@@ -233,6 +234,7 @@ impl<'a, W: Source> Parser<'a, W> {
             source_info,
             ctx: context,
             is_polymorph_copying: false,
+            in_struct_decl: false,
         }
     }
 
@@ -733,6 +735,8 @@ impl<'a, W: Source> Parser<'a, W> {
 
         self.pop(); // `struct`
 
+        self.in_struct_decl = true;
+
         let old_polymorph_target = self.ctx.polymorph_target;
         self.ctx.polymorph_target = false;
 
@@ -767,6 +771,7 @@ impl<'a, W: Source> Parser<'a, W> {
         }
 
         self.ctx.polymorph_target = old_polymorph_target;
+        self.in_struct_decl = false;
 
         if is_array_decl {
             self.ctx.array_declaration = Some(struct_node);
@@ -1699,6 +1704,13 @@ impl<'a, W: Source> Parser<'a, W> {
                 let range = self.source_info.top.range;
                 self.pop();
                 if self.source_info.top.tok == Token::Bang {
+                    // If the declaration in question includes a specialization, then *for now* it's a polymorph target
+                    // todo(chad): We need to parse the case where there are parameters passed to this specialization. If the type is
+                    // fully specialized by the parameters, then it's not actually a polymorph target but just a concrete type.
+                    if self.in_struct_decl {
+                        self.ctx.polymorph_target = true;
+                    }
+
                     let end = self.source_info.top.range.end;
                     self.pop(); // `!`
                     let range = Range::new(range.start, end, self.source_info.path);
@@ -1836,14 +1848,6 @@ impl Context {
         id: NodeId,
         target: ParseTarget,
     ) -> Result<NodeId, CompileError> {
-        // todo(chad): @Hack
-        // let id = match self.nodes[id] {
-        //     Node::Symbol(sym) => self.scope_get(sym, id).ok_or_else(|| {
-        //         CompileError::Node("Undeclared symbol when copying polymorph".to_string(), id)
-        //     }),
-        //     _ => Ok(id),
-        // }?;
-
         // Re-parse the region of the source code that contains the id
         // todo(chad): @performance
         let range = self.ranges[id];
@@ -1859,13 +1863,13 @@ impl Context {
                 let parsed = parser.parse_struct_definition()?;
 
                 // if the struct has generic params, we need to copy those too
-                // // todo(chad): @Hack
+                // // todo(chad): @hack_polymorph
                 // let Node::StructDefinition { params, .. } = self.nodes[parsed] else { panic!() };
                 // let params = self.id_vecs[params].clone();
                 // for param in params.borrow().iter() {
                 //     let Node::StructDeclParam { ty, .. } = self.nodes[param] else { panic!() };
                 //     if let Some(ty) = ty {
-                //         // todo(chad): @Hack
+                //         // todo(chad): @hack_polymorph
                 //         if let Node::Symbol(_) = self.nodes[ty] {
                 //             println!("copying!");
                 //             let copied = self.copy_polymorph_if_needed(ty);
