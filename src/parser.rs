@@ -163,7 +163,6 @@ pub enum Token {
     Enum,
     AddressOf,
     Bang,
-    BangSymbol(Sym),
     UnderscoreLCurly,
     Eof,
 }
@@ -244,18 +243,14 @@ impl<'a, W: Source> Parser<'a, W> {
         let start = self.source_info.loc;
         self.source_info.top = self.source_info.second;
 
-        let (is_underscore, is_bang) = if self.source_info.source.char_count() > 1 {
-            (
-                self.source_info.source.starts_with("_")
-                    && !breaks_symbol(self.source_info.source.char_at(1).unwrap()),
-                self.source_info.source.starts_with("!")
-                    && !breaks_symbol(self.source_info.source.char_at(1).unwrap()),
-            )
+        let is_underscore = if self.source_info.source.char_count() > 1 {
+            self.source_info.source.starts_with("_")
+                && !breaks_symbol(self.source_info.source.char_at(1).unwrap())
         } else {
-            (false, false)
+            false
         };
 
-        if is_underscore || is_bang {
+        if is_underscore {
             let start = self.source_info.loc;
             self.source_info.eat(1);
 
@@ -278,8 +273,6 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 let symtok = if is_underscore {
                     Token::UnderscoreSymbol(Sym(sym))
-                } else if is_bang {
-                    Token::BangSymbol(Sym(sym))
                 } else {
                     unreachable!();
                 };
@@ -1671,13 +1664,27 @@ impl<'a, W: Source> Parser<'a, W> {
                 Ok(self.ctx.push_node(range, Node::Type(Type::Pointer(ty))))
             }
             Token::Underscore => {
-                let range = self.source_info.top.range;
+                let mut range = self.source_info.top.range;
                 self.pop(); // `_`
+
+                if self.source_info.top.tok == Token::Bang {
+                    range.end = self.source_info.top.range.end;
+                    self.pop(); // `!`
+                    self.ctx.polymorph_target = true;
+                }
+
                 Ok(self.ctx.push_node(range, Node::Type(Type::Infer(None))))
             }
             Token::UnderscoreSymbol(sym) => {
-                let range = self.source_info.top.range;
+                let mut range = self.source_info.top.range;
                 self.pop(); // `_T`
+
+                if self.source_info.top.tok == Token::Bang {
+                    range.end = self.source_info.top.range.end;
+                    self.pop(); // `!`
+                    self.ctx.polymorph_target = true;
+                }
+
                 let id = self
                     .ctx
                     .push_node(range, Node::Type(Type::Infer(Some(sym))));
@@ -1690,16 +1697,16 @@ impl<'a, W: Source> Parser<'a, W> {
                 self.ctx.polymorph_target = true;
                 Ok(self.ctx.push_node(range, Node::Type(Type::Infer(None))))
             }
-            Token::BangSymbol(sym) => {
-                let range = self.source_info.top.range;
-                self.pop(); // `!T`
-                self.ctx.polymorph_target = true;
-                let id = self
-                    .ctx
-                    .push_node(range, Node::Type(Type::Infer(Some(sym))));
-                self.ctx.scope_insert(sym, id);
-                Ok(id)
-            }
+            // Token::BangSymbol(sym) => {
+            //     let range = self.source_info.top.range;
+            //     self.pop(); // `!T`
+            //     self.ctx.polymorph_target = true;
+            //     let id = self
+            //         .ctx
+            //         .push_node(range, Node::Type(Type::Infer(Some(sym))));
+            //     self.ctx.scope_insert(sym, id);
+            //     Ok(id)
+            // }
             Token::Symbol(sym) => {
                 let range = self.source_info.top.range;
                 self.pop();

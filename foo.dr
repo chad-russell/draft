@@ -13,8 +13,8 @@ fn main() i64 {
     let b: Bar! = _{ _{ 123 } };
     print_i64(b.f.x);
     
-    let bb: Bar! = _{ _{ 1.23 } };
-    print_f64(b.f.x);
+    // let bb: Bar! = _{ _{ 1.23 } };
+    // print_f64(b.f.x);
     
     return 0;
 }

@@ -33,7 +33,7 @@ fn foo4(f: *!) _ {
     return f.x + f.y;
 }
 
-fn foo5(f: *!T, g: !U) _ {
+fn foo5(f: *_T!, g: _U!) _ {
     return f.x - f.y + g.x + g.y;
 }
 
@@ -154,7 +154,7 @@ fn main() i64 {
     print_i64(block_test);
 
     struct PStruct {
-        a: !T,
+        a: _T!,
         b: T,
     }
     let pstruct = PStruct { a: 11, b: 12 };

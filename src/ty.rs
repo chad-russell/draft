@@ -1636,6 +1636,8 @@ impl Context {
                     let Node::StructDeclParam { ty, .. } = self.nodes[p] else { panic!(); };
                     let Some(ty) = ty else { continue; };
                     if let Node::PolySpecialize { sym, .. } = self.nodes[ty] {
+                        println!("recursively copying polymorph");
+
                         let resolved = self.scope_get(sym, ty).unwrap();
                         let copied = self.copy_polymorph_if_needed(resolved);
                         self.nodes[ty] = self.nodes[copied];
@@ -1643,7 +1645,7 @@ impl Context {
                 }
             }
 
-            self.nodes[ty] = self.nodes[copied];
+            // self.nodes[ty] = self.nodes[copied];
             // self.assign_type(copied);
 
             copied
