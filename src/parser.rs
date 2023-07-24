@@ -1836,12 +1836,13 @@ impl Context {
         id: NodeId,
         target: ParseTarget,
     ) -> Result<NodeId, CompileError> {
-        let id = match self.nodes[id] {
-            Node::Symbol(sym) => self.scope_get(sym, id).ok_or_else(|| {
-                CompileError::Node("Undeclared symbol when copying polymorph".to_string(), id)
-            }),
-            _ => Ok(id),
-        }?;
+        // todo(chad): @Hack
+        // let id = match self.nodes[id] {
+        //     Node::Symbol(sym) => self.scope_get(sym, id).ok_or_else(|| {
+        //         CompileError::Node("Undeclared symbol when copying polymorph".to_string(), id)
+        //     }),
+        //     _ => Ok(id),
+        // }?;
 
         // Re-parse the region of the source code that contains the id
         // todo(chad): @performance
@@ -1854,7 +1855,27 @@ impl Context {
 
         let copied = match target {
             ParseTarget::FnDefinition => parser.parse_fn(false)?,
-            ParseTarget::StructDefinition => parser.parse_struct_definition()?,
+            ParseTarget::StructDefinition => {
+                let parsed = parser.parse_struct_definition()?;
+
+                // if the struct has generic params, we need to copy those too
+                // // todo(chad): @Hack
+                // let Node::StructDefinition { params, .. } = self.nodes[parsed] else { panic!() };
+                // let params = self.id_vecs[params].clone();
+                // for param in params.borrow().iter() {
+                //     let Node::StructDeclParam { ty, .. } = self.nodes[param] else { panic!() };
+                //     if let Some(ty) = ty {
+                //         // todo(chad): @Hack
+                //         if let Node::Symbol(_) = self.nodes[ty] {
+                //             println!("copying!");
+                //             let copied = self.copy_polymorph_if_needed(ty);
+                //             self.nodes[ty] = self.nodes[copied];
+                //         }
+                //     }
+                // }
+
+                parsed
+            }
             ParseTarget::EnumDefinition => parser.parse_enum_definition()?,
             ParseTarget::Type => parser.parse_type()?,
         };

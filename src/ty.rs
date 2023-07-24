@@ -1609,24 +1609,31 @@ impl Context {
     }
 
     pub fn copy_polymorph_if_needed(&mut self, ty: NodeId) -> NodeId {
-        if let Some(&ty) = self.polymorph_sources.get(&ty) {
-            let parse_target = match self.nodes[ty] {
-                Node::StructDefinition { .. } => ParseTarget::StructDefinition,
-                Node::EnumDefinition { .. } => ParseTarget::EnumDefinition,
-                Node::FnDefinition { .. } => ParseTarget::FnDefinition,
-                a => panic!("Expected struct, enum or fn definition: got {:?}", a),
-            };
+        // todo(chad): @Hack
+        // let ty = if let Node::Symbol(sym) = self.nodes[ty] {
+        //     self.scope_get(sym, ty).unwrap()
+        // } else {
+        //     ty
+        // };
 
-            let copied = self
-                .polymorph_copy(ty, parse_target) // todo(chad): could also be something other than a struct definition
-                .unwrap();
+        // if let Some(&ty) = self.polymorph_sources.get(&ty) {
+        let parse_target = match self.nodes[ty] {
+            Node::StructDefinition { .. } => ParseTarget::StructDefinition,
+            Node::EnumDefinition { .. } => ParseTarget::EnumDefinition,
+            Node::FnDefinition { .. } => ParseTarget::FnDefinition,
+            a => panic!("Expected struct, enum or fn definition: got {:?}", a),
+        };
 
-            self.nodes[ty] = self.nodes[copied];
-            self.assign_type(copied);
+        let copied = self
+            .polymorph_copy(ty, parse_target) // todo(chad): could also be something other than a struct definition
+            .unwrap();
 
-            copied
-        } else {
-            ty
-        }
+        self.nodes[ty] = self.nodes[copied];
+        self.assign_type(copied);
+
+        copied
+        // } else {
+        // ty
+        // }
     }
 }

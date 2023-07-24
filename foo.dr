@@ -12,7 +12,11 @@ struct Bar {
 fn main() i64 {
     let b: Bar!;
     b.f = _{ 314 };
-    print_i64(bbf.x);
+    print_i64(b.f.x);
+    
+    let bb: Bar!;
+    bb.f = _{ 3.14 };
+    print_f64(bb.f.x);
     
     return 0;
 }
