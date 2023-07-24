@@ -1182,7 +1182,7 @@ impl Context {
                     }
                 }
             }
-            Node::StructDefinition { name, params } => {
+            Node::StructDefinition { name, params, .. } => {
                 // don't directly codegen a polymorph, wait until it's copied first
                 if self.polymorph_sources.contains_key(&id) {
                     return true;
@@ -1567,11 +1567,30 @@ impl Context {
 
                 self.addressable_nodes.insert(id);
             }
-            Node::PolySpecialize(sym) => {
+            Node::PolySpecialize { sym, overrides } => {
                 let resolved = self.scope_get(sym, id).unwrap();
                 let copied = self.copy_polymorph_if_needed(resolved);
                 self.assign_type(copied);
                 self.match_types(id, copied);
+
+                let overrides = self.id_vecs[overrides].clone();
+                for o in overrides.borrow().iter() {
+                    self.assign_type(*o);
+                    let Node::PolySpecializeOverride { sym, ty } = self.nodes[o] else { panic!() };
+                    let sym = self.get_symbol(sym);
+
+                    let Node::StructDefinition {
+                        scope: scope_id, ..
+                    } = self.nodes[copied] else { panic!() };
+
+                    let resolved = self.scope_get_with_scope_id(sym, scope_id).unwrap();
+                    self.assign_type(resolved);
+                    self.match_types(ty, resolved);
+                }
+            }
+            Node::PolySpecializeOverride { ty, .. } => {
+                self.assign_type(ty);
+                self.match_types(id, ty);
             }
         }
 
@@ -1622,26 +1641,7 @@ impl Context {
                 a => panic!("Expected struct, enum or fn definition: got {:?}", a),
             };
 
-            let copied = self.polymorph_copy(ty, parse_target).unwrap();
-
-            // // todo(chad): @hack_polymorph
-            // if let Node::StructDefinition { params, .. } = self.nodes[copied] {
-            //     let params = self.id_vecs[params].clone();
-            //     for p in params.borrow().iter() {
-            //         let Node::StructDeclParam { ty, .. } = self.nodes[p] else { panic!(); };
-            //         let Some(ty) = ty else { continue; };
-            //         if let Node::PolySpecialize(sym) = self.nodes[ty] {
-            //             let resolved = self.scope_get(sym, ty).unwrap();
-            //             let copied = self.copy_polymorph_if_needed(resolved);
-            //             self.nodes[ty] = self.nodes[copied];
-            //         }
-            //     }
-            // }
-
-            // self.nodes[ty] = self.nodes[copied];
-            // self.assign_type(copied);
-
-            copied
+            self.polymorph_copy(ty, parse_target).unwrap()
         } else {
             ty
         }

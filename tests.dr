@@ -66,6 +66,31 @@ struct List {
     next: *List,
 }
 
+struct Vec {
+    data: *_T!,
+    len: i64,
+}
+
+fn vec_new() Vec! {
+    let v: Vec!;
+    v.len = 0;
+    return v;
+}
+
+fn vec_len(v: *Vec!(T: Vec!(T: f64))) i64 {
+    return v.len;
+}
+
+fn test_vec_stuff_1() i64 { 
+    let v1 = vec_new();
+    v1.data = &0.0f64;
+
+    let v2 = Vec { data: &v1, len: 26 };
+    print_i64(vec_len(&v2));
+
+    return 0;
+}
+
 fn main() i64 {
     let f = Foo { 3, 8 };
     let pf = &f;
@@ -159,6 +184,8 @@ fn main() i64 {
     }
     let pstruct = PStruct { a: 11, b: 12 };
     print_i64(pstruct.a + pstruct.b);
+    
+    test_vec_stuff_1();
     
     return 0;
 }

@@ -28,7 +28,14 @@ pub enum NodeElse {
 #[derive(Debug, Clone, Copy)]
 pub enum Node {
     Symbol(Sym),
-    PolySpecialize(Sym),
+    PolySpecialize {
+        sym: Sym,
+        overrides: IdVec,
+    },
+    PolySpecializeOverride {
+        sym: NodeId,
+        ty: NodeId,
+    },
     IntLiteral(i64, NumericSpecification),
     FloatLiteral(f64, NumericSpecification),
     BoolLiteral(bool),
@@ -100,6 +107,7 @@ pub enum Node {
     StructDefinition {
         name: NodeId,
         params: IdVec,
+        scope: ScopeId,
     },
     StructLiteral {
         name: Option<NodeId>,
@@ -143,6 +151,7 @@ impl Node {
         match self {
             Node::Symbol(_) => "Symbol".to_string(),
             Node::PolySpecialize { .. } => "PolySpecialize".to_string(),
+            Node::PolySpecializeOverride { .. } => "PolySpecializeOverride".to_string(),
             Node::IntLiteral(_, _) => "IntLiteral".to_string(),
             Node::FloatLiteral(_, _) => "FloatLiteral".to_string(),
             Node::BoolLiteral(_) => "BoolLiteral".to_string(),

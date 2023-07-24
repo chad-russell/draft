@@ -1,24 +1,81 @@
 extern print_i64(n: i64);
 extern print_f64(n: f64);
 
+// Declare the interafce itself
+// struct VTable {
+    // do_thing: fn(n: *_T!) i64,
+// }
+
+// struct Interface {
+    // data: *_T!,
+    // vtable: VTable!,
+// }
+
+// fn do_thing(i: Interface!(T: _T!)) _ {
+    // let data = i.data;
+    // return i.vtable.do_thing(i.data);
+// }
+
+// Define and implement the interface for Foo
+// struct Foo {
+    // x: i64,
+// }
+
+// fn foo_do_thing(foo: *Foo) i64 {
+    // return foo.x;
+// }
+
+// fn foo_to_interface(foo: *Foo) _ {
+    // return Interface {
+        // data: foo,
+        // vtable: VTable {
+            // do_thing: foo_do_thing,
+        // },
+    // };
+// }
+
+// Define and implement the interface for Bar
+// struct Bar {
+    // x: i64,
+    // y: i64,
+// }
+
+// fn bar_do_thing(bar: *Bar) i64 {
+    // return bar.x + bar.y;
+// }
+
+// fn bar_to_interface(bar: *Bar) _ {
+    // return Interface {
+        // data: bar,
+        // vtable: VTable {
+            // do_thing: bar_do_thing,
+        // },
+    // };
+// }
+
+struct Data {
+    x: i64,
+}
+
 struct Foo {
-    x: _T!,
+    data: Data,
 }
 
-struct AlmostFoo {
-    x: _T!,
-}
-
-struct Bar {
-    f: Foo!,
+fn make_foo(x: Data) _ {
+    return Foo { x };
 }
 
 fn main() i64 {
-    let b1: Bar! = _{ _{ x: 123 } };
-    print_i64(b1.f.x);
-    
-    let b2: Bar! = _{ _{ x: 1.23 } };
-    print_f64(b2.f.x);
-    
+    // let f = Foo { x: 42 };
+    // let b = Bar { x: 1, y: 2 };
+
+    // let i1 = Interface { data: &f, vtable: VTable { do_thing: foo_do_thing } };
+    // let i2 = Interface { data: &b, vtable: VTable { do_thing: bar_do_thing } };
+
+    // print_i64(do_thing(i1));
+    // print_i64(do_thing(i2));
+
+    print_i64(make_foo(_{ 3 }).data.x);
+
     return 0;
 }

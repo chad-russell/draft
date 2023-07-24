@@ -225,6 +225,8 @@ pub struct Parser<'a, W: Source> {
     pub ctx: &'a mut Context,
     pub is_polymorph_copying: bool,
     pub in_struct_decl: bool,
+    pub in_enum_decl: bool,
+    pub in_fn_params_decl: bool,
 }
 
 impl<'a, W: Source> Parser<'a, W> {
@@ -234,6 +236,8 @@ impl<'a, W: Source> Parser<'a, W> {
             ctx: context,
             is_polymorph_copying: false,
             in_struct_decl: false,
+            in_enum_decl: false,
+            in_fn_params_decl: false,
         }
     }
 
@@ -740,6 +744,7 @@ impl<'a, W: Source> Parser<'a, W> {
         let is_array_decl = name_str == "Array";
 
         let pushed_scope = self.ctx.push_scope(false);
+        let struct_scope = self.ctx.top_scope;
 
         self.expect(Token::LCurly)?;
         let fields = self.parse_decl_params(DeclParamParseType::Struct)?;
@@ -752,6 +757,7 @@ impl<'a, W: Source> Parser<'a, W> {
             Node::StructDefinition {
                 name,
                 params: fields,
+                scope: struct_scope,
             },
         );
 
@@ -777,6 +783,8 @@ impl<'a, W: Source> Parser<'a, W> {
         let start = self.source_info.top.range.start;
 
         self.pop(); // `enum`
+
+        self.in_enum_decl = true;
 
         let old_polymorph_target = self.ctx.polymorph_target;
         self.ctx.polymorph_target = false;
@@ -809,6 +817,7 @@ impl<'a, W: Source> Parser<'a, W> {
         }
 
         self.ctx.polymorph_target = old_polymorph_target;
+        self.in_enum_decl = false;
 
         Ok(enum_node)
     }
@@ -831,9 +840,11 @@ impl<'a, W: Source> Parser<'a, W> {
         // open a new scope
         let pushed_scope = self.ctx.push_scope(true);
 
+        self.in_fn_params_decl = true;
         self.expect(Token::LParen)?;
         let params = self.parse_decl_params(DeclParamParseType::Fn)?;
         self.expect(Token::RParen)?;
+        self.in_fn_params_decl = false;
 
         let return_ty = if self.source_info.top.tok != Token::LCurly {
             Some(self.parse_type()?)
@@ -1698,20 +1709,48 @@ impl<'a, W: Source> Parser<'a, W> {
                 Ok(id)
             }
             Token::Symbol(sym) => {
-                let range = self.source_info.top.range;
+                let mut range = self.source_info.top.range;
                 self.pop();
                 if self.source_info.top.tok == Token::Bang {
-                    // If the declaration in question includes a specialization, then *for now* it's a polymorph target
-                    // todo(chad): We need to parse the case where there are parameters passed to this specialization. If the type is
-                    // fully specialized by the parameters, then it's not actually a polymorph target but just a concrete type.
-                    if self.in_struct_decl {
+                    if self.in_struct_decl || self.in_enum_decl || self.in_fn_params_decl {
                         self.ctx.polymorph_target = true;
                     }
 
-                    let end = self.source_info.top.range.end;
+                    range.end = self.source_info.top.range.end;
                     self.pop(); // `!`
-                    let range = Range::new(range.start, end, self.source_info.path);
-                    Ok(self.ctx.push_node(range, Node::PolySpecialize(sym)))
+
+                    let mut overrides = Vec::new();
+
+                    if self.source_info.top.tok == Token::LParen {
+                        self.pop(); // `(`
+
+                        while self.source_info.top.tok != Token::RParen {
+                            let sym = self.parse_symbol()?;
+                            self.expect(Token::Colon)?;
+
+                            let ty = self.parse_type()?;
+
+                            overrides.push(self.ctx.push_node(
+                                self.make_range_spanning(sym, ty),
+                                Node::PolySpecializeOverride { sym, ty },
+                            ));
+
+                            if self.source_info.top.tok == Token::Comma {
+                                self.pop(); // `,`
+                            } else {
+                                break;
+                            }
+                        }
+
+                        range.end = self.source_info.top.range.end;
+                        self.expect(Token::RParen)?; // `)`
+                    }
+
+                    let overrides = self.ctx.push_id_vec(overrides);
+
+                    Ok(self
+                        .ctx
+                        .push_node(range, Node::PolySpecialize { sym, overrides }))
                 } else {
                     Ok(self.ctx.push_node(range, Node::Symbol(sym)))
                 }
