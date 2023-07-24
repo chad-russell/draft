@@ -10,13 +10,9 @@ struct Bar {
 }
 
 fn main() i64 {
-    let f: Foo!;
-    f.x = 314;
-    print_i64(f.x);
-    
-    let ff: Foo!;
-    ff.x = 3.14;
-    print_f64(ff.x);
+    let b: Bar!;
+    b.f = _{ 314 };
+    print_i64(bbf.x);
     
     return 0;
 }
