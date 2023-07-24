@@ -739,6 +739,9 @@ impl<'a, W: Source> Parser<'a, W> {
         let name = self.parse_symbol()?;
         let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
 
+        let name_str = self.ctx.string_interner.resolve(name_sym.0).unwrap();
+        let is_array_decl = name_str == "Array";
+
         let pushed_scope = self.ctx.push_scope(false);
 
         self.expect(Token::LCurly)?;
@@ -760,10 +763,14 @@ impl<'a, W: Source> Parser<'a, W> {
         }
 
         if self.ctx.polymorph_target {
-            self.ctx.polymorph_sources.insert(struct_node);
+            self.ctx.polymorph_sources.insert(struct_node, struct_node);
         }
 
         self.ctx.polymorph_target = old_polymorph_target;
+
+        if is_array_decl {
+            self.ctx.array_declaration = Some(struct_node);
+        }
 
         Ok(struct_node)
     }
@@ -787,7 +794,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
         self.ctx.pop_scope(pushed_scope);
 
-        let struct_node = self.ctx.push_node(
+        let enum_node = self.ctx.push_node(
             range,
             Node::EnumDefinition {
                 name,
@@ -796,16 +803,16 @@ impl<'a, W: Source> Parser<'a, W> {
         );
 
         if !self.is_polymorph_copying {
-            self.ctx.scope_insert(name_sym, struct_node);
+            self.ctx.scope_insert(name_sym, enum_node);
         }
 
         if self.ctx.polymorph_target {
-            self.ctx.polymorph_sources.insert(struct_node);
+            self.ctx.polymorph_sources.insert(enum_node, enum_node);
         }
 
         self.ctx.polymorph_target = old_polymorph_target;
 
-        Ok(struct_node)
+        Ok(enum_node)
     }
 
     pub fn parse_fn(&mut self, anonymous: bool) -> Result<NodeId, CompileError> {
@@ -853,7 +860,7 @@ impl<'a, W: Source> Parser<'a, W> {
         let returns = self.ctx.push_id_vec(returns);
         let func = self.ctx.push_node(
             range,
-            Node::Func {
+            Node::FnDefinition {
                 name,
                 scope: self.ctx.top_scope,
                 params,
@@ -873,7 +880,7 @@ impl<'a, W: Source> Parser<'a, W> {
         }
 
         if self.ctx.polymorph_target {
-            self.ctx.polymorph_sources.insert(func);
+            self.ctx.polymorph_sources.insert(func, func);
         }
 
         self.ctx.polymorph_target = old_polymorph_target;
@@ -1837,9 +1844,10 @@ impl Context {
         parser.pop();
 
         let copied = match target {
-            ParseTarget::Fn => parser.parse_fn(false)?,
+            ParseTarget::FnDefinition => parser.parse_fn(false)?,
             ParseTarget::StructDefinition => parser.parse_struct_definition()?,
             ParseTarget::EnumDefinition => parser.parse_enum_definition()?,
+            ParseTarget::Type => parser.parse_type()?,
         };
 
         self.polymorph_sources.remove(&copied);
@@ -1849,9 +1857,10 @@ impl Context {
 }
 
 pub enum ParseTarget {
-    Fn,
+    FnDefinition,
     StructDefinition,
     EnumDefinition,
+    Type,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

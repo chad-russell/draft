@@ -44,7 +44,7 @@ pub enum Node {
         expr: NodeId,
         is_store: bool,
     },
-    Func {
+    FnDefinition {
         name: Option<NodeId>,
         scope: ScopeId,
         params: IdVec,
@@ -148,7 +148,7 @@ impl Node {
             Node::Return(_) => "Return".to_string(),
             Node::Let { .. } => "Let".to_string(),
             Node::Assign { .. } => "Set".to_string(),
-            Node::Func { .. } => "Func".to_string(),
+            Node::FnDefinition { .. } => "Func".to_string(),
             Node::Block { .. } => "Block".to_string(),
             Node::Resolve(_) => "Block".to_string(),
             Node::Extern { .. } => "Extern".to_string(),

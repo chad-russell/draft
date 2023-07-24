@@ -92,7 +92,7 @@ impl Context {
     }
 
     pub fn predeclare_function(&mut self, id: NodeId) -> Result<(), CompileError> {
-        if let Node::Func {
+        if let Node::FnDefinition {
             name,
             params,
             return_ty,
@@ -149,7 +149,7 @@ impl Context {
             .top_level
             .iter()
             .filter(|tl| match self.nodes[**tl] {
-                Node::Func {
+                Node::FnDefinition {
                     name: Some(name), ..
                 } => self.get_symbol(name).0 == fn_name_interned,
                 _ => false,
@@ -844,7 +844,7 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
-            Node::Func { .. }
+            Node::FnDefinition { .. }
             | Node::StructDefinition { .. }
             | Node::EnumDefinition { .. }
             | Node::StaticMemberAccess { .. } => Ok(()), // This should have already been handled by the toplevel context
@@ -1052,7 +1052,7 @@ impl<'a> ToplevelCompileContext<'a> {
 
         match self.ctx.nodes[id] {
             Node::Symbol(_) => todo!(),
-            Node::Func {
+            Node::FnDefinition {
                 name,
                 stmts,
                 params,

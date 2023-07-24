@@ -1,9 +1,18 @@
 extern print_i64(n: i64);
+extern print_f64(n: f64);
+
+struct Foo {
+    x: !T,
+}
 
 fn main() i64 {
-    let ppa = &&&999i64;
-    ***ppa = 888;
-    print_i64(***ppa);
+    let f = Foo { x: 42 };
+    print_i64(f.x);
+
+    let g = Foo { x: 4.2 };
+    print_f64(g.x);
+
+    // f = g;
     
     return 0;
 }

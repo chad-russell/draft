@@ -793,7 +793,7 @@ impl Context {
 
     pub fn assign_type_inner(&mut self, id: NodeId) -> bool {
         match self.nodes[id] {
-            Node::Func {
+            Node::FnDefinition {
                 params,
                 return_ty,
                 stmts,
@@ -801,7 +801,7 @@ impl Context {
                 ..
             } => {
                 // don't directly codegen a polymorph, wait until it's copied first
-                if self.polymorph_sources.contains(&id) {
+                if self.polymorph_sources.contains_key(&id) {
                     return true;
                 }
 
@@ -985,8 +985,8 @@ impl Context {
                         self.match_types(id, resolved);
                         self.match_addressable(id, resolved);
 
-                        if self.polymorph_sources.contains(&resolved) {
-                            self.polymorph_sources.insert(id);
+                        if let Some(&resolved) = self.polymorph_sources.get(&resolved) {
+                            self.polymorph_sources.insert(id, resolved);
                         }
                     }
                     None => {
@@ -1026,7 +1026,7 @@ impl Context {
                 }
                 self.match_addressable(id, value);
             }
-            Node::Let { name: _, ty, expr } => {
+            Node::Let { name, ty, expr } => {
                 if let Some(expr) = expr {
                     self.assign_type(expr);
                     self.match_types(id, expr);
@@ -1034,6 +1034,30 @@ impl Context {
 
                 if let Some(ty) = ty {
                     self.assign_type(ty);
+
+                    let ty = if let Some(&ty) = self.polymorph_sources.get(&ty) {
+                        let parse_target = match self.nodes[ty] {
+                            Node::StructDefinition { .. } => ParseTarget::StructDefinition,
+                            Node::EnumDefinition { .. } => ParseTarget::EnumDefinition,
+                            Node::FnDefinition { .. } => ParseTarget::FnDefinition,
+                            a => panic!("Expected struct, enum or fn definition: got {:?}", a),
+                        };
+
+                        let copied = self
+                            .polymorph_copy(ty, parse_target) // todo(chad): could also be something other than a struct definition
+                            .unwrap();
+
+                        self.nodes[id] = Node::Let {
+                            name,
+                            ty: Some(copied),
+                            expr,
+                        };
+
+                        copied
+                    } else {
+                        ty
+                    };
+
                     self.match_types(id, ty);
                 }
             }
@@ -1086,8 +1110,9 @@ impl Context {
                 self.assign_type(func);
 
                 // If func is a polymorph, copy it first
-                if self.polymorph_sources.contains(&func) {
-                    match self.polymorph_copy(func, ParseTarget::Fn) {
+                if self.polymorph_sources.contains_key(&func) {
+                    let &key = self.polymorph_sources.get(&func).unwrap();
+                    match self.polymorph_copy(key, ParseTarget::FnDefinition) {
                         Ok(func_id) => {
                             func = func_id;
                             self.assign_type(func);
@@ -1156,7 +1181,7 @@ impl Context {
             }
             Node::StructDefinition { name, params } => {
                 // don't directly codegen a polymorph, wait until it's copied first
-                if self.polymorph_sources.contains(&id) {
+                if self.polymorph_sources.contains_key(&id) {
                     return true;
                 }
 
@@ -1177,7 +1202,7 @@ impl Context {
             }
             Node::EnumDefinition { name, params } => {
                 // don't directly codegen a polymorph, wait until it's copied first
-                if self.polymorph_sources.contains(&id) {
+                if self.polymorph_sources.contains_key(&id) {
                     return true;
                 }
 
@@ -1205,8 +1230,9 @@ impl Context {
                     self.assign_type(name);
 
                     // If this is a polymorph, copy it first
-                    let name = if self.polymorph_sources.contains(&name) {
-                        match self.polymorph_copy(name, ParseTarget::StructDefinition) {
+                    let name = if self.polymorph_sources.contains_key(&name) {
+                        let &key = self.polymorph_sources.get(&name).unwrap();
+                        match self.polymorph_copy(key, ParseTarget::StructDefinition) {
                             Ok(copied) => {
                                 self.assign_type(copied);
                                 self.nodes[id] = Node::StructLiteral {
@@ -1302,8 +1328,9 @@ impl Context {
                 self.assign_type(value);
 
                 // If this is a polymorph, copy it first
-                let value = if self.polymorph_sources.contains(&value) {
-                    match self.polymorph_copy(value, ParseTarget::EnumDefinition) {
+                let value = if self.polymorph_sources.contains_key(&value) {
+                    let &key = self.polymorph_sources.get(&value).unwrap();
+                    match self.polymorph_copy(key, ParseTarget::EnumDefinition) {
                         Ok(copied) => {
                             self.assign_type(copied);
                             self.nodes[id] = Node::StaticMemberAccess {
@@ -1490,6 +1517,8 @@ impl Context {
                     self.assign_type(member);
                     self.match_types(member, ty);
                 }
+
+                self.match_types(id, self.array_declaration.unwrap());
 
                 self.types.insert(id, Type::Array(ty));
             }

@@ -137,9 +137,11 @@ pub struct Context {
 
     pub module: JITModule,
     pub values: SecondaryMap<Value>,
+    pub polymorph_sources: SecondaryMap<NodeId>,
+
+    pub array_declaration: Option<NodeId>,
 
     pub addressable_nodes: SecondarySet,
-    pub polymorph_sources: SecondarySet,
     pub polymorph_copies: SecondarySet,
     pub completes: SecondarySet,
     pub circular_dependency_nodes: SecondarySet,
@@ -188,6 +190,8 @@ impl Context {
             addressable_array_reverse_map: Default::default(),
             in_assign_lhs: false,
 
+            array_declaration: None,
+
             module: Self::make_module(),
             values: Default::default(),
         }
@@ -228,6 +232,8 @@ impl Context {
         self.deferreds.clear();
         self.in_assign_lhs = false;
 
+        self.array_declaration = None;
+
         self.module = Self::make_module();
         self.values.clear();
     }
@@ -251,9 +257,9 @@ impl Context {
 
         for id in self.funcs.clone() {
             match &self.nodes[id] {
-                Node::Func { params, .. } => {
+                Node::FnDefinition { params, .. } => {
                     // don't directly codegen a polymorph, wait until it's copied first
-                    if self.polymorph_sources.contains(&id) {
+                    if self.polymorph_sources.contains_key(&id) {
                         continue;
                     }
 
