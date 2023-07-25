@@ -687,7 +687,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
             // put the param in scope
             let node = match parse_type {
-                DeclParamParseType::Fn => Node::FuncDeclParam {
+                DeclParamParseType::Fn => Node::FnDeclParam {
                     name,
                     ty,
                     default,

@@ -53,16 +53,14 @@ extern print_f64(n: f64);
     // };
 // }
 
-struct Data {
-    x: i64,
+struct W {
+    val: _T!,
 }
 
-struct Foo {
-    data: Data,
-}
-
-fn make_foo(x: Data) _ {
-    return Foo { x };
+fn wrap(val: _T!) _ {
+    let m = val;
+    print_i64(val.val);
+    return 0i64;
 }
 
 fn main() i64 {
@@ -75,7 +73,7 @@ fn main() i64 {
     // print_i64(do_thing(i1));
     // print_i64(do_thing(i2));
 
-    print_i64(make_foo(_{ 3 }).data.x);
+    let dw = wrap(W { 42i64 });
 
     return 0;
 }

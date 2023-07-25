@@ -423,7 +423,7 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
-            Node::FuncDeclParam { index, .. } => {
+            Node::FnDeclParam { index, .. } => {
                 let params = self.builder.block_params(self.current_block);
                 let param_value = params[index as usize];
 
@@ -573,7 +573,10 @@ impl<'a> FunctionCompileContext<'a> {
                     value = self.load(types::I64, value, 0);
                     pointiness -= 1;
                 }
-                let value = self.builder.ins().iadd_imm(value, offset as i64);
+
+                if offset != 0 {
+                    value = self.builder.ins().iadd_imm(value, offset as i64);
+                }
 
                 self.ctx.values.insert(id, Value::Value(value));
 

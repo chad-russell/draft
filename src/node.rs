@@ -80,7 +80,7 @@ pub enum Node {
         name: NodeId,
         ty: Option<NodeId>,
     },
-    FuncDeclParam {
+    FnDeclParam {
         name: NodeId,
         ty: Option<NodeId>,
         default: Option<NodeId>,
@@ -165,7 +165,7 @@ impl Node {
             Node::Extern { .. } => "Extern".to_string(),
             Node::StructDeclParam { .. } => "StructDeclParam".to_string(),
             Node::EnumDeclParam { .. } => "EnumDeclParam".to_string(),
-            Node::FuncDeclParam { .. } => "FuncDeclParam".to_string(),
+            Node::FnDeclParam { .. } => "FuncDeclParam".to_string(),
             Node::ValueParam { .. } => "ValueParam".to_string(),
             Node::BinOp { .. } => "BinOp".to_string(),
             Node::Call { .. } => "Call".to_string(),

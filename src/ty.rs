@@ -197,7 +197,7 @@ impl Context {
                 let name = decl[given_idx];
                 match self.nodes[name] {
                     Node::StructDeclParam { name, .. }
-                    | Node::FuncDeclParam { name, .. }
+                    | Node::FnDeclParam { name, .. }
                     | Node::EnumDeclParam { name, .. } => {
                         self.nodes[id_to_push] = Node::ValueParam {
                             name: Some(name),
@@ -234,7 +234,7 @@ impl Context {
 
             for &g in given.iter().skip(starting_rearranged_len) {
                 let decl_name = match &self.nodes[d] {
-                    Node::FuncDeclParam { name, .. } | Node::StructDeclParam { name, .. } => *name,
+                    Node::FnDeclParam { name, .. } | Node::StructDeclParam { name, .. } => *name,
                     _ => unreachable!(),
                 };
                 let decl_name_sym = self.get_symbol(decl_name);
@@ -256,7 +256,7 @@ impl Context {
 
             if !found {
                 match self.nodes[d] {
-                    Node::FuncDeclParam {
+                    Node::FnDeclParam {
                         default: Some(def), ..
                     } => rearranged_given.push(def),
                     Node::EnumDeclParam { ty: None, .. } => {
@@ -1022,7 +1022,7 @@ impl Context {
                     }
                 }
             }
-            Node::StructDeclParam { ty, default, .. } | Node::FuncDeclParam { ty, default, .. } => {
+            Node::StructDeclParam { ty, default, .. } | Node::FnDeclParam { ty, default, .. } => {
                 if let Some(ty) = ty {
                     self.assign_type(ty);
                 }
