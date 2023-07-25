@@ -2,17 +2,14 @@ extern print_i64(n: i64);
 extern print_f64(n: f64);
 
 // Declare the interafce itself
-struct VTable {
-    do_thing: fn(n: *_T!) i64,
-}
-
 struct Interface {
     data: *_T!,
-    vtable: VTable!,
+    vtable: struct {
+        do_thing: fn(n: *T) i64,
+    },
 }
 
 fn do_thing(i: Interface!(T: _T!)) _ {
-    let data = i.data;
     return i.vtable.do_thing(i.data);
 }
 
@@ -21,15 +18,13 @@ struct Foo {
     x: i64,
 }
 
-fn foo_do_thing(foo: *Foo) i64 {
-    return foo.x;
-}
-
 fn foo_to_interface(foo: *Foo) _ {
     return Interface {
         data: foo,
-        vtable: VTable {
-            do_thing: foo_do_thing,
+        vtable: _{
+            do_thing: fn(foo: *Foo) i64 {
+                return foo.x;
+            },
         },
     };
 }
@@ -47,7 +42,7 @@ fn bar_do_thing(bar: *Bar) i64 {
 fn bar_to_interface(bar: *Bar) _ {
     return Interface {
         data: bar,
-        vtable: VTable {
+        vtable: _{
             do_thing: bar_do_thing,
         },
     };
