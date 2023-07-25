@@ -471,6 +471,11 @@ impl<'a> FunctionCompileContext<'a> {
             }
             Node::ValueParam { value, .. } => {
                 self.compile_id(value)?;
+
+                if self.ctx.addressable_nodes.contains(&value) {
+                    self.ctx.addressable_nodes.insert(id);
+                }
+
                 self.ctx.values.insert(id, self.ctx.values[&value]);
                 Ok(())
             }
