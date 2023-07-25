@@ -35,15 +35,13 @@ struct Bar {
     y: i64,
 }
 
-fn bar_do_thing(bar: *Bar) i64 {
-    return bar.x + bar.y;
-}
-
 fn bar_to_interface(bar: *Bar) _ {
     return Interface {
         data: bar,
         vtable: _{
-            do_thing: bar_do_thing,
+            do_thing: fn(bar: *Bar) i64 {
+                return bar.x + bar.y;
+            },
         },
     };
 }
