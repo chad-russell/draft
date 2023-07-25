@@ -317,8 +317,13 @@ impl<'a> FunctionCompileContext<'a> {
         match self.ctx.nodes[id] {
             Node::Symbol(sym) => {
                 let resolved = self.ctx.scope_get(sym, id);
+
                 match resolved {
                     Some(res) => {
+                        if self.ctx.addressable_nodes.contains(&res) {
+                            self.ctx.addressable_nodes.insert(id);
+                        }
+
                         self.compile_id(res)?;
                         self.ctx
                             .values

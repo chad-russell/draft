@@ -2,37 +2,30 @@ extern print_i64(n: i64);
 extern print_f64(n: f64);
 
 // Declare the interafce itself
-// struct VTable {
-    // do_thing: fn(n: *_T!) i64,
-// }
+struct Interface {
+    data: *_T!,
+    vtable: struct {
+        do_thing: fn(n: *T) i64,
+    },
+}
 
-// struct Interface {
-    // data: *_T!,
-    // vtable: VTable!,
-// }
-
-// fn do_thing(i: Interface!(T: _T!)) _ {
-    // let data = i.data;
-    // return i.vtable.do_thing(i.data);
-// }
+fn do_thing(i: Interface!) _ {
+    return i.vtable.do_thing(i.data);
+}
 
 // Define and implement the interface for Foo
-// struct Foo {
-    // x: i64,
-// }
+struct Foo {
+    x: i64,
+}
 
-// fn foo_do_thing(foo: *Foo) i64 {
-    // return foo.x;
-// }
-
-// fn foo_to_interface(foo: *Foo) _ {
-    // return Interface {
-        // data: foo,
-        // vtable: VTable {
-            // do_thing: foo_do_thing,
-        // },
-    // };
-// }
+fn foo_to_interface(foo: *Foo) _ {
+    return Interface {
+        data: foo,
+        vtable: _{
+            do_thing: fn(foo: *Foo) i64 { return foo.x; },
+        },
+    };
+}
 
 // Define and implement the interface for Bar
 // struct Bar {
@@ -40,40 +33,34 @@ extern print_f64(n: f64);
     // y: i64,
 // }
 
-// fn bar_do_thing(bar: *Bar) i64 {
-    // return bar.x + bar.y;
-// }
-
 // fn bar_to_interface(bar: *Bar) _ {
     // return Interface {
         // data: bar,
-        // vtable: VTable {
-            // do_thing: bar_do_thing,
+        // vtable: _{
+            // do_thing: fn(bar: *Bar) i64 { return bar.x + bar.y; },
         // },
     // };
 // }
 
-struct W {
-    val: _T!,
-}
+// struct W {
+    // val: i64,
+// }
 
-fn wrap(val: _T!) _ {
-    let m = val;
-    print_i64(val.val);
-    return 0i64;
-}
+// fn wrap(val: W) _ {
+    // let m = val;
+    // print_i64(m.val);
+    // return 0i64;
+// }
 
 fn main() i64 {
-    // let f = Foo { x: 42 };
+    let f = Foo { x: 42 };
     // let b = Bar { x: 1, y: 2 };
 
-    // let i1 = Interface { data: &f, vtable: VTable { do_thing: foo_do_thing } };
-    // let i2 = Interface { data: &b, vtable: VTable { do_thing: bar_do_thing } };
+    let i1 = foo_to_interface(&f);
+    // let i2 = Interface { data: &b, vtable: &_{ do_thing: bar_do_thing } };
 
-    // print_i64(do_thing(i1));
+    print_i64(do_thing(i1));
     // print_i64(do_thing(i2));
-
-    let dw = wrap(W { 42i64 });
 
     return 0;
 }

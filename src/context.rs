@@ -265,7 +265,7 @@ impl Context {
 
                     for &param in self.id_vecs[params].clone().borrow().iter() {
                         // All structs passed as function args are passed by address (for now...)
-                        if let Some(Type::Struct { .. }) = &self.types.get(&param) {
+                        if self.should_pass_base_by_ref(param) {
                             self.addressable_nodes.insert(param);
                             self.match_addressable(param, param); // todo(chad): @hack?
                         }

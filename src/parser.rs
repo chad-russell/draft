@@ -214,6 +214,7 @@ pub fn breaks_symbol(c: char) -> bool {
         || c == ';'
 }
 
+#[derive(PartialEq)]
 pub enum DeclParamParseType {
     Fn,
     Struct,
@@ -713,7 +714,7 @@ impl<'a, W: Source> Parser<'a, W> {
             let param = self.ctx.push_node(range, node);
             self.ctx.scope_insert(name_sym, param);
 
-            if matches!(parse_type, DeclParamParseType::Struct) {
+            if parse_type == DeclParamParseType::Struct {
                 self.ctx.addressable_nodes.insert(param);
             }
 

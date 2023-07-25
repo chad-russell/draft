@@ -1022,7 +1022,25 @@ impl Context {
                     }
                 }
             }
-            Node::StructDeclParam { ty, default, .. } | Node::FnDeclParam { ty, default, .. } => {
+            Node::FnDeclParam { ty, default, .. } => {
+                if let Some(ty) = ty {
+                    self.assign_type(ty);
+                }
+
+                if self.should_pass_base_by_ref(id) {
+                    self.addressable_nodes.insert(id);
+                }
+
+                if let Some(default) = default {
+                    self.assign_type(default);
+                    self.match_types(id, default);
+                }
+
+                if let Some(ty) = ty {
+                    self.match_types(id, ty);
+                }
+            }
+            Node::StructDeclParam { ty, default, .. } => {
                 if let Some(ty) = ty {
                     self.assign_type(ty);
                 }
@@ -1051,6 +1069,7 @@ impl Context {
                 if let Some(name) = name {
                     self.match_types(name, value);
                 }
+
                 self.match_addressable(id, value);
             }
             Node::Let { ty, expr, .. } => {
