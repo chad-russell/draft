@@ -57,9 +57,13 @@ fn main() i64 {
     // let b = Bar { x: 1, y: 2 };
 
     let i1 = foo_to_interface(&f);
+
+    print_i64(f.x);
+    print_i64(i1.data.x);
+    
     // let i2 = Interface { data: &b, vtable: &_{ do_thing: bar_do_thing } };
 
-    print_i64(do_thing(i1));
+    // print_i64(do_thing(i1));
     // print_i64(do_thing(i2));
 
     return 0;
