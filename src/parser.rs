@@ -3,8 +3,7 @@ use std::{cell::RefCell, rc::Rc};
 use string_interner::symbol::SymbolU32;
 
 use crate::{
-    CompileError, Context, IdVec, Node, NodeElse, NodeId, RopeySource, Source, SourceInfo,
-    StrSource, Type,
+    CompileError, Context, IdVec, Node, NodeElse, NodeId, Source, SourceInfo, StaticStrSource, Type,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
@@ -138,6 +137,8 @@ pub enum Token {
     Let,
     If,
     Else,
+    For,
+    In,
     I8,
     I16,
     I32,
@@ -164,6 +165,8 @@ pub enum Token {
     AddressOf,
     Bang,
     UnderscoreLCurly,
+    Cast,
+    SizeOf,
     Eof,
 }
 
@@ -304,6 +307,12 @@ impl<'a, W: Source> Parser<'a, W> {
         if self.source_info.prefix_keyword("else", Token::Else) {
             return;
         }
+        if self.source_info.prefix_keyword("for", Token::For) {
+            return;
+        }
+        if self.source_info.prefix_keyword("in", Token::In) {
+            return;
+        }
         if self.source_info.prefix_keyword("return", Token::Return) {
             return;
         }
@@ -350,6 +359,12 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
         if self.source_info.prefix_keyword("false", Token::False) {
+            return;
+        }
+        if self.source_info.prefix_keyword("#cast", Token::Cast) {
+            return;
+        }
+        if self.source_info.prefix_keyword("#size_of", Token::SizeOf) {
             return;
         }
         if self.source_info.prefix("(", Token::LParen) {
@@ -744,7 +759,7 @@ impl<'a, W: Source> Parser<'a, W> {
         let name_str = self.ctx.string_interner.resolve(name_sym.0).unwrap();
         let is_array_decl = name_str == "Array";
 
-        let pushed_scope = self.ctx.push_scope(false);
+        let pushed_scope = self.ctx.push_scope();
         let struct_scope = self.ctx.top_scope;
 
         self.expect(Token::LCurly)?;
@@ -793,7 +808,7 @@ impl<'a, W: Source> Parser<'a, W> {
         let name = self.parse_symbol()?;
         let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
 
-        let pushed_scope = self.ctx.push_scope(false);
+        let pushed_scope = self.ctx.push_scope();
 
         self.expect(Token::LCurly)?;
         let fields = self.parse_decl_params(DeclParamParseType::Enum)?;
@@ -839,7 +854,7 @@ impl<'a, W: Source> Parser<'a, W> {
         let name_sym = name.map(|n| self.ctx.nodes[n].as_symbol().unwrap());
 
         // open a new scope
-        let pushed_scope = self.ctx.push_scope(true);
+        let pushed_scope = self.ctx.push_scope();
 
         self.in_fn_params_decl = true;
         self.expect(Token::LParen)?;
@@ -908,7 +923,7 @@ impl<'a, W: Source> Parser<'a, W> {
         let name = self.parse_symbol()?;
         let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
 
-        let pushed_scope = self.ctx.push_scope(false);
+        let pushed_scope = self.ctx.push_scope();
 
         self.expect(Token::LParen)?;
         let params = self.parse_decl_params(DeclParamParseType::Fn)?;
@@ -959,6 +974,8 @@ impl<'a, W: Source> Parser<'a, W> {
                 | Token::Symbol(_)
                 | Token::UnderscoreLCurly
                 | Token::AddressOf
+                | Token::Cast
+                | Token::SizeOf
                 | Token::Fn
                 | Token::I8
                 | Token::I16
@@ -1186,6 +1203,42 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 Ok(id)
             }
+            Token::Cast => {
+                let cast_range = self.source_info.top.range;
+
+                self.pop(); // `#cast`
+
+                let ty = if self.source_info.top.tok == Token::LParen {
+                    self.pop(); // `(`
+                    let ty = self.parse_type()?;
+                    self.expect(Token::RParen)?;
+                    ty
+                } else {
+                    self.ctx
+                        .push_node(cast_range, Node::Type(Type::Infer(None)))
+                };
+
+                let value = self.parse_expression(true)?;
+
+                let end = self.ctx.ranges[value].end;
+                let id = self.ctx.push_node(
+                    Range::new(start, end, self.source_info.path),
+                    Node::Cast { ty, value },
+                );
+
+                Ok(id)
+            }
+            Token::SizeOf => {
+                self.pop(); // `#sizeof`
+
+                self.expect(Token::LParen)?;
+                let ty = self.parse_type()?;
+                let range = self.expect_range(start, Token::RParen)?;
+
+                let id = self.ctx.push_node(range, Node::SizeOf(ty));
+
+                Ok(id)
+            }
             Token::I8 => {
                 let range = self.source_info.top.range;
                 self.pop();
@@ -1404,7 +1457,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
         self.expect(Token::LCurly)?;
 
-        let pushed_scope = self.ctx.push_scope(false);
+        let pushed_scope = self.ctx.push_scope();
 
         self.ctx.resolves.push(Vec::new());
 
@@ -1476,6 +1529,36 @@ impl<'a, W: Source> Parser<'a, W> {
         ))
     }
 
+    pub fn parse_for(&mut self) -> Result<NodeId, CompileError> {
+        let start = self.source_info.top.range.start;
+
+        self.pop(); // `for`
+
+        let pushed_label_scope = self.ctx.push_scope();
+
+        let label = self.parse_symbol()?;
+        self.ctx.addressable_nodes.insert(label);
+        let name_sym = self.ctx.get_symbol(label);
+        self.ctx.scope_insert(name_sym, label);
+
+        self.expect(Token::In)?;
+
+        let iterable = self.parse_expression(false)?;
+
+        let block = self.parse_block(false)?;
+
+        self.ctx.pop_scope(pushed_label_scope);
+
+        Ok(self.ctx.push_node(
+            Range::new(start, self.ctx.ranges[block].end, self.source_info.path),
+            Node::For {
+                label,
+                iterable,
+                block,
+            },
+        ))
+    }
+
     pub fn parse_block_stmt(&mut self) -> Result<NodeId, CompileError> {
         let start = self.source_info.top.range.start;
 
@@ -1512,6 +1595,7 @@ impl<'a, W: Source> Parser<'a, W> {
             }
             Token::Let => self.parse_let(),
             Token::If => self.parse_if(),
+            Token::For => self.parse_for(),
             Token::Struct => self.parse_struct_definition(),
             Token::Enum => self.parse_enum_definition(),
             Token::Fn => self.parse_fn(false),
@@ -1632,7 +1716,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 self.expect(Token::LCurly)?;
 
-                let pushed_scope = self.ctx.push_scope(false);
+                let pushed_scope = self.ctx.push_scope();
 
                 let params = self.parse_decl_params(DeclParamParseType::Struct)?;
                 let range = self.expect_range(range.start, Token::RCurly)?;
@@ -1649,7 +1733,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 self.expect(Token::LCurly)?;
 
-                let pushed_scope = self.ctx.push_scope(false);
+                let pushed_scope = self.ctx.push_scope();
 
                 let params = self.parse_decl_params(DeclParamParseType::Enum)?;
                 let range = self.expect_range(range.start, Token::RCurly)?;
@@ -1820,20 +1904,20 @@ impl Shunting {
 
 impl Context {
     pub fn parse_file(&mut self, file_name: &str) -> Result<(), CompileError> {
-        let mut source = SourceInfo::<StrSource>::from_file(file_name);
+        let mut source = self.make_source_info_from_file(file_name);
         let mut parser = Parser::from_source(self, &mut source);
 
         parser.parse()
     }
 
     pub fn ropey_parse_file(&mut self, file_name: &str) -> Result<(), CompileError> {
-        let mut source = SourceInfo::<RopeySource>::ropey_from_file(file_name);
+        let mut source = self.make_ropey_source_info_from_file(file_name);
         let mut parser = Parser::from_source(self, &mut source);
         parser.parse()
     }
 
     pub fn parse_str(&mut self, source: &'static str) -> Result<(), CompileError> {
-        let mut source = SourceInfo::<StrSource>::from_str(source);
+        let mut source = SourceInfo::<StaticStrSource>::from_static_str(source);
         let mut parser = Parser::from_source(self, &mut source);
         parser.parse()
     }
@@ -1886,7 +1970,9 @@ impl Context {
         // Re-parse the region of the source code that contains the id
         // todo(chad): @performance
         let range = self.ranges[id];
-        let mut source = SourceInfo::<StrSource>::from_range(range);
+
+        let mut source = self.make_source_info_from_range(range);
+
         let mut parser = Parser::from_source(self, &mut source);
         parser.is_polymorph_copying = true;
         parser.pop();

@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use crate::{breaks_symbol, Lexeme, Location, Range, Token};
 
 pub trait Source: std::fmt::Debug + Sized {
@@ -25,27 +23,30 @@ pub trait Source: std::fmt::Debug + Sized {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct StrSource<'a> {
-    pub original_source: &'a str,
-    pub source: &'a str,
+pub struct StaticStrSource {
+    pub original_source: &'static str,
+    pub source: &'static str,
+    pub chars_remaining: usize,
 }
 
-impl<'a> StrSource<'a> {
-    pub fn from_str(source: &'a str) -> Self {
+impl StaticStrSource {
+    pub fn from_static_str(source: &'static str) -> Self {
         Self {
             original_source: source,
             source,
+            chars_remaining: source.chars().count(),
         }
     }
 }
 
-impl<'a> Source for StrSource<'a> {
+impl Source for StaticStrSource {
     fn char_count(&self) -> usize {
-        self.source.chars().count()
+        self.chars_remaining
     }
 
     fn pop_chars(&mut self, chars: usize) {
         self.source = &self.source[chars..];
+        self.chars_remaining -= chars;
     }
 
     fn next_char(&self) -> Option<char> {
@@ -56,7 +57,7 @@ impl<'a> Source for StrSource<'a> {
         self.source.starts_with(pat)
     }
 
-    fn slice(&self, r: std::ops::Range<usize>) -> &'a str {
+    fn slice(&self, r: std::ops::Range<usize>) -> &'static str {
         &self.source[r]
     }
 
@@ -144,44 +145,8 @@ pub struct SourceInfo<W: Source> {
 }
 
 impl<W: Source> SourceInfo<W> {
-    pub fn from_file(file_name: &str) -> SourceInfo<StrSource> {
-        let path = PathBuf::from(file_name);
-        let source = std::fs::read_to_string(&path).unwrap();
-        let source: &'static str = Box::leak(source.into_boxed_str());
-        let source = StrSource::from_str(source);
-        let chars_left = source.char_count();
-        let path = Box::leak(path.into_boxed_path().to_str().unwrap().into());
-
-        SourceInfo {
-            path,
-            source,
-            chars_left,
-            loc: Default::default(),
-            top: Default::default(),
-            second: Default::default(),
-        }
-    }
-
-    pub fn ropey_from_file(file_name: &str) -> SourceInfo<RopeySource> {
-        let source_path = PathBuf::from(file_name);
-        let source = std::fs::read_to_string(&source_path).unwrap();
-        let source: &'static str = Box::leak(source.into_boxed_str());
-        let source = RopeySource::from_str(source);
-        let chars_left = source.char_count();
-        let source_path = Box::leak(source_path.into_boxed_path().to_str().unwrap().into());
-
-        SourceInfo {
-            path: source_path,
-            source,
-            chars_left,
-            loc: Default::default(),
-            top: Default::default(),
-            second: Default::default(),
-        }
-    }
-
-    pub fn from_str(source: &str) -> SourceInfo<StrSource> {
-        let source = StrSource::from_str(source);
+    pub fn from_static_str(source: &'static str) -> SourceInfo<StaticStrSource> {
+        let source = StaticStrSource::from_static_str(source);
         let chars_left = source.char_count();
 
         SourceInfo {
@@ -202,25 +167,6 @@ impl<W: Source> SourceInfo<W> {
             source,
             chars_left,
             loc: Default::default(),
-            top: Default::default(),
-            second: Default::default(),
-        }
-    }
-
-    pub fn from_range(range: Range) -> SourceInfo<StrSource<'static>> {
-        let source_path = PathBuf::from(range.source_path);
-        let source = std::fs::read_to_string(&source_path).unwrap();
-        let source = source[range.start.char_offset..range.end.char_offset].to_string();
-        let source: &'static str = Box::leak(source.into_boxed_str());
-        let source = StrSource::from_str(source);
-        let chars_left = source.char_count();
-        let source_path = Box::leak(source_path.into_boxed_path().to_str().unwrap().into());
-
-        SourceInfo {
-            path: source_path,
-            source,
-            chars_left,
-            loc: range.start,
             top: Default::default(),
             second: Default::default(),
         }

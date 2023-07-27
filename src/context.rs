@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use string_interner::StringInterner;
@@ -7,8 +8,8 @@ use string_interner::StringInterner;
 use cranelift_jit::JITModule;
 
 use crate::{
-    AddressableMatch, Args, CompileError, IdVec, Node, NodeId, Range, Scope, ScopeId, Sym, Type,
-    TypeMatch, UnificationData, Value,
+    AddressableMatch, Args, CompileError, IdVec, Node, NodeId, Range, RopeySource, Scope, ScopeId,
+    Scopes, Source, SourceInfo, StaticStrSource, Sym, Type, TypeMatch, UnificationData, Value,
 };
 
 #[derive(Clone)]
@@ -103,11 +104,12 @@ pub struct Context {
     pub args: Args,
 
     pub string_interner: StringInterner,
+    pub file_sources: HashMap<PathBuf, &'static str>,
 
     pub nodes: DenseStorage<Node>,
     pub ranges: DenseStorage<Range>,
     pub id_vecs: IdVecs,
-    pub node_scopes: Vec<ScopeId>,
+    pub node_scopes: DenseStorage<ScopeId>,
     pub polymorph_target: bool,
 
     // stack of returns - pushed when entering parsing a function, popped when exiting
@@ -116,8 +118,7 @@ pub struct Context {
     // stack of resolves - pushed when entering parsing a resolve block, popped when exiting
     pub resolves: Vec<Vec<NodeId>>,
 
-    pub scopes: Vec<Scope>,
-    pub function_scopes: Vec<ScopeId>,
+    pub scopes: Scopes,
     pub top_scope: ScopeId,
 
     pub errors: Vec<CompileError>,
@@ -154,7 +155,9 @@ impl Context {
     pub fn new(args: Args) -> Self {
         Self {
             args,
+
             string_interner: StringInterner::new(),
+            file_sources: Default::default(),
 
             nodes: Default::default(),
             ranges: Default::default(),
@@ -168,8 +171,7 @@ impl Context {
             returns: Default::default(),
             resolves: Default::default(),
 
-            scopes: vec![Scope::new_top()],
-            function_scopes: Default::default(),
+            scopes: Scopes::new(vec![Scope::new_top()]),
             top_scope: ScopeId(0),
 
             errors: Default::default(),
@@ -199,6 +201,7 @@ impl Context {
 
     pub fn reset(&mut self) {
         self.string_interner = StringInterner::new();
+        self.file_sources.clear();
 
         self.nodes.clear();
         self.ranges.clear();
@@ -213,7 +216,6 @@ impl Context {
 
         self.scopes.clear();
         self.scopes.push(Scope::new_top());
-        self.function_scopes.clear();
         self.top_scope = ScopeId(0);
 
         self.errors.clear();
@@ -238,6 +240,66 @@ impl Context {
         self.values.clear();
     }
 
+    pub fn make_source_info_from_file(&mut self, file_name: &str) -> SourceInfo<StaticStrSource> {
+        let path = PathBuf::from(file_name);
+        let source = std::fs::read_to_string(&path).unwrap();
+        let source: &'static str = Box::leak(source.into_boxed_str());
+
+        self.file_sources.insert(path.clone(), source);
+
+        let source = StaticStrSource::from_static_str(source);
+        let chars_left = source.char_count();
+        let path: &'static str = Box::leak(path.into_boxed_path().to_str().unwrap().into());
+
+        SourceInfo {
+            path,
+            source,
+            chars_left,
+            loc: Default::default(),
+            top: Default::default(),
+            second: Default::default(),
+        }
+    }
+
+    pub fn make_ropey_source_info_from_file(&mut self, file_name: &str) -> SourceInfo<RopeySource> {
+        let path = PathBuf::from(file_name);
+        let source = std::fs::read_to_string(&path).unwrap();
+        let source: &'static str = Box::leak(source.into_boxed_str());
+
+        self.file_sources.insert(path.clone(), source);
+
+        let source = RopeySource::from_str(source);
+        let chars_left = source.char_count();
+        let path: &'static str = Box::leak(path.into_boxed_path().to_str().unwrap().into());
+
+        SourceInfo {
+            path,
+            source,
+            chars_left,
+            loc: Default::default(),
+            top: Default::default(),
+            second: Default::default(),
+        }
+    }
+
+    pub fn make_source_info_from_range(&mut self, range: Range) -> SourceInfo<StaticStrSource> {
+        let source_path = PathBuf::from(range.source_path);
+        let source = &self.file_sources.get(&source_path).unwrap()
+            [range.start.char_offset..range.end.char_offset];
+        let source = StaticStrSource::from_static_str(source);
+        let chars_left = source.char_count();
+        let source_path = Box::leak(source_path.into_boxed_path().to_str().unwrap().into());
+
+        SourceInfo {
+            path: source_path,
+            source,
+            chars_left,
+            loc: range.start,
+            top: Default::default(),
+            second: Default::default(),
+        }
+    }
+
     pub fn prepare(&mut self) -> Result<(), CompileError> {
         for id in self.top_level.clone() {
             self.assign_type(id);
@@ -246,7 +308,7 @@ impl Context {
         }
 
         let mut hardstop = 0;
-        while hardstop < 3 && !self.deferreds.is_empty() {
+        while hardstop < 64 && !self.deferreds.is_empty() {
             for node in std::mem::take(&mut self.deferreds) {
                 self.assign_type(node);
                 self.unify_types();
@@ -258,7 +320,7 @@ impl Context {
         for id in self.funcs.clone() {
             match &self.nodes[id] {
                 Node::FnDefinition { params, .. } => {
-                    // don't directly codegen a polymorph, wait until it's copied first
+                    // don't attempt to directly codegen a polymorph, wait until it's copied first
                     if self.polymorph_sources.contains_key(&id) {
                         continue;
                     }
@@ -272,6 +334,37 @@ impl Context {
                     }
                 }
                 _ => (),
+            }
+        }
+
+        for id in 0..self.nodes.len() {
+            if let Node::Cast { ty, value } = self.nodes[NodeId(id)] {
+                // todo(chad): find a more robust way of doing this.
+                // Basically looping through all nodes isn't great because we will also loop through
+                // nodes in polymorph sources. So for now if the node hasn't been typechecked, then we just skip it.
+
+                if !self.types.contains_key(&ty) || !self.types.contains_key(&value) {
+                    continue;
+                }
+
+                let ty = self.types[&ty];
+                let value_ty = self.types[&value];
+
+                let Type::Pointer(_) = ty else {
+                    self.errors.push(CompileError::Node(
+                        format!("Can only cast to pointer types (casting to {:?})", ty),
+                        NodeId(id),
+                    ));
+                    break;
+                };
+
+                let Type::Pointer(_) = value_ty else {
+                    self.errors.push(CompileError::Node(
+                        format!("Can only cast from pointer types (found {:?})", value_ty),
+                        NodeId(id),
+                    ));
+                    break;
+                };
             }
         }
 
@@ -317,13 +410,13 @@ impl Context {
             }
             if *ty == Type::IntLiteral {
                 self.errors.push(CompileError::Node(
-                    "Int literal not assigned".to_string(),
+                    "Int literal could not be sized".to_string(),
                     *id,
                 ));
             }
             if *ty == Type::FloatLiteral {
                 self.errors.push(CompileError::Node(
-                    "Float literal not assigned".to_string(),
+                    "Float literal could not be sized".to_string(),
                     *id,
                 ));
             }

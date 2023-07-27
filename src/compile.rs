@@ -106,7 +106,7 @@ impl Context {
                     .push(AbiParam::new(self.get_cranelift_type(param)));
             }
 
-            let return_size = return_ty.map(|rt| self.get_type_size(rt)).unwrap_or(0);
+            let return_size = return_ty.map(|rt| self.id_type_size(rt)).unwrap_or(0);
 
             if return_size > 0 {
                 sig.returns
@@ -157,7 +157,7 @@ impl Context {
             .next()
             .cloned();
 
-        if let Some(id) = node_id {
+        if let (Some(id), true) = (node_id, self.args.run) {
             let code = self.module.get_finalized_function(self.get_func_id(id));
             let func = unsafe { std::mem::transmute::<_, fn() -> i64>(code) };
             func();
@@ -190,8 +190,12 @@ impl Context {
         std::mem::size_of::<u16>() as u32
     }
 
-    fn get_type_size(&self, param: NodeId) -> StackSize {
-        match self.types[&param] {
+    fn id_type_size(&self, param: NodeId) -> StackSize {
+        self.type_size(self.types[&param])
+    }
+
+    fn type_size(&self, ty: Type) -> StackSize {
+        match ty {
             Type::I8 | Type::U8 | Type::Bool => 1,
             Type::I16 | Type::U16 => 2,
             Type::I32 | Type::U32 | Type::F32 => 4,
@@ -204,7 +208,7 @@ impl Context {
                     .clone()
                     .borrow()
                     .iter()
-                    .map(|f| self.get_type_size(*f))
+                    .map(|f| self.id_type_size(*f))
                     .sum()
             }
             Type::Enum { params, .. } => {
@@ -212,14 +216,14 @@ impl Context {
                     .clone()
                     .borrow()
                     .iter()
-                    .map(|f| self.get_type_size(*f))
+                    .map(|f| self.id_type_size(*f))
                     .max()
                     .unwrap_or_default()
                     + self.enum_tag_size()
             }
             Type::Array(_) => 16,
             Type::EnumNoneType | Type::Empty => 0,
-            _ => todo!("get_type_size for {:?}", self.types[&param]),
+            _ => todo!("get_type_size for {:?}", ty),
         }
     }
 
@@ -240,7 +244,7 @@ impl Context {
             _ => None,
         };
 
-        let return_size = return_ty.map(|rt| self.get_type_size(rt)).unwrap_or(0);
+        let return_size = return_ty.map(|rt| self.id_type_size(rt)).unwrap_or(0);
 
         let mut sig = self.module.make_signature();
         for param in param_ids.iter() {
@@ -389,7 +393,7 @@ impl<'a> FunctionCompileContext<'a> {
                 Ok(())
             }
             Node::Let { expr, .. } => {
-                let size: u32 = self.ctx.get_type_size(id);
+                let size: u32 = self.ctx.id_type_size(id);
                 let slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
                     size,
@@ -436,7 +440,7 @@ impl<'a> FunctionCompileContext<'a> {
 
                 if self.ctx.addressable_nodes.contains(&id) || pass_base_by_ref {
                     // we need our own storage
-                    let size = self.ctx.get_type_size(id);
+                    let size = self.ctx.id_type_size(id);
                     let slot = self.builder.create_sized_stack_slot(StackSlotData {
                         kind: StackSlotKind::ExplicitSlot,
                         size,
@@ -450,7 +454,7 @@ impl<'a> FunctionCompileContext<'a> {
                     let value = Value::Value(slot_addr);
                     self.ctx.values.insert(id, value);
 
-                    let size = self.ctx.get_type_size(id);
+                    let size = self.ctx.id_type_size(id);
 
                     let source_value = param_value;
                     let dest_value = slot_addr;
@@ -552,7 +556,7 @@ impl<'a> FunctionCompileContext<'a> {
                 Ok(())
             }
             Node::StructLiteral { params, .. } => {
-                let size = self.ctx.get_type_size(id);
+                let size = self.ctx.id_type_size(id);
                 let slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
                     size,
@@ -568,7 +572,7 @@ impl<'a> FunctionCompileContext<'a> {
                 for field in self.ctx.id_vecs[params].clone().borrow().iter() {
                     self.compile_id(*field)?;
                     self.store_with_offset(*field, Value::Value(addr), offset);
-                    offset += self.ctx.get_type_size(*field);
+                    offset += self.ctx.id_type_size(*field);
                 }
 
                 Ok(())
@@ -648,7 +652,7 @@ impl<'a> FunctionCompileContext<'a> {
             } => {
                 let mut sig = self.ctx.module.make_signature();
 
-                let return_size = return_ty.map(|rt| self.ctx.get_type_size(rt)).unwrap_or(0);
+                let return_size = return_ty.map(|rt| self.ctx.id_type_size(rt)).unwrap_or(0);
                 if return_size > 0 {
                     sig.returns.push(AbiParam::new(
                         self.ctx.get_cranelift_type(return_ty.unwrap()),
@@ -689,7 +693,7 @@ impl<'a> FunctionCompileContext<'a> {
                 // Make a stack slot for the result of the if statement
                 let slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
-                    size: self.ctx.get_type_size(id),
+                    size: self.ctx.id_type_size(id),
                 });
                 let slot_addr =
                     self.builder
@@ -741,6 +745,103 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
+            Node::For {
+                label,
+                iterable,
+                block,
+            } => {
+                self.compile_id(iterable)?;
+                let array_value = self.rvalue(iterable);
+                let array_length_value = self.load(
+                    types::I64,
+                    array_value,
+                    self.ctx.get_pointer_type().bytes() as _,
+                );
+                let array_pointer_value = self.load(self.ctx.get_pointer_type(), array_value, 0);
+                let array_elem_type_size = self.ctx.id_type_size(label);
+
+                // Make a stack slot for the label
+                let label_slot = self.builder.create_sized_stack_slot(StackSlotData {
+                    kind: StackSlotKind::ExplicitSlot,
+                    size: self.ctx.id_type_size(label),
+                });
+                let label_slot_addr = self.builder.ins().stack_addr(
+                    self.ctx.module.isa().pointer_type(),
+                    label_slot,
+                    0,
+                );
+                self.ctx.values.insert(label, Value::Value(label_slot_addr));
+
+                // Make a slot for the iterator
+                let index_slot = self.builder.create_sized_stack_slot(StackSlotData {
+                    kind: StackSlotKind::ExplicitSlot,
+                    size: self.ctx.type_size(Type::I64),
+                });
+                let index_slot_addr = self.builder.ins().stack_addr(
+                    self.ctx.module.isa().pointer_type(),
+                    index_slot,
+                    0,
+                );
+
+                // iterator starts at 0
+                let index_value = self.builder.ins().iconst(types::I64, 0);
+                self.builder
+                    .ins()
+                    .store(MemFlags::new(), index_value, index_slot_addr, 0);
+
+                let cond_ebb = self.builder.create_block();
+                let block_ebb = self.builder.create_block();
+                let merge_ebb = self.builder.create_block();
+
+                self.builder.ins().jump(cond_ebb, &[]);
+                self.switch_to_block(cond_ebb);
+
+                // if iterator >= array_length, jump to merge
+                let iterator_value = self.load(types::I64, index_slot_addr, 0);
+                let cond = self.builder.ins().icmp(
+                    IntCC::SignedGreaterThanOrEqual,
+                    iterator_value,
+                    array_length_value,
+                );
+                self.builder
+                    .ins()
+                    .brif(cond, merge_ebb, &[], block_ebb, &[]);
+
+                self.switch_to_block(block_ebb);
+
+                // Store the current value in the label slot
+                let index_value = self.load(types::I64, index_slot_addr, 0);
+                let array_element_offset = self
+                    .builder
+                    .ins()
+                    .imul_imm(index_value, array_elem_type_size as i64);
+                let element_ptr = self
+                    .builder
+                    .ins()
+                    .iadd(array_pointer_value, array_element_offset);
+
+                self.emit_small_memory_copy(
+                    label_slot_addr,
+                    element_ptr,
+                    array_elem_type_size as _,
+                );
+
+                self.compile_id(block)?;
+
+                // increment iterator
+                let index_value = self.builder.ins().iadd_imm(index_value, 1);
+                self.builder
+                    .ins()
+                    .store(MemFlags::new(), index_value, index_slot_addr, 0);
+
+                if !self.exited_blocks.contains(&self.current_block) {
+                    self.builder.ins().jump(cond_ebb, &[]);
+                }
+
+                self.builder.switch_to_block(merge_ebb);
+
+                Ok(())
+            }
             Node::Block {
                 stmts,
                 is_standalone,
@@ -750,7 +851,7 @@ impl<'a> FunctionCompileContext<'a> {
                     // Make a stack slot for the result of the if statement
                     let slot = self.builder.create_sized_stack_slot(StackSlotData {
                         kind: StackSlotKind::ExplicitSlot,
-                        size: self.ctx.get_type_size(id),
+                        size: self.ctx.id_type_size(id),
                     });
                     let slot_addr = self.builder.ins().stack_addr(
                         self.ctx.module.isa().pointer_type(),
@@ -796,12 +897,12 @@ impl<'a> FunctionCompileContext<'a> {
                 Ok(())
             }
             Node::ArrayLiteral { members, ty } => {
-                let member_size = self.ctx.get_type_size(ty);
+                let member_size = self.ctx.id_type_size(ty);
 
                 let members = self.ctx.id_vecs[members].clone();
 
                 // create stack slot big enough for all of the members
-                let size = self.ctx.get_type_size(ty);
+                let size = self.ctx.id_type_size(ty);
                 let member_storage_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
                     size: size * members.borrow().len() as u32,
@@ -821,7 +922,7 @@ impl<'a> FunctionCompileContext<'a> {
 
                 let slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
-                    size: self.ctx.get_type_size(id),
+                    size: self.ctx.id_type_size(id),
                 });
                 let slot_addr =
                     self.builder
@@ -845,7 +946,7 @@ impl<'a> FunctionCompileContext<'a> {
                 self.compile_id(array)?;
                 self.compile_id(index)?;
 
-                let member_size = self.ctx.get_type_size(id);
+                let member_size = self.ctx.id_type_size(id);
 
                 let array_value = self.rvalue(array);
                 let array_ptr_value = self.load(types::I64, array_value, 0);
@@ -854,6 +955,25 @@ impl<'a> FunctionCompileContext<'a> {
                 let array_ptr_value = self.builder.ins().iadd(array_ptr_value, index_value);
 
                 self.ctx.values.insert(id, Value::Value(array_ptr_value));
+
+                Ok(())
+            }
+            Node::Cast { value, .. } => {
+                self.compile_id(value)?;
+
+                if self.ctx.addressable_nodes.contains(&value) {
+                    self.ctx.addressable_nodes.insert(id);
+                }
+
+                self.ctx.values.insert(id, self.ctx.values[&value]);
+
+                Ok(())
+            }
+            Node::SizeOf(ty) => {
+                let ty_size = self.ctx.id_type_size(ty);
+                let value = self.builder.ins().iconst(types::I64, ty_size as i64);
+
+                self.ctx.values.insert(id, Value::Value(value));
 
                 Ok(())
             }
@@ -940,7 +1060,7 @@ impl<'a> FunctionCompileContext<'a> {
                 return Ok((offset, pointiness));
             }
 
-            offset += self.ctx.get_type_size(*field);
+            offset += self.ctx.id_type_size(*field);
         }
 
         return Err(CompileError::Generic(
@@ -1001,7 +1121,7 @@ impl<'a> FunctionCompileContext<'a> {
     }
 
     fn store_copy(&mut self, id: NodeId, dest: Value) {
-        let size = self.ctx.get_type_size(id);
+        let size = self.ctx.id_type_size(id);
 
         let source_value = self.as_cranelift_value(self.ctx.values[&id]);
         let dest_value = self.as_cranelift_value(dest);
@@ -1177,7 +1297,7 @@ impl<'a> ToplevelCompileContext<'a> {
                         builder.append_block_params_for_function_params(ebb);
                         builder.switch_to_block(ebb);
 
-                        let enum_type_size = self.ctx.get_type_size(base);
+                        let enum_type_size = self.ctx.id_type_size(base);
 
                         // Allocate a slot as big as the enum
                         let slot = builder.create_sized_stack_slot(StackSlotData {
@@ -1200,7 +1320,7 @@ impl<'a> ToplevelCompileContext<'a> {
                             let param_value = params[0];
 
                             if self.ctx.should_pass_by_ref(param) {
-                                let size = self.ctx.get_type_size(param);
+                                let size = self.ctx.id_type_size(param);
 
                                 let source_value = param_value;
 

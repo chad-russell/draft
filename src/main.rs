@@ -6,7 +6,7 @@ fn run(context: &mut Context) -> Result<(), CompileError> {
     context.parse_file(&input)?;
 
     if context.args.dump_tokens {
-        let mut source = SourceInfo::<StrSource>::from_file(&input);
+        let mut source = context.make_ropey_source_info_from_file(&input);
         context.debug_tokens(&mut source)?;
         return Ok(());
     }
@@ -24,6 +24,8 @@ fn run(context: &mut Context) -> Result<(), CompileError> {
 }
 
 fn main() {
+    // for _ in 0..5_000 {
+    // loop {
     let args = args::Args::parse();
 
     let mut context = Context::new(args);
@@ -32,4 +34,5 @@ fn main() {
         Ok(_) => {}
         Err(e) => context.report_error(e),
     }
+    // }
 }

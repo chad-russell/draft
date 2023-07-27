@@ -137,6 +137,16 @@ pub enum Node {
         then_block: NodeId,
         else_block: NodeElse,
     },
+    For {
+        label: NodeId,
+        iterable: NodeId,
+        block: NodeId,
+    },
+    Cast {
+        ty: NodeId,
+        value: NodeId,
+    },
+    SizeOf(NodeId),
 }
 
 impl Node {
@@ -177,8 +187,11 @@ impl Node {
             Node::AddressOf(_) => "AddressOf".to_string(),
             Node::Deref(_) => "Deref".to_string(),
             Node::If { .. } => "If".to_string(),
+            Node::For { .. } => "For".to_string(),
             Node::ArrayLiteral { .. } => "ArrayLiteral".to_string(),
             Node::ArrayAccess { .. } => "ArrayAccess".to_string(),
+            Node::Cast { .. } => "Cast".to_string(),
+            Node::SizeOf(_) => "SizeOf".to_string(),
         }
     }
 }

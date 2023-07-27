@@ -1,60 +1,27 @@
 extern print_i64(n: i64);
-extern print_f64(n: f64);
+// extern print_f64(n: f64);
 
-// Declare the interafce itself
-struct Interface {
-    data: *_T!,
-    vtable: struct {
-        do_thing: fn(n: *T) i64,
-    },
+// enum Option {
+    // Some: _T!,
+    // None,
+// }
+
+struct Foo { x: i64 }
+
+fn foo(f: Foo) _ {
+    return f.x;
 }
 
-fn do_thing(i: Interface!(T: _T!)) _ {
-    return i.vtable.do_thing(i.data);
-}
-
-// Define and implement the interface for Foo
-struct Foo {
-    x: i64,
-}
-
-fn foo_to_interface(foo: *Foo) _ {
-    return Interface {
-        data: foo,
-        vtable: _{
-            do_thing: fn(foo: *Foo) i64 {
-                return foo.x;
-            },
-        },
-    };
-}
-
-// Define and implement the interface for Bar
-struct Bar {
-    x: i64,
-    y: i64,
-}
-
-fn bar_to_interface(bar: *Bar) _ {
-    return Interface {
-        data: bar,
-        vtable: _{
-            do_thing: fn(bar: *Bar) i64 {
-                return bar.x + bar.y;
-            },
-        },
-    };
+fn pfoo(f: *Foo) _ {
+    return f.x;
 }
 
 fn main() i64 {
-    let f = Foo { x: 42 };
-    let b = Bar { x: 1, y: 2 };
+    // let a = Option::Some(3i64);
 
-    let i1 = foo_to_interface(&f);
-    let i2 = bar_to_interface(&b);
-
-    print_i64(do_thing(i1));
-    print_i64(do_thing(i2));
+    let f = Foo { 3 };
+    foo(f);
+    pfoo(&f);
 
     return 0;
 }

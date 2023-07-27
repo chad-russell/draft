@@ -869,10 +869,12 @@ impl Context {
                             self.match_types(return_ty, ret_id);
                         }
                         (Ok(ret_id), None) => {
-                            self.errors.push(CompileError::Node(
-                                "Return type not specified".to_string(),
-                                ret_id,
-                            ));
+                            if let Node::Return(Some(_)) = self.nodes[ret_id] {
+                                self.errors.push(CompileError::Node(
+                                    "Return type not specified".to_string(),
+                                    ret_id,
+                                ));
+                            }
                         }
                     }
                 }
@@ -1472,6 +1474,10 @@ impl Context {
                     Type::Pointer(ty) => {
                         self.match_types(id, ty);
                     }
+                    Type::Infer(_) => {
+                        self.deferreds.push(id);
+                        return false;
+                    }
                     _ => {
                         self.errors.push(CompileError::Node(
                             "Dereference on non-pointer".to_string(),
@@ -1610,6 +1616,39 @@ impl Context {
             Node::PolySpecializeOverride { ty, .. } => {
                 self.assign_type(ty);
                 self.match_types(id, ty);
+            }
+            Node::Cast { ty, value } => {
+                self.assign_type(ty);
+                self.match_types(id, ty);
+                self.match_addressable(id, value);
+
+                self.assign_type(value);
+            }
+            Node::SizeOf(ty) => {
+                self.assign_type(ty);
+                self.types.insert(id, Type::I64);
+            }
+            Node::For {
+                iterable,
+                label,
+                block,
+                ..
+            } => {
+                self.assign_type(iterable);
+
+                match self.get_type(iterable) {
+                    Type::Infer(_) => {
+                        self.deferreds.push(id);
+                        return false;
+                    }
+                    Type::Array(array_element_ty) => {
+                        self.match_types(label, array_element_ty);
+                    }
+                    _ => todo!(),
+                }
+
+                self.assign_type(block);
+                // todo(chad): match expr to an array type
             }
         }
 

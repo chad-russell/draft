@@ -1,5 +1,24 @@
 extern print_i64(n: i64);
+extern print_f64(n: f64);
 extern print_enum_tag(f: *Baz);
+extern malloc(n: i64) *struct{};
+extern free(n: *struct{});
+
+struct Array {
+    data: *_T!,
+    len: i64,
+}
+
+fn heapify(v: _T!) *T {
+    let a = #cast(*T) malloc(#size_of(T));
+    *a = v;
+    return a;
+}
+
+fn freeify(v: *_T!) {
+    free(#cast v);
+    return;
+}
     
 struct Foo {
     x: i64, 
@@ -87,6 +106,80 @@ fn test_vec_stuff_1() i64 {
 
     let v2 = Vec { data: &v1, len: 26 };
     print_i64(vec_len(&v2));
+
+    return 0;
+}
+
+// Declare the interafce itself
+struct Interface {
+    data: *_T!,
+    vtable: struct {
+        do_thing: fn(n: *T) i64,
+    },
+}
+
+fn do_thing(i: Interface!) _ {
+    return i.vtable.do_thing(i.data);
+}
+
+// Define and implement the interface for IFoo
+struct IFoo {
+    x: i64,
+}
+
+fn foo_to_interface(foo: *IFoo) _ {
+    return Interface {
+        data: foo,
+        vtable: _{
+            do_thing: fn(foo: *IFoo) i64 {
+                return foo.x;
+            },
+        },
+    };
+}
+
+// Define and implement the interface for IBar
+struct IBar {
+    x: i64,
+    y: i64,
+}
+
+fn bar_to_interface(bar: *IBar) _ {
+    return Interface {
+        data: bar,
+        vtable: _{
+            do_thing: fn(bar: *IBar) i64 {
+                return bar.x + bar.y;
+            },
+        },
+    };
+}
+
+fn test_interfaces() i64 {
+    let f = IFoo { x: 42 };
+    let b = IBar { x: 1, y: 2 };
+
+    let i1 = foo_to_interface(&f);
+    // let i2 = bar_to_interface(&b);
+    let i2 = Interface { &b, _{ fn(bar: *IBar) i64 { return bar.x + bar.y; } } };
+
+    print_i64(do_thing(i1));
+    print_i64(do_thing(i2));
+
+    return 0;
+}
+
+fn test_for_array() i64 {
+    let arr = [_{x: 1i64, y: 1.1f64}, _{2, 2.2}, _{3, 3.3}];
+
+    for val in arr {
+        val.x = 999;
+    }
+
+    for val2 in arr {
+        print_i64(val2.x);
+        print_f64(val2.y);
+    }
 
     return 0;
 }
@@ -186,6 +279,10 @@ fn main() i64 {
     print_i64(pstruct.a + pstruct.b);
     
     test_vec_stuff_1();
+    
+    test_interfaces();
+    
+    test_for_array();
     
     return 0;
 }

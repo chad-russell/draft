@@ -11,18 +11,19 @@
     - [x] functions
     - [x] structs
     - [x] enums
-    - [ ] modules (?)
-    - [ ] blocks (?)
 - [x] booleans
 - [x] if/else
     - [x] as expressions
 - [x] `==` operator
 - [x] enums
-- [ ] question mark operator (how would this work? do we need interfaces after all?)
+- [x] #cast
+    - [x] restrict to only pointers (?)
 - [x] arrays
-- [ ] for loops
+- [x] for loops
 - [ ] while loops
 - [ ] defer
+- [ ] interfaces
+- [ ] question mark operator (how would this work? do we need interfaces after all?)
 - [ ] modules
 - [ ] string interpolation
 - [ ] pipe/threading/ufcs operator
@@ -33,7 +34,6 @@
 - [ ] implicit function arguments
 - [ ] formatter
 - [ ] immutability (?)
-- [ ] some kind of story for interfaces/traits (?)
 
 # LSP
 - [ ] create rust tests which each mimic one of the capabilities of the lsp

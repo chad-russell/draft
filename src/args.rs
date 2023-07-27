@@ -4,7 +4,7 @@ use clap::Parser as ClapParser;
 #[command(version, about)]
 pub struct Args {
     pub input: String,
-    
+
     #[arg(long)]
     pub dump_ir: bool,
 
@@ -13,4 +13,7 @@ pub struct Args {
 
     #[arg(long)]
     pub print_type_matches: bool,
+
+    #[arg(long)]
+    pub run: bool,
 }
