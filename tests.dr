@@ -49,7 +49,7 @@ fn foo3(f: *_) _ {
 }
 
 fn foo4(f: *!) _ {
-    return f.x + f.y;
+    return f.x + f.y + foo3(f);
 }
 
 fn foo5(f: *_T!, g: _U!) _ {
@@ -192,10 +192,10 @@ fn main() i64 {
     print_i64(foo1(f) - 10); // 1
     print_i64(foo2(f) - 9); // 2
     print_i64(foo3(&f) - 8); // 3
-    print_i64(foo4(&f) - 7); // 4
-    print_i64(foo4(pf) - 6); // 5
-    print_i64(foo4(*&pf) - 5); // 6
-    print_i64(foo4(*&*&*&*&*&pf) - 4); // 7
+    print_i64(foo4(&f) - 18); // 4
+    print_i64(foo4(pf) - 17); // 5
+    print_i64(foo4(*&pf) - 16); // 6
+    print_i64(foo4(*&*&*&*&*&pf) - 15); // 7
 
     f = Foo { y: 3, x: 8 };
     print_i64(f.x - f.y + 3); // 8
