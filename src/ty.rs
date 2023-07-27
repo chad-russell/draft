@@ -1029,7 +1029,7 @@ impl Context {
                     self.assign_type(ty);
                 }
 
-                if self.should_pass_base_by_ref(id) {
+                if self.is_aggregate_type(id) {
                     self.addressable_nodes.insert(id);
                 }
 

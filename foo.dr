@@ -1,23 +1,5 @@
 extern print_i64(n: i64);
 
-struct Foo { x: i64 }
-
-fn foo(f: !) _ {
-    return f.x;
-}
-
 fn main() i64 {
-    let f = Foo { 3 };
-    let g = f;
-    let pb = &f;
-
-    print_i64(f.x);
-    print_i64(g.x);
-    print_i64(pb.x);
-    
-    print_i64(foo(f));
-    print_i64(foo(g));
-    print_i64(foo(pb));
-
     return 0;
 }

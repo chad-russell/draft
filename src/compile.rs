@@ -267,7 +267,7 @@ impl Context {
         )
     }
 
-    pub fn should_pass_base_by_ref(&self, id: NodeId) -> bool {
+    pub fn is_aggregate_type(&self, id: NodeId) -> bool {
         let mut base_ty = self.get_type(id);
         while let Type::Pointer(inner) = base_ty {
             base_ty = self.get_type(inner);
@@ -439,7 +439,7 @@ impl<'a> FunctionCompileContext<'a> {
                 let params = self.builder.block_params(self.current_block);
                 let param_value = params[index as usize];
 
-                let pass_base_by_ref = self.ctx.should_pass_base_by_ref(id);
+                let pass_base_by_ref = self.ctx.is_aggregate_type(id);
 
                 if self.ctx.addressable_nodes.contains(&id) || pass_base_by_ref {
                     // we need our own storage
@@ -583,9 +583,22 @@ impl<'a> FunctionCompileContext<'a> {
             Node::MemberAccess { value, member } => {
                 self.compile_id(value)?;
 
-                let (offset, mut pointiness) = self.get_member_offset(value, member)?;
+                let offset = self.get_member_offset(value, member)?;
 
-                let mut value = self.as_cranelift_value(self.ctx.values[&value]);
+                let mut pointiness = 0;
+                let mut ty = self.ctx.get_type(value);
+                while let Type::Pointer(inner) = ty {
+                    pointiness += 1;
+                    ty = self.ctx.get_type(inner);
+                }
+
+                // If this is member access on an aggregate type, then decrease the pointiness if it's above 0
+                if self.ctx.is_aggregate_type(value) && pointiness > 1 {
+                    pointiness -= 1;
+                }
+
+                let value = self.ctx.values[&value];
+                let mut value = self.as_cranelift_value(value);
                 while pointiness > 0 {
                     value = self.load(types::I64, value, 0);
                     pointiness -= 1;
@@ -603,13 +616,12 @@ impl<'a> FunctionCompileContext<'a> {
                 self.compile_id(value)?;
 
                 let cranelift_value = self.ctx.values.get(&value).unwrap();
-                match cranelift_value {
-                    Value::Value(_) | Value::Func(_) => {
-                        self.ctx.values.insert(id, *cranelift_value)
-                    }
-                };
+                self.ctx.values.insert(id, *cranelift_value);
 
-                self.store_in_slot_if_addressable(id);
+                // If directly taking the address of a struct, it's just the same as the struct itself
+                if !matches!(self.ctx.get_type(value), Type::Struct { .. }) {
+                    self.store_in_slot_if_addressable(id);
+                }
 
                 Ok(())
             }
@@ -1028,18 +1040,12 @@ impl<'a> FunctionCompileContext<'a> {
         self.builder.ins().load(ty, MemFlags::new(), value, offset)
     }
 
-    fn get_member_offset(
-        &mut self,
-        value: NodeId,
-        member: NodeId,
-    ) -> Result<(u32, u32), CompileError> {
+    fn get_member_offset(&mut self, value: NodeId, member: NodeId) -> Result<u32, CompileError> {
         let member_name = self.ctx.nodes[member].as_symbol().unwrap();
 
         let mut ty = self.ctx.get_type(value);
-        let mut pointiness = 0;
         while let Type::Pointer(inner) = ty {
             ty = self.ctx.get_type(inner);
-            pointiness += 1;
         }
 
         let Type::Struct { params, .. } = ty else {
@@ -1060,7 +1066,7 @@ impl<'a> FunctionCompileContext<'a> {
             let field_name = self.ctx.nodes[field_name].as_symbol().unwrap();
 
             if field_name == member_name {
-                return Ok((offset, pointiness));
+                return Ok(offset);
             }
 
             offset += self.ctx.id_type_size(*field);
