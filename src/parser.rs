@@ -1610,9 +1610,6 @@ impl<'a, W: Source> Parser<'a, W> {
                         let expr = self.parse_expression(true)?;
                         let range = self.expect_range(start, Token::Semicolon)?;
 
-                        // Assignment lhs never needs to be addressable
-                        self.ctx.addressable_nodes.remove(&lvalue);
-
                         Ok(self.ctx.push_node(
                             range,
                             Node::Assign {
@@ -1968,7 +1965,6 @@ impl Context {
         target: ParseTarget,
     ) -> Result<NodeId, CompileError> {
         // Re-parse the region of the source code that contains the id
-        // todo(chad): @performance
         let range = self.ranges[id];
 
         let mut source = self.make_source_info_from_range(range);

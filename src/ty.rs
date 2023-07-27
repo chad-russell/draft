@@ -1589,8 +1589,6 @@ impl Context {
                         ));
                     }
                 }
-
-                self.addressable_nodes.insert(id);
             }
             Node::PolySpecialize { sym, overrides } => {
                 let resolved = self.scope_get(sym, id).unwrap();

@@ -1,27 +1,15 @@
 extern print_i64(n: i64);
-// extern print_f64(n: f64);
 
-// enum Option {
-    // Some: _T!,
-    // None,
-// }
-
-struct Foo { x: i64 }
-
-fn foo(f: Foo) _ {
-    return f.x;
-}
-
-fn pfoo(f: *Foo) _ {
-    return f.x;
-}
+struct Foo { x: i64, y: i64 }
 
 fn main() i64 {
-    // let a = Option::Some(3i64);
+    let f = Foo { 3, 8 };
+    let g = f;
+    let pb = &f;
 
-    let f = Foo { 3 };
-    foo(f);
-    pfoo(&f);
+    print_i64(f.x);
+    print_i64(g.x);
+    print_i64(pb.x);
 
     return 0;
 }

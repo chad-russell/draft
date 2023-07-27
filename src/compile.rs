@@ -273,7 +273,10 @@ impl Context {
             base_ty = self.get_type(inner);
         }
 
-        matches!(base_ty, Type::Struct { .. } | Type::Enum { .. })
+        matches!(
+            base_ty,
+            Type::Struct { .. } | Type::Enum { .. } | Type::Array(_)
+        )
     }
 }
 
