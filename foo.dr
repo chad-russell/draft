@@ -1,5 +1,15 @@
 extern print_i64(n: i64);
 
+struct Foo {
+    x: _T!,
+    y: i64,
+}
+
+fn foo(f: Foo!) _ {
+    return f.x + f.y;
+}
+
 fn main() i64 {
+    print_i64(foo)(Foo { 1, 2 }));
     return 0;
 }

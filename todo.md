@@ -1,3 +1,17 @@
+# Bugs
+- [x] matching things against polymorph sources will pretty much just accept anything
+    - ```
+        struct Array {
+            data: *_T!,
+            len: i64,
+        }
+
+        fn main() i64 {
+            let a: Array = _{ foobar: 3i64 };
+            return 0;
+        }
+    ```
+
 # Features
 - [x] test returning structs from a function
 - [x] clean up 'store if addressable' logic if possible
@@ -20,22 +34,29 @@
     - [x] restrict to only pointers (?)
 - [x] arrays
 - [x] for loops
-- [ ] while loops
-- [ ] defer
+- [x] !=, <, >, <=, >= operators
+- [x] while loops
+- [x] arrays assignable to Array type
 - [ ] interfaces
+- [ ] pipe/threading/ufcs operator
+- [ ] short-circuit and/or operators
+- [ ] defer
 - [ ] question mark operator (how would this work? do we need interfaces after all?)
 - [ ] modules
-- [ ] string interpolation
-- [ ] pipe/threading/ufcs operator
-- [ ] pattern matching
+- [ ] string interpolation (need a default stringification function for everything, how does that work? interfaces again?)
+- [ ] pattern matching (on enums only at first, very simple. Maybe a simplified version of `if let`)
 - [ ] coroutines
 - [ ] any / #astof(...)
 - [ ] c interop
+    - [x] extern functions POC
+    - [ ] make sure extern functions works with libs/dylibs when compiling to binary
+    - [ ] pass structs as arguments
 - [ ] implicit function arguments
-- [ ] formatter
 - [ ] immutability (?)
+- [ ] debugger
 
-# LSP
+# LSP / Tooling
+- [ ] brewfmt
 - [ ] create rust tests which each mimic one of the capabilities of the lsp
 - [x] error reporting
 - [ ] symbol outline

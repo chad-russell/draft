@@ -20,7 +20,8 @@
                 }
             },
             "args": [
-                "foo.dr"
+                "foo.dr",
+                "--run"
             ],
             "cwd": "${workspaceFolder}"
         }

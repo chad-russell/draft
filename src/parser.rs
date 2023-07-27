@@ -131,6 +131,11 @@ pub enum Token {
     Underscore,
     UnderscoreSymbol(Sym),
     EqEq,
+    Neq,
+    Gt,
+    Lt,
+    GtEq,
+    LtEq,
     Eq,
     Fn,
     Extern,
@@ -138,6 +143,7 @@ pub enum Token {
     If,
     Else,
     For,
+    While,
     In,
     I8,
     I16,
@@ -310,6 +316,9 @@ impl<'a, W: Source> Parser<'a, W> {
         if self.source_info.prefix_keyword("for", Token::For) {
             return;
         }
+        if self.source_info.prefix_keyword("while", Token::While) {
+            return;
+        }
         if self.source_info.prefix_keyword("in", Token::In) {
             return;
         }
@@ -401,6 +410,21 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
         if self.source_info.prefix("==", Token::EqEq) {
+            return;
+        }
+        if self.source_info.prefix(">=", Token::GtEq) {
+            return;
+        }
+        if self.source_info.prefix(">", Token::Gt) {
+            return;
+        }
+        if self.source_info.prefix("<=", Token::LtEq) {
+            return;
+        }
+        if self.source_info.prefix("<", Token::Lt) {
+            return;
+        }
+        if self.source_info.prefix("!=", Token::Neq) {
             return;
         }
         if self.source_info.prefix("=", Token::Eq) {
@@ -997,36 +1021,6 @@ impl<'a, W: Source> Parser<'a, W> {
                     let id = self.parse_expression_piece(struct_literals_allowed)?;
                     output.push(Shunting::Id(id))
                 }
-                Token::Plus => {
-                    if !parsing_op {
-                        break;
-                    }
-
-                    while !operators.is_empty()
-                        && operators.last().unwrap().precedence()
-                            >= Op::from(self.source_info.top.tok).precedence()
-                    {
-                        output.push(Shunting::Op(operators.pop().unwrap()));
-                    }
-                    operators.push(Op::Add);
-
-                    self.pop(); // `+`
-                }
-                Token::Dash => {
-                    if !parsing_op {
-                        break;
-                    }
-
-                    while !operators.is_empty()
-                        && operators.last().unwrap().precedence()
-                            >= Op::from(self.source_info.top.tok).precedence()
-                    {
-                        output.push(Shunting::Op(operators.pop().unwrap()));
-                    }
-                    operators.push(Op::Sub);
-
-                    self.pop(); // `-`
-                }
                 Token::Star => {
                     if parsing_op {
                         while !operators.is_empty()
@@ -1052,35 +1046,29 @@ impl<'a, W: Source> Parser<'a, W> {
                         output.push(Shunting::Id(id))
                     }
                 }
-                Token::Slash => {
+                Token::Plus
+                | Token::Dash
+                | Token::Slash
+                | Token::EqEq
+                | Token::Neq
+                | Token::Gt
+                | Token::Lt
+                | Token::GtEq
+                | Token::LtEq => {
                     if !parsing_op {
                         break;
                     }
 
+                    let op = Op::from(self.source_info.top.tok);
+
                     while !operators.is_empty()
-                        && operators.last().unwrap().precedence()
-                            >= Op::from(self.source_info.top.tok).precedence()
+                        && operators.last().unwrap().precedence() >= op.precedence()
                     {
                         output.push(Shunting::Op(operators.pop().unwrap()));
                     }
-                    operators.push(Op::Div);
+                    operators.push(op);
 
-                    self.pop(); // `/`
-                }
-                Token::EqEq => {
-                    if !parsing_op {
-                        break;
-                    }
-
-                    while !operators.is_empty()
-                        && operators.last().unwrap().precedence()
-                            >= Op::from(self.source_info.top.tok).precedence()
-                    {
-                        output.push(Shunting::Op(operators.pop().unwrap()));
-                    }
-                    operators.push(Op::EqEq);
-
-                    self.pop(); // `==`
+                    self.pop(); // op
                 }
                 _ => break,
             }
@@ -1559,6 +1547,25 @@ impl<'a, W: Source> Parser<'a, W> {
         ))
     }
 
+    pub fn parse_while(&mut self) -> Result<NodeId, CompileError> {
+        let start = self.source_info.top.range.start;
+
+        self.pop(); // `while`
+
+        let pushed_label_scope = self.ctx.push_scope();
+
+        let cond = self.parse_expression(false)?;
+
+        let block = self.parse_block(false)?;
+
+        self.ctx.pop_scope(pushed_label_scope);
+
+        Ok(self.ctx.push_node(
+            Range::new(start, self.ctx.ranges[block].end, self.source_info.path),
+            Node::While { cond, block },
+        ))
+    }
+
     pub fn parse_block_stmt(&mut self) -> Result<NodeId, CompileError> {
         let start = self.source_info.top.range.start;
 
@@ -1596,6 +1603,7 @@ impl<'a, W: Source> Parser<'a, W> {
             Token::Let => self.parse_let(),
             Token::If => self.parse_if(),
             Token::For => self.parse_for(),
+            Token::While => self.parse_while(),
             Token::Struct => self.parse_struct_definition(),
             Token::Enum => self.parse_enum_definition(),
             Token::Fn => self.parse_fn(false),
@@ -2020,6 +2028,11 @@ pub enum Op {
     Mul,
     Div,
     EqEq,
+    Neq,
+    Gt,
+    Lt,
+    GtEq,
+    LtEq,
 }
 
 impl Op {
@@ -2027,7 +2040,7 @@ impl Op {
         match self {
             Op::Add | Op::Sub => 1,
             Op::Mul | Op::Div => 2,
-            Op::EqEq => 3,
+            Op::Gt | Op::Lt | Op::GtEq | Op::LtEq | Op::EqEq | Op::Neq => 3,
         }
     }
 }
@@ -2040,6 +2053,11 @@ impl From<Token> for Op {
             Token::Star => Op::Mul,
             Token::Slash => Op::Div,
             Token::EqEq => Op::EqEq,
+            Token::Neq => Op::Neq,
+            Token::Gt => Op::Gt,
+            Token::Lt => Op::Lt,
+            Token::GtEq => Op::GtEq,
+            Token::LtEq => Op::LtEq,
             _ => unreachable!(),
         }
     }

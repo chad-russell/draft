@@ -174,6 +174,17 @@ impl Context {
     ) -> Result<Vec<NodeId>, CompileError> {
         let given_len = given.len();
 
+        if given.len() > decl.len() {
+            return Err(CompileError::Node(
+                format!(
+                    "Too many parameters given: expected {}, got {}",
+                    decl.len(),
+                    given.len()
+                ),
+                err_id,
+            ));
+        }
+
         let mut rearranged_given = Vec::new();
 
         // While there are free params, push them into rearranged_given
@@ -232,13 +243,13 @@ impl Context {
         for &d in decl.iter().skip(starting_rearranged_len) {
             let mut found = false;
 
-            for &g in given.iter().skip(starting_rearranged_len) {
-                let decl_name = match &self.nodes[d] {
-                    Node::FnDeclParam { name, .. } | Node::StructDeclParam { name, .. } => *name,
-                    _ => unreachable!(),
-                };
-                let decl_name_sym = self.get_symbol(decl_name);
+            let decl_name = match &self.nodes[d] {
+                Node::FnDeclParam { name, .. } | Node::StructDeclParam { name, .. } => *name,
+                _ => unreachable!(),
+            };
+            let decl_name_sym = self.get_symbol(decl_name);
 
+            for &g in given.iter().skip(starting_rearranged_len) {
                 let given_name = match &self.nodes[g] {
                     Node::ValueParam {
                         name: Some(name), ..
@@ -264,7 +275,10 @@ impl Context {
                     }
                     _ => {
                         return Err(CompileError::Node(
-                            "Could not find parameter".to_string(),
+                            format!(
+                                "Could not find parameter '{}'",
+                                self.string_interner.resolve(decl_name_sym.0).unwrap()
+                            ),
                             err_id,
                         ));
                     }
@@ -1027,6 +1041,17 @@ impl Context {
             Node::FnDeclParam { ty, default, .. } => {
                 if let Some(ty) = ty {
                     self.assign_type(ty);
+
+                    if self.polymorph_sources.contains_key(&ty) {
+                        self.errors.push(CompileError::Node(
+                            format!(
+                                "Generic arguments needed: {} is not a concrete type",
+                                self.nodes[ty].ty()
+                            ),
+                            ty,
+                        ));
+                        return true;
+                    }
                 }
 
                 if self.is_aggregate_type(id) {
@@ -1081,6 +1106,17 @@ impl Context {
                 }
 
                 if let Some(ty) = ty {
+                    if self.polymorph_sources.contains_key(&ty) {
+                        self.errors.push(CompileError::Node(
+                            format!(
+                                "Generic arguments needed: {} is not a concrete type",
+                                self.nodes[ty].ty()
+                            ),
+                            ty,
+                        ));
+                        return true;
+                    }
+
                     self.assign_type(ty);
                     self.match_types(id, ty);
                 }
@@ -1122,7 +1158,7 @@ impl Context {
                         self.match_types(lhs, rhs);
                         self.match_types(id, lhs);
                     }
-                    Op::EqEq => {
+                    Op::EqEq | Op::Neq | Op::Gt | Op::Lt | Op::GtEq | Op::LtEq => {
                         self.match_types(lhs, rhs);
                         self.types.insert(id, Type::Bool);
                     }
@@ -1336,6 +1372,28 @@ impl Context {
                             ));
                         }
                     }
+                    Type::Array(array_ty) => {
+                        // todo(chad): not sure whether this is a hack or not.
+                        // The alternative would be to look up the actual Array declaration and use that
+                        let name = self.string_interner.resolve(member_name_sym.0).unwrap();
+                        match name {
+                            "len" => {
+                                self.types.insert(id, Type::I64);
+                            }
+                            "data" => {
+                                self.types.insert(id, Type::Pointer(array_ty));
+                            }
+                            _ => {
+                                self.errors.push(CompileError::Node(
+                                    format!(
+                                        "Array has no member {:?}: options are 'len' or 'data'",
+                                        name
+                                    ),
+                                    member,
+                                ));
+                            }
+                        }
+                    }
                     Type::Infer(_) => {
                         self.deferreds.push(id);
                         return false;
@@ -1449,7 +1507,7 @@ impl Context {
                     }
                     _ => {
                         self.errors.push(CompileError::Node(
-                            format!("Member access on a non-struct (type {:?})", value_ty),
+                            format!("Static member access on a non-enum (type {:?})", value_ty),
                             id,
                         ));
                     }
@@ -1592,6 +1650,15 @@ impl Context {
             }
             Node::PolySpecialize { sym, overrides } => {
                 let resolved = self.scope_get(sym, id).unwrap();
+
+                if self.polymorph_sources.get(&resolved).is_none() {
+                    self.errors.push(CompileError::Node(
+                        "Cannot specialize non-polymorphic type".to_string(),
+                        id,
+                    ));
+                    return true;
+                }
+
                 let copied = self.copy_polymorph_if_needed(resolved);
                 self.assign_type(copied);
                 self.match_types(id, copied);
@@ -1606,9 +1673,21 @@ impl Context {
                         scope: scope_id, ..
                     } = self.nodes[copied] else { panic!() };
 
-                    let resolved = self.scope_get_with_scope_id(sym, scope_id).unwrap();
-                    self.assign_type(resolved);
-                    self.match_types(ty, resolved);
+                    let resolved = self.scope_get_with_scope_id(sym, scope_id);
+
+                    match resolved {
+                        Some(resolved) => {
+                            self.assign_type(resolved);
+                            self.match_types(ty, resolved);
+                        }
+                        None => {
+                            let sym_str = self.string_interner.resolve(sym.0).unwrap();
+                            self.errors.push(CompileError::Node(
+                                format!("Symbol {} not found", sym_str),
+                                *o,
+                            ));
+                        }
+                    }
                 }
             }
             Node::PolySpecializeOverride { ty, .. } => {
@@ -1630,7 +1709,6 @@ impl Context {
                 iterable,
                 label,
                 block,
-                ..
             } => {
                 self.assign_type(iterable);
 
@@ -1646,7 +1724,20 @@ impl Context {
                 }
 
                 self.assign_type(block);
-                // todo(chad): match expr to an array type
+            }
+            Node::While { cond, block } => {
+                self.assign_type(cond);
+
+                match self.get_type(cond) {
+                    Type::Infer(_) => {
+                        self.deferreds.push(id);
+                        return false;
+                    }
+                    Type::Bool => {}
+                    _ => todo!(),
+                }
+
+                self.assign_type(block);
             }
         }
 
@@ -1664,10 +1755,11 @@ impl Context {
         let given = self.id_vecs[params].clone();
         let decl = self.id_vecs[*decl].clone();
 
-        let rearranged = match self.rearrange_params(&given.borrow(), &decl.borrow(), name) {
-            Ok(r) => Some(r),
-            Err(err) => return Err(err),
-        };
+        let rearranged =
+            match self.rearrange_params(&given.borrow(), &decl.borrow(), struct_literal_id) {
+                Ok(r) => Some(r),
+                Err(err) => return Err(err),
+            };
 
         if let Some(rearranged) = rearranged {
             *self.id_vecs[params].borrow_mut() = rearranged.clone();

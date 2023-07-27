@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 
+use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 
 use cranelift_codegen::ir::{
     stackslot::StackSize, types, AbiParam, Block, InstBuilder, MemFlags, Signature, StackSlotData,
@@ -24,9 +25,12 @@ impl Context {
     pub fn make_module() -> JITModule {
         let mut flags_builder = settings::builder();
         flags_builder.set("is_pic", "false").unwrap();
-        // flags_builder.set("enable_verifier", "false").unwrap();
+        flags_builder.set("enable_verifier", "false").unwrap();
+        flags_builder.set("enable_alias_analysis", "false").unwrap();
+
         flags_builder.set("opt_level", "none").unwrap();
-        flags_builder.set("enable_probestack", "false").unwrap();
+        // flags_builder.set("opt_level", "speed").unwrap();
+        // flags_builder.set("opt_level", "speed_and_size").unwrap();
 
         let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
             panic!("host machine is not supported: {}", msg);
@@ -493,7 +497,9 @@ impl<'a> FunctionCompileContext<'a> {
                 let lhs_value = self.rvalue(lhs);
                 let rhs_value = self.rvalue(rhs);
 
-                match self.ctx.types[&lhs] {
+                let ty = self.ctx.types[&lhs];
+
+                match ty {
                     Type::I8
                     | Type::I16
                     | Type::I32
@@ -502,12 +508,55 @@ impl<'a> FunctionCompileContext<'a> {
                     | Type::U16
                     | Type::U32
                     | Type::U64 => {
+                        let is_signed = matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64);
+
                         let value = match op {
                             Op::Add => self.builder.ins().iadd(lhs_value, rhs_value),
                             Op::Sub => self.builder.ins().isub(lhs_value, rhs_value),
                             Op::Mul => self.builder.ins().imul(lhs_value, rhs_value),
                             Op::Div => self.builder.ins().sdiv(lhs_value, rhs_value),
                             Op::EqEq => self.builder.ins().icmp(IntCC::Equal, lhs_value, rhs_value),
+                            Op::Neq => {
+                                self.builder
+                                    .ins()
+                                    .icmp(IntCC::NotEqual, lhs_value, rhs_value)
+                            }
+                            Op::Gt => self.builder.ins().icmp(
+                                if is_signed {
+                                    IntCC::SignedGreaterThan
+                                } else {
+                                    IntCC::UnsignedGreaterThan
+                                },
+                                lhs_value,
+                                rhs_value,
+                            ),
+                            Op::Lt => self.builder.ins().icmp(
+                                if is_signed {
+                                    IntCC::SignedLessThan
+                                } else {
+                                    IntCC::UnsignedLessThan
+                                },
+                                lhs_value,
+                                rhs_value,
+                            ),
+                            Op::GtEq => self.builder.ins().icmp(
+                                if is_signed {
+                                    IntCC::SignedGreaterThanOrEqual
+                                } else {
+                                    IntCC::UnsignedGreaterThanOrEqual
+                                },
+                                lhs_value,
+                                rhs_value,
+                            ),
+                            Op::LtEq => self.builder.ins().icmp(
+                                if is_signed {
+                                    IntCC::SignedLessThanOrEqual
+                                } else {
+                                    IntCC::UnsignedLessThanOrEqual
+                                },
+                                lhs_value,
+                                rhs_value,
+                            ),
                         };
                         self.ctx.values.insert(id, Value::Value(value));
                     }
@@ -787,22 +836,11 @@ impl<'a> FunctionCompileContext<'a> {
                 );
                 self.ctx.values.insert(label, Value::Value(label_slot_addr));
 
-                // Make a slot for the iterator
-                let index_slot = self.builder.create_sized_stack_slot(StackSlotData {
-                    kind: StackSlotKind::ExplicitSlot,
-                    size: self.ctx.type_size(Type::I64),
-                });
-                let index_slot_addr = self.builder.ins().stack_addr(
-                    self.ctx.module.isa().pointer_type(),
-                    index_slot,
-                    0,
-                );
-
-                // iterator starts at 0
-                let index_value = self.builder.ins().iconst(types::I64, 0);
-                self.builder
-                    .ins()
-                    .store(MemFlags::new(), index_value, index_slot_addr, 0);
+                // Index starts at 0
+                let index = Variable::new(id.0);
+                self.builder.declare_var(index, types::I64);
+                let const_zero = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(index, const_zero);
 
                 let cond_ebb = self.builder.create_block();
                 let block_ebb = self.builder.create_block();
@@ -812,10 +850,10 @@ impl<'a> FunctionCompileContext<'a> {
                 self.switch_to_block(cond_ebb);
 
                 // if iterator >= array_length, jump to merge
-                let iterator_value = self.load(types::I64, index_slot_addr, 0);
+                let used_index = self.builder.use_var(index);
                 let cond = self.builder.ins().icmp(
                     IntCC::SignedGreaterThanOrEqual,
-                    iterator_value,
+                    used_index,
                     array_length_value,
                 );
                 self.builder
@@ -825,11 +863,11 @@ impl<'a> FunctionCompileContext<'a> {
                 self.switch_to_block(block_ebb);
 
                 // Store the current value in the label slot
-                let index_value = self.load(types::I64, index_slot_addr, 0);
+                let used_index = self.builder.use_var(index);
                 let array_element_offset = self
                     .builder
                     .ins()
-                    .imul_imm(index_value, array_elem_type_size as i64);
+                    .imul_imm(used_index, array_elem_type_size as i64);
                 let element_ptr = self
                     .builder
                     .ins()
@@ -844,16 +882,38 @@ impl<'a> FunctionCompileContext<'a> {
                 self.compile_id(block)?;
 
                 // increment iterator
-                let index_value = self.builder.ins().iadd_imm(index_value, 1);
-                self.builder
-                    .ins()
-                    .store(MemFlags::new(), index_value, index_slot_addr, 0);
+                let used_index = self.builder.use_var(index);
+                let incremented = self.builder.ins().iadd_imm(used_index, 1);
+                self.builder.def_var(index, incremented);
 
                 if !self.exited_blocks.contains(&self.current_block) {
                     self.builder.ins().jump(cond_ebb, &[]);
                 }
 
                 self.builder.switch_to_block(merge_ebb);
+
+                Ok(())
+            }
+            Node::While { cond, block } => {
+                let cond_block = self.builder.create_block();
+                let while_block = self.builder.create_block();
+                let merge_block = self.builder.create_block();
+
+                self.builder.ins().jump(cond_block, &[]);
+                self.switch_to_block(cond_block);
+                self.compile_id(cond)?;
+                let cond_value = self.rvalue(cond);
+                self.builder
+                    .ins()
+                    .brif(cond_value, while_block, &[], merge_block, &[]);
+
+                self.switch_to_block(while_block);
+                self.compile_id(block)?;
+                if !self.exited_blocks.contains(&self.current_block) {
+                    self.builder.ins().jump(cond_block, &[]);
+                }
+
+                self.switch_to_block(merge_block);
 
                 Ok(())
             }
@@ -1046,6 +1106,18 @@ impl<'a> FunctionCompileContext<'a> {
         let mut ty = self.ctx.get_type(value);
         while let Type::Pointer(inner) = ty {
             ty = self.ctx.get_type(inner);
+        }
+
+        if let Type::Array(_) = ty {
+            let data_sym = self.ctx.string_interner.get_or_intern("data");
+            let len_sym = self.ctx.string_interner.get_or_intern("len");
+            if member_name.0 == data_sym {
+                return Ok(0);
+            } else if member_name.0 == len_sym {
+                return Ok(self.ctx.get_pointer_type().bytes());
+            } else {
+                panic!()
+            }
         }
 
         let Type::Struct { params, .. } = ty else {

@@ -142,6 +142,10 @@ pub enum Node {
         iterable: NodeId,
         block: NodeId,
     },
+    While {
+        cond: NodeId,
+        block: NodeId,
+    },
     Cast {
         ty: NodeId,
         value: NodeId,
@@ -188,6 +192,7 @@ impl Node {
             Node::Deref(_) => "Deref".to_string(),
             Node::If { .. } => "If".to_string(),
             Node::For { .. } => "For".to_string(),
+            Node::While { .. } => "While".to_string(),
             Node::ArrayLiteral { .. } => "ArrayLiteral".to_string(),
             Node::ArrayAccess { .. } => "ArrayAccess".to_string(),
             Node::Cast { .. } => "Cast".to_string(),
