@@ -1,18 +1,7 @@
-extern print_i64(n: i64);
-extern print_f64(n: f64);
-extern malloc(n: i64) *struct{};
-extern free(n: *struct{});
-
-struct Array {
-    data: *_T!,
-    len: i64,
-}
-
-fn foo(n: i64) i64 {
-    return n + 1;
+fn vec_new() Vec! {
+    return 0;
 }
 
 fn main() i64 {
-    print_i64(3i64 -> foo -> foo -> foo);
     return 0;
 }

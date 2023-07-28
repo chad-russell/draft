@@ -649,6 +649,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
     pub fn parse_poly_specialize(&mut self, sym: Sym) -> Result<NodeId, CompileError> {
         let mut range = self.source_info.top.range;
+
         self.pop();
         if self.in_struct_decl || self.in_enum_decl || self.in_fn_params_decl {
             self.ctx.polymorph_target = true;
@@ -1116,6 +1117,7 @@ impl<'a, W: Source> Parser<'a, W> {
                     }
 
                     let unrolled = self.unroll_threading_call(&mut values);
+                    
                     output.push(Shunting::Id(unrolled));
                 }
                 Token::Plus
@@ -1180,12 +1182,34 @@ impl<'a, W: Source> Parser<'a, W> {
         let param = if values.len() > 1 {
             self.unroll_threading_call(values)
         } else if values.len() == 1 {
+            // for a single param, turn it into a value param node
             values.pop().unwrap()
         } else { panic!() };
 
         let param = self.ctx.push_node(self.ctx.ranges[param], Node::ValueParam { name: None, value: param, index: 0 });
 
-        let params = self.ctx.push_id_vec(vec![param]);
+        let value_param_id = self.ctx.push_node(self.ctx.ranges[param], Node::ValueParam { name: None, value: param, index: 0 });
+
+        let (inner_func_id, params) = match self.ctx.nodes[inner_func_id] {
+            Node::Call { func, params } | Node::ThreadingCall { func, params} => {
+                let params_vec = &self.ctx.id_vecs[params];
+                params_vec.borrow_mut().insert(0, value_param_id);
+
+                for (pid, param) in params_vec.borrow().iter().enumerate() {
+                    match &mut self.ctx.nodes[*param] {
+                        Node::ValueParam { index, .. } => {
+                            *index = pid as u16;
+                        },
+                        a => panic!("Expected ValueParam, got {}", a.ty()),
+                    }
+                }
+            
+                (func, params)
+            }
+            _ => {
+                (inner_func_id, self.ctx.push_id_vec(vec![param]))
+            }
+        };
 
         self.ctx.push_node(
             Range::new(self.ctx.ranges[param].start, self.ctx.ranges[inner_func_id].end, self.source_info.path),
@@ -1890,10 +1914,10 @@ impl<'a, W: Source> Parser<'a, W> {
             }
             Token::Symbol(sym) => {
                 let range = self.source_info.top.range;
-                self.pop();
-                if self.source_info.top.tok == Token::Bang {
+                if self.source_info.second.tok == Token::Bang {
                     self.parse_poly_specialize(sym)
                 } else {
+                    self.pop();
                     Ok(self.ctx.push_node(range, Node::Symbol(sym)))
                 }
             }
