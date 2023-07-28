@@ -45,7 +45,11 @@
 - [ ] defer
 - [ ] question mark operator (how would this work? do we need interfaces after all?)
 - [ ] string interpolation (need a default stringification function for everything, how does that work? interfaces again?)
-- [ ] pattern matching (on enums only at first, very simple. Maybe a simplified version of `if let`)
+- [ ] pattern matching (on enums only at first, very simple single-depth match)
+    - [ ] `matches(...)`
+    - [ ] `match`
+    - [ ] `if let`
+    - [ ] `let else`
 - [ ] coroutines
 - [ ] any / #astof(...)
 - [ ] c interop

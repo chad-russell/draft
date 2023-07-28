@@ -619,10 +619,10 @@ impl<'a, W: Source> Parser<'a, W> {
 
     pub fn parse_top_level(&mut self) -> Result<NodeId, CompileError> {
         let tl = match self.source_info.top.tok {
-            Token::Fn => Ok(self.parse_fn(false)?),
-            Token::Extern => Ok(self.parse_extern()?),
-            Token::Struct => Ok(self.parse_struct_definition()?),
-            Token::Enum => Ok(self.parse_enum_definition()?),
+            Token::Fn => self.parse_fn(false),
+            Token::Extern => self.parse_extern(),
+            Token::Struct => self.parse_struct_definition(),
+            Token::Enum => self.parse_enum_definition(),
             _ => {
                 let msg = format!("expected 'fn', found '{:?}'", self.source_info.top.tok);
 
@@ -645,6 +645,55 @@ impl<'a, W: Source> Parser<'a, W> {
                 range,
             )),
         }
+    }
+
+    pub fn parse_poly_specialize(&mut self, sym: Sym) -> Result<NodeId, CompileError> {
+        let mut range = self.source_info.top.range;
+        self.pop();
+        if self.in_struct_decl || self.in_enum_decl || self.in_fn_params_decl {
+            self.ctx.polymorph_target = true;
+        }
+
+        range.end = self.source_info.top.range.end;
+        self.pop(); // `!`
+
+        let mut overrides = Vec::new();
+
+        if self.source_info.top.tok == Token::LParen {
+            self.pop(); // `(`
+
+            while self.source_info.top.tok != Token::RParen {
+                let sym = self.parse_symbol()?;
+                self.expect(Token::Colon)?;
+
+                let ty = self.parse_type()?;
+
+                overrides.push(self.ctx.push_node(
+                    self.make_range_spanning(sym, ty),
+                    Node::PolySpecializeOverride { sym, ty },
+                ));
+
+                if self.source_info.top.tok == Token::Comma {
+                    self.pop(); // `,`
+                } else {
+                    break;
+                }
+            }
+
+            range.end = self.source_info.top.range.end;
+            self.expect(Token::RParen)?; // `)`
+        }
+
+        let overrides = self.ctx.push_id_vec(overrides);
+
+        Ok(self.ctx.push_node(
+            range,
+            Node::PolySpecialize {
+                sym,
+                overrides,
+                copied: None,
+            },
+        ))
     }
 
     pub fn parse_value_params(&mut self) -> Result<IdVec, CompileError> {
@@ -1044,6 +1093,31 @@ impl<'a, W: Source> Parser<'a, W> {
                         output.push(Shunting::Id(id))
                     }
                 }
+                Token::Arrow => {
+                    if !parsing_op {
+                        break;
+                    }
+
+                    let Some(Shunting::Id(value)) = output.pop() else { 
+                        self.ctx.errors.push(CompileError::Generic(
+                            "Expected value before `->`".to_string(),
+                            self.source_info.top.range,
+                        ));
+                        break;
+                    };
+
+                    let mut values = vec![value];
+
+                    // Threading function call?
+                    while self.source_info.top.tok == Token::Arrow {
+                        self.pop(); // `->`
+                        let value = self.parse_expression_piece(false)?;
+                        values.push(value);
+                    }
+
+                    let unrolled = self.unroll_threading_call(&mut values);
+                    output.push(Shunting::Id(unrolled));
+                }
                 Token::Plus
                 | Token::Dash
                 | Token::Slash
@@ -1079,10 +1153,8 @@ impl<'a, W: Source> Parser<'a, W> {
         }
 
         if output.len() == 1 {
-            return Ok(match output[0] {
-                Shunting::Id(id) => id,
-                _ => unreachable!(),
-            });
+            let Shunting::Id(id) = output[0] else { unreachable!() };
+            return Ok(id);
         }
 
         if output.is_empty() {
@@ -1101,6 +1173,24 @@ impl<'a, W: Source> Parser<'a, W> {
                 self.source_info.top.range,
             ))
         }
+    }
+
+    pub fn unroll_threading_call(&mut self, values: &mut Vec<NodeId>) -> NodeId {
+        let inner_func_id = values.pop().unwrap();
+        let param = if values.len() > 1 {
+            self.unroll_threading_call(values)
+        } else if values.len() == 1 {
+            values.pop().unwrap()
+        } else { panic!() };
+
+        let param = self.ctx.push_node(self.ctx.ranges[param], Node::ValueParam { name: None, value: param, index: 0 });
+
+        let params = self.ctx.push_id_vec(vec![param]);
+
+        self.ctx.push_node(
+            Range::new(self.ctx.ranges[param].start, self.ctx.ranges[inner_func_id].end, self.source_info.path),
+            Node::ThreadingCall { func: inner_func_id, params },
+        )
     }
 
     pub fn parse_expression_piece(
@@ -1275,22 +1365,24 @@ impl<'a, W: Source> Parser<'a, W> {
                 self.pop();
                 Ok(self.ctx.push_node(range, Node::Type(Type::F64)))
             }
-            Token::UnderscoreLCurly => Ok(self.parse_struct_literal()?),
-            Token::LCurly => Ok(self.parse_block(true)?),
-            Token::Symbol(_) => {
-                if struct_literals_allowed && self.source_info.second.tok == Token::LCurly {
-                    Ok(self.parse_struct_literal()?)
-                } else {
-                    Ok(self.parse_symbol()?)
-                }
+            Token::UnderscoreLCurly => self.parse_struct_literal(),
+            Token::LCurly => self.parse_block(true),
+            Token::Symbol(_)
+                if struct_literals_allowed && self.source_info.second.tok == Token::LCurly =>
+            {
+                self.parse_struct_literal()
             }
+            Token::Symbol(sym) if self.source_info.second.tok == Token::Bang => {
+                self.parse_poly_specialize(sym)
+            }
+            Token::Symbol(_) => self.parse_symbol(),
             _ => Err(CompileError::Generic(
                 "Could not parse lvalue".to_string(),
                 self.source_info.top.range,
             )),
         }?;
 
-        while let Token::LParen | Token::LSquare | Token::Dot | Token::DoubleColon | Token::Arrow =
+        while let Token::LParen | Token::LSquare | Token::Dot | Token::DoubleColon =
             self.source_info.top.tok
         {
             // function call?
@@ -1352,18 +1444,6 @@ impl<'a, W: Source> Parser<'a, W> {
                         member,
                         resolved: None,
                     },
-                );
-            }
-
-            // Threading function call?
-            while self.source_info.top.tok == Token::Arrow {
-                self.pop(); // `->`
-
-                let func = self.parse_expression_piece(false)?;
-
-                value = self.ctx.push_node(
-                    Range::new(start, self.ctx.ranges[func].end, self.source_info.path),
-                    Node::ThreadingCall { func, param: value },
                 );
             }
         }
@@ -1809,48 +1889,10 @@ impl<'a, W: Source> Parser<'a, W> {
                 Ok(id)
             }
             Token::Symbol(sym) => {
-                let mut range = self.source_info.top.range;
+                let range = self.source_info.top.range;
                 self.pop();
                 if self.source_info.top.tok == Token::Bang {
-                    if self.in_struct_decl || self.in_enum_decl || self.in_fn_params_decl {
-                        self.ctx.polymorph_target = true;
-                    }
-
-                    range.end = self.source_info.top.range.end;
-                    self.pop(); // `!`
-
-                    let mut overrides = Vec::new();
-
-                    if self.source_info.top.tok == Token::LParen {
-                        self.pop(); // `(`
-
-                        while self.source_info.top.tok != Token::RParen {
-                            let sym = self.parse_symbol()?;
-                            self.expect(Token::Colon)?;
-
-                            let ty = self.parse_type()?;
-
-                            overrides.push(self.ctx.push_node(
-                                self.make_range_spanning(sym, ty),
-                                Node::PolySpecializeOverride { sym, ty },
-                            ));
-
-                            if self.source_info.top.tok == Token::Comma {
-                                self.pop(); // `,`
-                            } else {
-                                break;
-                            }
-                        }
-
-                        range.end = self.source_info.top.range.end;
-                        self.expect(Token::RParen)?; // `)`
-                    }
-
-                    let overrides = self.ctx.push_id_vec(overrides);
-
-                    Ok(self
-                        .ctx
-                        .push_node(range, Node::PolySpecialize { sym, overrides }))
+                    self.parse_poly_specialize(sym)
                 } else {
                     Ok(self.ctx.push_node(range, Node::Symbol(sym)))
                 }

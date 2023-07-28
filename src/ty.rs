@@ -254,7 +254,12 @@ impl Context {
                     Node::ValueParam {
                         name: Some(name), ..
                     } => *name,
-                    _ => unreachable!(),
+                    a => {
+                        return Err(CompileError::Node(
+                            format!("Expected ValueParam, got {:?}", a.ty()),
+                            g,
+                        ));
+                    }
                 };
                 let given_name_sym = self.get_symbol(given_name);
 
@@ -1092,6 +1097,7 @@ impl Context {
             }
             Node::ValueParam { name, value, .. } => {
                 self.assign_type(value);
+                self.check_not_unspecified_polymorph(value);
                 self.match_types(id, value);
                 if let Some(name) = name {
                     self.match_types(name, value);
@@ -1103,6 +1109,7 @@ impl Context {
                 if let Some(expr) = expr {
                     self.assign_type(expr);
                     self.match_types(id, expr);
+                    self.check_not_unspecified_polymorph(expr);
                 }
 
                 if let Some(ty) = ty {
@@ -1164,84 +1171,8 @@ impl Context {
                     }
                 }
             }
-            Node::Call {
-                mut func, params, ..
-            } => {
-                self.assign_type(func);
-
-                // If func is a polymorph, copy it first
-                if self.polymorph_sources.contains_key(&func) {
-                    let &key = self.polymorph_sources.get(&func).unwrap();
-                    match self.polymorph_copy(key, ParseTarget::FnDefinition) {
-                        Ok(func_id) => {
-                            func = func_id;
-                            self.assign_type(func);
-                            self.nodes[id] = Node::Call { func, params };
-                        }
-                        Err(err) => {
-                            self.errors.push(err);
-                            return true;
-                        }
-                    }
-                }
-
-                let param_ids = self.id_vecs[params].clone();
-                for &param in param_ids.borrow().iter() {
-                    self.assign_type(param);
-                }
-
-                match self.get_type(func) {
-                    Type::Func {
-                        input_tys,
-                        return_ty,
-                    } => {
-                        let given = param_ids;
-                        let decl = self.id_vecs[input_tys].clone();
-
-                        let rearranged_given =
-                            match self.rearrange_params(&given.borrow(), &decl.borrow(), id) {
-                                Ok(r) => r,
-                                Err(err) => {
-                                    self.errors.push(err);
-                                    return true;
-                                }
-                            };
-
-                        *self.id_vecs[params].borrow_mut() = rearranged_given.clone();
-
-                        let input_ty_ids = self.id_vecs[input_tys].clone();
-
-                        if input_ty_ids.borrow().len() != rearranged_given.len() {
-                            self.errors.push(CompileError::Node(
-                                "Incorrect number of parameters".to_string(),
-                                id,
-                            ));
-                            return true;
-                        } else {
-                            for (param, input_ty) in
-                                rearranged_given.iter().zip(input_ty_ids.borrow().iter())
-                            {
-                                self.match_types(*param, *input_ty);
-                            }
-
-                            if let Some(return_ty) = return_ty {
-                                self.match_types(id, return_ty);
-
-                                if self.should_pass_by_ref(return_ty) {
-                                    self.addressable_nodes.insert(id);
-                                }
-                            }
-                        }
-                    }
-                    ty => {
-                        self.errors
-                            .push(CompileError::Node(format!("Not a function: {:?}", ty), id));
-                    }
-                }
-            }
-            Node::ThreadingCall { func, param } => {
-                self.assign_type(func);
-                self.assign_type(param);
+            Node::Call { func, params, .. } | Node::ThreadingCall { func, params } => {
+                return self.assign_type_inner_call(id, func, params);
             }
             Node::StructDefinition { name, params, .. } => {
                 // don't directly codegen a polymorph, wait until it's copied first
@@ -1606,6 +1537,7 @@ impl Context {
                 for &member in self.id_vecs[members].clone().borrow().iter() {
                     self.assign_type(member);
                     self.match_types(member, ty);
+                    self.check_not_unspecified_polymorph(member);
                 }
 
                 self.match_types(id, self.array_declaration.unwrap());
@@ -1652,7 +1584,7 @@ impl Context {
                     }
                 }
             }
-            Node::PolySpecialize { sym, overrides } => {
+            Node::PolySpecialize { sym, overrides, .. } => {
                 let resolved = self.scope_get(sym, id).unwrap();
 
                 if self.polymorph_sources.get(&resolved).is_none() {
@@ -1672,6 +1604,12 @@ impl Context {
                 };
                 self.assign_type(copied);
                 self.match_types(id, copied);
+
+                self.nodes[id] = Node::PolySpecialize {
+                    sym,
+                    overrides,
+                    copied: Some(copied),
+                };
 
                 let overrides = self.id_vecs[overrides].clone();
                 for o in overrides.borrow().iter() {
@@ -1754,6 +1692,82 @@ impl Context {
         return true;
     }
 
+    fn assign_type_inner_call(&mut self, id: NodeId, mut func: NodeId, params: IdVec) -> bool {
+        self.assign_type(func);
+
+        // If func is a polymorph, copy it first
+        if self.polymorph_sources.contains_key(&func) {
+            let &key = self.polymorph_sources.get(&func).unwrap();
+            match self.polymorph_copy(key, ParseTarget::FnDefinition) {
+                Ok(func_id) => {
+                    func = func_id;
+                    self.assign_type(func);
+                    self.nodes[id] = Node::Call { func, params };
+                }
+                Err(err) => {
+                    self.errors.push(err);
+                    return true;
+                }
+            }
+        }
+
+        let param_ids = self.id_vecs[params].clone();
+        for &param in param_ids.borrow().iter() {
+            self.assign_type(param);
+        }
+
+        match self.get_type(func) {
+            Type::Func {
+                input_tys,
+                return_ty,
+            } => {
+                let given = param_ids;
+                let decl = self.id_vecs[input_tys].clone();
+
+                let rearranged_given =
+                    match self.rearrange_params(&given.borrow(), &decl.borrow(), id) {
+                        Ok(r) => r,
+                        Err(err) => {
+                            self.errors.push(err);
+                            return true;
+                        }
+                    };
+
+                *self.id_vecs[params].borrow_mut() = rearranged_given.clone();
+
+                let input_ty_ids = self.id_vecs[input_tys].clone();
+
+                if input_ty_ids.borrow().len() != rearranged_given.len() {
+                    self.errors.push(CompileError::Node(
+                        "Incorrect number of parameters".to_string(),
+                        id,
+                    ));
+                    return true;
+                } else {
+                    for (param, input_ty) in
+                        rearranged_given.iter().zip(input_ty_ids.borrow().iter())
+                    {
+                        self.match_types(*param, *input_ty);
+                    }
+
+                    if let Some(return_ty) = return_ty {
+                        self.match_types(id, return_ty);
+
+                        if self.should_pass_by_ref(return_ty) {
+                            self.addressable_nodes.insert(id);
+                        }
+                    }
+                }
+            }
+            ty => {
+                self.errors
+                    .push(CompileError::Node(format!("Not a function: {:?}", ty), id));
+            }
+        }
+
+        return true;
+    }
+
     fn match_params_to_named_struct(
         &mut self,
         params: IdVec,
@@ -1802,6 +1816,18 @@ impl Context {
             self.polymorph_copy(ty, parse_target)
         } else {
             Ok(ty)
+        }
+    }
+
+    pub fn check_not_unspecified_polymorph(&mut self, value: NodeId) {
+        if self.polymorph_sources.get(&value).is_some() {
+            self.errors.push(CompileError::Node(
+                format!(
+                    "Generic arguments needed: {} is not a concrete type",
+                    self.nodes[value].ty()
+                ),
+                value,
+            ));
         }
     }
 }

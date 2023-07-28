@@ -31,6 +31,7 @@ pub enum Node {
     PolySpecialize {
         sym: Sym,
         overrides: IdVec,
+        copied: Option<NodeId>,
     },
     PolySpecializeOverride {
         sym: NodeId,
@@ -102,7 +103,7 @@ pub enum Node {
     },
     ThreadingCall {
         func: NodeId,
-        param: NodeId,
+        params: IdVec,
     },
     ArrayAccess {
         array: NodeId,

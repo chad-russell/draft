@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::SourceLoc;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 
 use cranelift_codegen::ir::{
@@ -92,10 +93,10 @@ impl Context {
             .finalize_definitions()
             .expect("Failed to finalize definitions");
 
-        if self.args.dump_ir {
-            let decls = self.module.declarations();
-            println!("{:?}", decls);
-        }
+        // if self.args.dump_ir {
+        //     let decls = self.module.declarations();
+        //     println!("{:?}", decls);
+        // }
 
         Ok(())
     }
@@ -330,6 +331,12 @@ impl<'a> FunctionCompileContext<'a> {
             _ => return Ok(()),
         };
 
+        if id.0 < 10 {
+            self.builder.set_srcloc(SourceLoc::new(id.0 as u32));
+        } else {
+            self.builder.set_srcloc(SourceLoc::default());
+        }
+
         match self.ctx.nodes[id] {
             Node::Symbol(sym) => {
                 let resolved = self.ctx.scope_get(sym, id);
@@ -341,6 +348,7 @@ impl<'a> FunctionCompileContext<'a> {
                         }
 
                         self.compile_id(res)?;
+
                         self.ctx
                             .values
                             .get(&res)
@@ -493,6 +501,7 @@ impl<'a> FunctionCompileContext<'a> {
                 }
 
                 self.ctx.values.insert(id, self.ctx.values[&value]);
+
                 Ok(())
             }
             Node::BinOp { op, lhs, rhs } => {
@@ -570,47 +579,8 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
-            Node::Call { func, params, .. } => {
-                self.compile_id(func)?;
-
-                let param_ids = self.ctx.id_vecs[params].clone();
-                let mut param_values = Vec::new();
-                for &param in param_ids.borrow().iter() {
-                    self.compile_id(param)?;
-                    param_values.push(self.rvalue(param));
-                }
-
-                // direct call?
-                let call_inst = if let Some(Value::Func(func_id)) = self.ctx.values.get(&func) {
-                    let func_ref = self
-                        .ctx
-                        .module
-                        .declare_func_in_func(*func_id, self.builder.func);
-                    self.builder.ins().call(func_ref, &param_values)
-                } else {
-                    let sig_ref = self
-                        .ctx
-                        .get_func_signature(func, param_ids.borrow().as_ref());
-                    let sig = self.builder.import_signature(sig_ref);
-
-                    self.as_cranelift_value(self.ctx.values[&func]);
-                    let callee = self.rvalue(func);
-
-                    self.builder.ins().call_indirect(sig, callee, &param_values)
-                };
-
-                if self
-                    .ctx
-                    .types
-                    .get(&id)
-                    .map(|t| !matches!(t, Type::Infer(_)))
-                    .unwrap_or_default()
-                {
-                    let value = self.builder.func.dfg.first_result(call_inst);
-                    self.ctx.values.insert(id, Value::Value(value));
-                }
-
-                Ok(())
+            Node::Call { func, params, .. } | Node::ThreadingCall { func, params, .. } => {
+                self.compile_id_for_call(id, func, params)
             }
             Node::StructLiteral { params, .. } => {
                 let size = self.ctx.id_type_size(id);
@@ -1057,6 +1027,23 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
+            Node::PolySpecialize {
+                copied: Some(copied),
+                ..
+            } => {
+                if self.ctx.addressable_nodes.contains(&copied) {
+                    self.ctx.addressable_nodes.insert(id);
+                }
+
+                self.compile_id(copied)?;
+                self.ctx
+                    .values
+                    .get(&copied)
+                    .cloned()
+                    .map(|v| self.ctx.values.insert(id, v));
+
+                Ok(())
+            }
             Node::FnDefinition { .. }
             | Node::StructDefinition { .. }
             | Node::EnumDefinition { .. }
@@ -1068,6 +1055,54 @@ impl<'a> FunctionCompileContext<'a> {
     fn compile_ids(&mut self, ids: IdVec) -> Result<(), CompileError> {
         for id in self.ctx.id_vecs[ids].clone().borrow().iter() {
             self.compile_id(*id)?;
+        }
+
+        Ok(())
+    }
+
+    fn compile_id_for_call(
+        &mut self,
+        id: NodeId,
+        func: NodeId,
+        params: IdVec,
+    ) -> Result<(), CompileError> {
+        self.compile_id(func)?;
+
+        let param_ids = self.ctx.id_vecs[params].clone();
+        let mut param_values = Vec::new();
+        for &param in param_ids.borrow().iter() {
+            self.compile_id(param)?;
+            param_values.push(self.rvalue(param));
+        }
+
+        // direct call?
+        let call_inst = if let Some(Value::Func(func_id)) = self.ctx.values.get(&func) {
+            let func_ref = self
+                .ctx
+                .module
+                .declare_func_in_func(*func_id, self.builder.func);
+            self.builder.ins().call(func_ref, &param_values)
+        } else {
+            let sig_ref = self
+                .ctx
+                .get_func_signature(func, param_ids.borrow().as_ref());
+            let sig = self.builder.import_signature(sig_ref);
+
+            self.as_cranelift_value(self.ctx.values[&func]);
+            let callee = self.rvalue(func);
+
+            self.builder.ins().call_indirect(sig, callee, &param_values)
+        };
+
+        if self
+            .ctx
+            .types
+            .get(&id)
+            .map(|t| !matches!(t, Type::Infer(_)))
+            .unwrap_or_default()
+        {
+            let value = self.builder.func.dfg.first_result(call_inst);
+            self.ctx.values.insert(id, Value::Value(value));
         }
 
         Ok(())
@@ -1300,6 +1335,11 @@ impl<'a> ToplevelCompileContext<'a> {
 
                 let mut builder = FunctionBuilder::new(&mut self.codegen_ctx.func, self.func_ctx);
                 builder.func.signature = sig;
+                builder.func.collect_debug_info();
+                // builder.func.name = UserFuncName::User(UserExternalName {
+                //     namespace: 0,
+                //     index: func_index.as_u32(),
+                // });
 
                 self.ctx.values.insert(id, Value::Func(func_id));
 
@@ -1323,9 +1363,9 @@ impl<'a> ToplevelCompileContext<'a> {
                 builder_ctx.builder.seal_all_blocks();
                 builder_ctx.builder.finalize();
 
-                // if self.ctx.args.dump_ir {
-                //     println!("{}", self.codegen_ctx.func.display());
-                // }
+                if self.ctx.args.dump_ir {
+                    println!("{}", self.codegen_ctx.func.display());
+                }
 
                 self.ctx
                     .module
@@ -1435,9 +1475,9 @@ impl<'a> ToplevelCompileContext<'a> {
                         builder.seal_all_blocks();
                         builder.finalize();
 
-                        // if self.ctx.args.dump_ir {
-                        //     println!("{}", self.codegen_ctx.func.display());
-                        // }
+                        if self.ctx.args.dump_ir {
+                            println!("{}", self.codegen_ctx.func.display());
+                        }
 
                         self.ctx
                             .module
