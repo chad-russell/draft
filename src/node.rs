@@ -100,6 +100,10 @@ pub enum Node {
         func: NodeId,
         params: IdVec,
     },
+    ThreadingCall {
+        func: NodeId,
+        param: NodeId,
+    },
     ArrayAccess {
         array: NodeId,
         index: NodeId,
@@ -183,6 +187,7 @@ impl Node {
             Node::ValueParam { .. } => "ValueParam".to_string(),
             Node::BinOp { .. } => "BinOp".to_string(),
             Node::Call { .. } => "Call".to_string(),
+            Node::ThreadingCall { .. } => "ThreadingCall".to_string(),
             Node::StructDefinition { .. } => "StructDefinition".to_string(),
             Node::EnumDefinition { .. } => "EnumDefinition".to_string(),
             Node::StructLiteral { .. } => "StructLiteral".to_string(),

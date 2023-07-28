@@ -37,12 +37,13 @@
 - [x] !=, <, >, <=, >= operators
 - [x] while loops
 - [x] arrays assignable to Array type
-- [ ] interfaces
 - [ ] pipe/threading/ufcs operator
+- [ ] strings
+- [ ] interfaces
+- [ ] modules
 - [ ] short-circuit and/or operators
 - [ ] defer
 - [ ] question mark operator (how would this work? do we need interfaces after all?)
-- [ ] modules
 - [ ] string interpolation (need a default stringification function for everything, how does that work? interfaces again?)
 - [ ] pattern matching (on enums only at first, very simple. Maybe a simplified version of `if let`)
 - [ ] coroutines
@@ -54,6 +55,11 @@
 - [ ] implicit function arguments
 - [ ] immutability (?)
 - [ ] debugger
+
+# Performance
+- [ ] when doing codegen for aggregate types, they don't always need their own slot. Usually it's going to get copied into the slot of somethign else like a let binding, so we can just directly codegen it into that slot
+- [ ] consider disabling bounds checking on array (DenseStorage) accesses
+- [ ] multithreading?
 
 # LSP / Tooling
 - [ ] brewfmt

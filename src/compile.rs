@@ -92,6 +92,11 @@ impl Context {
             .finalize_definitions()
             .expect("Failed to finalize definitions");
 
+        if self.args.dump_ir {
+            let decls = self.module.declarations();
+            println!("{:?}", decls);
+        }
+
         Ok(())
     }
 
@@ -1318,9 +1323,9 @@ impl<'a> ToplevelCompileContext<'a> {
                 builder_ctx.builder.seal_all_blocks();
                 builder_ctx.builder.finalize();
 
-                if self.ctx.args.dump_ir {
-                    println!("{}", self.codegen_ctx.func.display());
-                }
+                // if self.ctx.args.dump_ir {
+                //     println!("{}", self.codegen_ctx.func.display());
+                // }
 
                 self.ctx
                     .module
@@ -1430,9 +1435,9 @@ impl<'a> ToplevelCompileContext<'a> {
                         builder.seal_all_blocks();
                         builder.finalize();
 
-                        if self.ctx.args.dump_ir {
-                            println!("{}", self.codegen_ctx.func.display());
-                        }
+                        // if self.ctx.args.dump_ir {
+                        //     println!("{}", self.codegen_ctx.func.display());
+                        // }
 
                         self.ctx
                             .module

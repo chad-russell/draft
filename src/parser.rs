@@ -13,16 +13,11 @@ pub struct Sym(pub SymbolU32);
 pub struct Location {
     pub line: usize,
     pub col: usize,
-    pub char_offset: usize,
 }
 
 impl Default for Location {
     fn default() -> Self {
-        Self {
-            line: 1,
-            col: 1,
-            char_offset: 0,
-        }
+        Self { line: 1, col: 1 }
     }
 }
 
@@ -83,10 +78,6 @@ impl Range {
             false
         }
     }
-
-    pub fn char_span(&self) -> usize {
-        self.end.char_offset - self.start.char_offset
-    }
 }
 
 impl std::fmt::Debug for Range {
@@ -137,6 +128,7 @@ pub enum Token {
     GtEq,
     LtEq,
     Eq,
+    Arrow,
     Fn,
     Extern,
     Let,
@@ -430,6 +422,9 @@ impl<'a, W: Source> Parser<'a, W> {
         if self.source_info.prefix("=", Token::Eq) {
             return;
         }
+        if self.source_info.prefix("->", Token::Arrow) {
+            return;
+        }
         if self.source_info.prefix("_{", Token::UnderscoreLCurly) {
             return;
         }
@@ -645,7 +640,10 @@ impl<'a, W: Source> Parser<'a, W> {
                 self.pop();
                 Ok(self.ctx.push_node(range, Node::Symbol(sym)))
             }
-            _ => Err(CompileError::Generic("expected symbol".to_string(), range)),
+            a => Err(CompileError::Generic(
+                format!("Expected symbol, got {:?}", a),
+                range,
+            )),
         }
     }
 
@@ -1292,7 +1290,7 @@ impl<'a, W: Source> Parser<'a, W> {
             )),
         }?;
 
-        while let Token::LParen | Token::LSquare | Token::Dot | Token::DoubleColon =
+        while let Token::LParen | Token::LSquare | Token::Dot | Token::DoubleColon | Token::Arrow =
             self.source_info.top.tok
         {
             // function call?
@@ -1354,6 +1352,18 @@ impl<'a, W: Source> Parser<'a, W> {
                         member,
                         resolved: None,
                     },
+                );
+            }
+
+            // Threading function call?
+            while self.source_info.top.tok == Token::Arrow {
+                self.pop(); // `->`
+
+                let func = self.parse_expression_piece(false)?;
+
+                value = self.ctx.push_node(
+                    Range::new(start, self.ctx.ranges[func].end, self.source_info.path),
+                    Node::ThreadingCall { func, param: value },
                 );
             }
         }
@@ -1996,7 +2006,7 @@ impl Context {
                     if let Some(ty) = ty {
                         // todo(chad): @hack_polymorph
                         if let Node::Symbol(_) = self.nodes[ty] {
-                            let copied = self.copy_polymorph_if_needed(ty);
+                            let copied = self.copy_polymorph_if_needed(ty)?;
                             self.nodes[ty] = self.nodes[copied];
                         }
                     }

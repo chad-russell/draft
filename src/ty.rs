@@ -1239,6 +1239,10 @@ impl Context {
                     }
                 }
             }
+            Node::ThreadingCall { func, param } => {
+                self.assign_type(func);
+                self.assign_type(param);
+            }
             Node::StructDefinition { name, params, .. } => {
                 // don't directly codegen a polymorph, wait until it's copied first
                 if self.polymorph_sources.contains_key(&id) {
@@ -1659,7 +1663,13 @@ impl Context {
                     return true;
                 }
 
-                let copied = self.copy_polymorph_if_needed(resolved);
+                let copied = match self.copy_polymorph_if_needed(resolved) {
+                    Ok(copied) => copied,
+                    Err(err) => {
+                        self.errors.push(err);
+                        return true;
+                    }
+                };
                 self.assign_type(copied);
                 self.match_types(id, copied);
 
@@ -1780,7 +1790,7 @@ impl Context {
         Ok(())
     }
 
-    pub fn copy_polymorph_if_needed(&mut self, ty: NodeId) -> NodeId {
+    pub fn copy_polymorph_if_needed(&mut self, ty: NodeId) -> Result<NodeId, CompileError> {
         if let Some(&ty) = self.polymorph_sources.get(&ty) {
             let parse_target = match self.nodes[ty] {
                 Node::StructDefinition { .. } => ParseTarget::StructDefinition,
@@ -1789,9 +1799,9 @@ impl Context {
                 a => panic!("Expected struct, enum or fn definition: got {:?}", a),
             };
 
-            self.polymorph_copy(ty, parse_target).unwrap()
+            self.polymorph_copy(ty, parse_target)
         } else {
-            ty
+            Ok(ty)
         }
     }
 }

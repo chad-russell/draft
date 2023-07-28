@@ -8,8 +8,9 @@ use string_interner::StringInterner;
 use cranelift_jit::JITModule;
 
 use crate::{
-    AddressableMatch, Args, CompileError, IdVec, Node, NodeId, Range, RopeySource, Scope, ScopeId,
-    Scopes, Source, SourceInfo, StaticStrSource, Sym, Type, TypeMatch, UnificationData, Value,
+    AddressableMatch, Args, CompileError, IdVec, Location, Node, NodeId, Range, RopeySource, Scope,
+    ScopeId, Scopes, Source, SourceInfo, StaticStrSource, Sym, Type, TypeMatch, UnificationData,
+    Value,
 };
 
 #[derive(Clone)]
@@ -105,6 +106,7 @@ pub struct Context {
 
     pub string_interner: StringInterner,
     pub file_sources: HashMap<PathBuf, &'static str>,
+    pub line_offsets: HashMap<&'static str, Vec<usize>>, // file -> (line -> char_offset)
 
     pub nodes: DenseStorage<Node>,
     pub ranges: DenseStorage<Range>,
@@ -158,6 +160,7 @@ impl Context {
 
             string_interner: StringInterner::new(),
             file_sources: Default::default(),
+            line_offsets: Default::default(),
 
             nodes: Default::default(),
             ranges: Default::default(),
@@ -242,14 +245,24 @@ impl Context {
 
     pub fn make_source_info_from_file(&mut self, file_name: &str) -> SourceInfo<StaticStrSource> {
         let path = PathBuf::from(file_name);
-        let source = std::fs::read_to_string(&path).unwrap();
-        let source: &'static str = Box::leak(source.into_boxed_str());
+        let source_str = std::fs::read_to_string(&path).unwrap();
+        let source_str: &'static str = Box::leak(source_str.into_boxed_str());
 
-        self.file_sources.insert(path.clone(), source);
+        self.file_sources.insert(path.clone(), source_str);
 
-        let source = StaticStrSource::from_static_str(source);
+        let source = StaticStrSource::from_static_str(source_str);
         let chars_left = source.char_count();
         let path: &'static str = Box::leak(path.into_boxed_path().to_str().unwrap().into());
+
+        let mut char_offset = 0;
+        let mut char_offset_map = vec![0];
+        for c in source_str.chars() {
+            char_offset += 1;
+            if c == '\n' {
+                char_offset_map.push(char_offset);
+            }
+        }
+        self.line_offsets.insert(path, char_offset_map);
 
         SourceInfo {
             path,
@@ -263,14 +276,24 @@ impl Context {
 
     pub fn make_ropey_source_info_from_file(&mut self, file_name: &str) -> SourceInfo<RopeySource> {
         let path = PathBuf::from(file_name);
-        let source = std::fs::read_to_string(&path).unwrap();
-        let source: &'static str = Box::leak(source.into_boxed_str());
+        let source_str = std::fs::read_to_string(&path).unwrap();
+        let source_str: &'static str = Box::leak(source_str.into_boxed_str());
 
-        self.file_sources.insert(path.clone(), source);
+        self.file_sources.insert(path.clone(), source_str);
 
-        let source = RopeySource::from_str(source);
+        let source = RopeySource::from_str(source_str);
         let chars_left = source.char_count();
         let path: &'static str = Box::leak(path.into_boxed_path().to_str().unwrap().into());
+
+        let mut char_offset = 0;
+        let mut char_offset_map = Vec::new();
+        for c in source_str.chars() {
+            char_offset += 1;
+            if c == '\n' {
+                char_offset_map.push(char_offset);
+            }
+        }
+        self.line_offsets.insert(path, char_offset_map);
 
         SourceInfo {
             path,
@@ -284,8 +307,12 @@ impl Context {
 
     pub fn make_source_info_from_range(&mut self, range: Range) -> SourceInfo<StaticStrSource> {
         let source_path = PathBuf::from(range.source_path);
-        let source = &self.file_sources.get(&source_path).unwrap()
-            [range.start.char_offset..range.end.char_offset];
+        let source = self.file_sources.get(&source_path).unwrap();
+
+        let start_char_offset = self.char_offset_for_location(range.source_path, range.start);
+        let end_char_offset = self.char_offset_for_location(range.source_path, range.end);
+        let source = &source[start_char_offset..end_char_offset];
+
         let source = StaticStrSource::from_static_str(source);
         let chars_left = source.char_count();
         let source_path = Box::leak(source_path.into_boxed_path().to_str().unwrap().into());
@@ -445,5 +472,14 @@ impl Context {
                 println!("{:?}, {:?}: {}", self.ranges[id1], self.ranges[id2], msg);
             }
         }
+    }
+
+    pub fn char_offset_for_location(&self, source_path: &str, start: Location) -> usize {
+        self.line_offsets[source_path][start.line - 1] + start.col
+    }
+
+    pub fn char_span(&self, range: Range) -> usize {
+        return self.char_offset_for_location(range.source_path, range.end)
+            - self.char_offset_for_location(range.source_path, range.start);
     }
 }

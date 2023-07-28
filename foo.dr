@@ -1,15 +1,288 @@
 extern print_i64(n: i64);
+extern print_f64(n: f64);
+extern print_enum_tag(f: *Baz);
+extern malloc(n: i64) *struct{};
+extern free(n: *struct{});
 
+struct Array {
+    data: *_T!,
+    len: i64,
+}
+
+fn heapify(v: _T!) *T {
+    let a = #cast(*T) malloc(#size_of(T));
+    *a = v;
+    return a;
+}
+
+fn freeify(v: *_T!) {
+    free(#cast v);
+    return;
+}
+    
 struct Foo {
-    x: _T!,
+    x: i64, 
     y: i64,
 }
 
-fn foo(f: Foo!) _ {
+struct Bar {
+    x: i64, 
+    y: i64,
+}
+
+enum Baz {
+    A,
+    B: i64,
+    C: struct { x: i64, y: i64 },
+}
+
+fn foo1(f: _) _ {
     return f.x + f.y;
 }
 
+fn foo2(f: !) _ {
+    return f.x + f.y;
+}
+
+fn foo3(f: *_) _ {
+    return f.x + f.y;
+}
+
+fn foo4(f: *!) _ {
+    return f.x + f.y + foo3(f);
+}
+
+fn foo5(f: *_T!, g: _U!) _ {
+    return f.x - f.y + g.x + g.y;
+}
+
+fn foo6() Foo {
+    return _{ 10, 2 };
+}
+
+fn id(n: i64) i64 {
+    return n;
+}
+
+fn idp(n: *i64) i64 {
+    return *n;
+}
+
+fn idppp(n: ***i64) i64 {
+    return ***n;
+}
+
+fn fac(n: i64) i64 {
+    if n == 1 {
+        return n;
+    } else {
+        return n * fac(n - 1);
+    }
+}
+
+struct List {
+    value: i64,
+    next: *List,
+}
+
+struct Vec {
+    data: *_T!,
+    len: i64,
+}
+
+fn vec_new() Vec! {
+    let v: Vec!;
+    v.len = 0;
+    return v;
+}
+
+fn vec_len(v: *Vec!(T: Vec!(T: f64))) i64 {
+    return v.len;
+}
+
+fn test_vec_stuff_1() i64 { 
+    let v1 = vec_new();
+    v1.data = &0.0f64;
+
+    let v2 = Vec { data: &v1, len: 26 };
+    print_i64(vec_len(&v2));
+
+    return 0;
+}
+
+// Declare the interafce itself
+struct Interface {
+    data: *_T!,
+    vtable: struct {
+        do_thing: fn(n: *T) i64,
+    },
+}
+
+fn do_thing(i: Interface!) _ {
+    return i.vtable.do_thing(i.data);
+}
+
+// Define and implement the interface for IFoo
+struct IFoo {
+    x: i64,
+}
+
+fn foo_to_interface(foo: *IFoo) _ {
+    return Interface {
+        data: foo,
+        vtable: _{
+            do_thing: fn(foo: *IFoo) i64 {
+                return foo.x;
+            },
+        },
+    };
+}
+
+// Define and implement the interface for IBar
+struct IBar {
+    x: i64,
+    y: i64,
+}
+
+fn bar_to_interface(bar: *IBar) _ {
+    return Interface {
+        data: bar,
+        vtable: _{
+            do_thing: fn(bar: *IBar) i64 {
+                return bar.x + bar.y;
+            },
+        },
+    };
+}
+
+fn test_interfaces() i64 {
+    let f = IFoo { x: 42 };
+    let b = IBar { x: 1, y: 2 };
+
+    let i1 = foo_to_interface(&f);
+    // let i2 = bar_to_interface(&b);
+    let i2 = Interface { &b, _{ fn(bar: *IBar) i64 { return bar.x + bar.y; } } };
+
+    print_i64(do_thing(i1));
+    print_i64(do_thing(i2));
+
+    return 0;
+}
+
+fn test_for_array() i64 {
+    let arr = [_{x: 1i64, y: 1.1f64}, _{2, 2.2}, _{3, 3.3}];
+
+    for val in arr {
+        val.x = 999;
+    }
+
+    for val2 in arr {
+        print_i64(val2.x);
+        print_f64(val2.y);
+    }
+
+    return 0;
+}
+
 fn main() i64 {
-    print_i64(foo)(Foo { 1, 2 }));
+    let f = Foo { 3, 8 };
+    let pf = &f;
+    let ppf = &pf;
+
+    print_i64(foo1(f) - 10); // 1
+    print_i64(foo2(f) - 9); // 2
+    print_i64(foo3(&f) - 8); // 3
+    print_i64(foo4(&f) - 18); // 4
+    print_i64(foo4(pf) - 17); // 5
+    print_i64(foo4(*&pf) - 16); // 6
+    print_i64(foo4(*&*&*&*&*&pf) - 15); // 7
+
+    f = Foo { y: 3, x: 8 };
+    print_i64(f.x - f.y + 3); // 8
+
+    let g = Bar { 3, 8 };
+    let pg = &&&&&&g;
+    print_i64(foo5(&f, *pg) - ****&&&&7); // 9
+
+    let ten = &&&999;
+    **ten = &10;
+    print_i64(***ten); // 10
+    
+    ***ten = 11;
+    print_i64(***ten); // 11
+
+    let f6 = foo6();
+    print_i64(f6.x + f6.y); // 12
+    
+    let fa = Baz::A();
+    let make_b = Baz::B;
+    let fb = make_b(6);
+    let fc = Baz::C(_{ 888, 999 });
+
+    print_enum_tag(&fa);
+    print_enum_tag(&fb);
+    print_enum_tag(&fc);
+    
+    let a = false;
+    if a {
+        print_i64(999);
+    } else if a {
+        print_i64(999);
+    } else if a {
+        print_i64(999);
+    } else if a {
+        print_i64(999);
+    } else if a {
+        print_i64(999);
+    } else {
+        print_i64(15);
+    }
+
+    print_i64(id(16)); // 16
+    print_i64(idp(&17)); // 17
+    print_i64(idppp(*&&&&18)); // 18
+    
+    print_i64(fac(4));
+
+    let lst: List;
+    lst.value = 999;
+    lst.next = &lst;
+    lst.next.next.next.next.next.value = 21;
+    print_i64(lst.next.next.next.next.next.next.next.next.next.value);
+    
+    let if_test = if false { 
+        resolve 999; 
+    } else if false { 
+        resolve 999; 
+    } else if true { 
+        resolve 22; 
+    } else { 
+        resolve 999; 
+    };
+    print_i64(if_test);
+
+    let block_test = {
+        print_i64(22);
+        resolve if false {
+            resolve 999;
+        } else {
+            resolve 3;
+        };
+    };
+    print_i64(block_test);
+
+    struct PStruct {
+        a: _T!,
+        b: T,
+    }
+    let pstruct = PStruct { a: 11, b: 12 };
+    print_i64(pstruct.a + pstruct.b);
+    
+    test_vec_stuff_1();
+    
+    test_interfaces();
+    
+    test_for_array();
+    
     return 0;
 }

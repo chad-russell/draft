@@ -218,14 +218,12 @@ impl<W: Source> SourceInfo<W> {
     pub fn eat(&mut self, chars: usize) {
         self.eat_chars(chars);
         self.loc.col += chars;
-        self.loc.char_offset += chars;
     }
 
     pub fn newline(&mut self) {
         self.eat_chars(1);
         self.loc.line += 1;
         self.loc.col = 1;
-        self.loc.char_offset += 1;
     }
 
     pub fn eat_rest_of_line(&mut self) {
