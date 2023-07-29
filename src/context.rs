@@ -142,8 +142,6 @@ pub struct Context {
     pub values: SecondaryMap<Value>,
     pub polymorph_sources: SecondaryMap<NodeId>,
 
-    pub array_declaration: Option<NodeId>,
-
     pub addressable_nodes: SecondarySet,
     pub polymorph_copies: SecondarySet,
     pub completes: SecondarySet,
@@ -195,8 +193,6 @@ impl Context {
             addressable_array_reverse_map: Default::default(),
             in_assign_lhs: false,
 
-            array_declaration: None,
-
             module: Self::make_module(),
             values: Default::default(),
         }
@@ -236,8 +232,6 @@ impl Context {
         self.unification_data.reset();
         self.deferreds.clear();
         self.in_assign_lhs = false;
-
-        self.array_declaration = None;
 
         self.module = Self::make_module();
         self.values.clear();

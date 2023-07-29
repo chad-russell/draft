@@ -1540,8 +1540,6 @@ impl Context {
                     self.check_not_unspecified_polymorph(member);
                 }
 
-                self.match_types(id, self.array_declaration.unwrap());
-
                 self.types.insert(id, Type::Array(ty));
             }
             Node::ArrayAccess { array, index } => {

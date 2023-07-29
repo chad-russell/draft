@@ -828,9 +828,6 @@ impl<'a, W: Source> Parser<'a, W> {
         let name = self.parse_symbol()?;
         let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
 
-        let name_str = self.ctx.string_interner.resolve(name_sym.0).unwrap();
-        let is_array_decl = name_str == "Array";
-
         let pushed_scope = self.ctx.push_scope();
         let struct_scope = self.ctx.top_scope;
 
@@ -859,10 +856,6 @@ impl<'a, W: Source> Parser<'a, W> {
 
         self.ctx.polymorph_target = old_polymorph_target;
         self.in_struct_decl = false;
-
-        if is_array_decl {
-            self.ctx.array_declaration = Some(struct_node);
-        }
 
         Ok(struct_node)
     }
