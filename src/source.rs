@@ -105,6 +105,10 @@ impl Source for RopeySource {
     }
 
     fn starts_with(&self, pat: &str) -> bool {
+        if self.source_len - self.char_index < pat.len() {
+            return false;
+        }
+
         self.rope
             .byte_slice(self.char_index..self.char_index + pat.len())
             .as_str()

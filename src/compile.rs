@@ -58,11 +58,12 @@ impl Context {
         // jit_builder.symbol("print_u64", print_u64 as *const u8);
         // jit_builder.symbol("print_f32", print_f32 as *const u8);
         jit_builder.symbol("print_f64", print_f64 as *const u8);
-        // jit_builder.symbol("print_string", print_string as *const u8);
         // jit_builder.symbol("alloc", libc::malloc as *const u8);
         // jit_builder.symbol("realloc", libc::realloc as *const u8);
         // jit_builder.symbol("debug_data", &semantic as *const _ as *const u8);
         jit_builder.symbol("print_enum_tag", print_enum_tag as *const u8);
+        jit_builder.symbol("put_char", put_char as *const u8);
+        jit_builder.symbol("print_str", print_str as *const u8);
 
         JITModule::new(jit_builder)
     }
@@ -178,15 +179,18 @@ impl Context {
 
     fn get_cranelift_type(&self, param: NodeId) -> CraneliftType {
         match self.types[&param] {
-            Type::I8 | Type::Bool => types::I8,
+            Type::I8 | Type::U8 | Type::Bool => types::I8,
             Type::I16 | Type::U16 => types::I16,
             Type::I32 | Type::U32 => types::I32,
             Type::I64 | Type::U64 => types::I64,
             Type::F32 => types::F32,
             Type::F64 => types::F64,
-            Type::Pointer(_) | Type::Func { .. } | Type::Struct { .. } | Type::Enum { .. } => {
-                self.get_pointer_type()
-            }
+            Type::Pointer(_)
+            | Type::Func { .. }
+            | Type::Struct { .. }
+            | Type::Enum { .. }
+            | Type::Array(_)
+            | Type::String => self.get_pointer_type(),
             Type::Infer(_) => todo!(),
             _ => todo!("{:?}", &self.types[&param]),
         }
@@ -231,7 +235,7 @@ impl Context {
                     .unwrap_or_default()
                     + self.enum_tag_size()
             }
-            Type::Array(_) => 16,
+            Type::Array(_) | Type::String => 16,
             Type::EnumNoneType | Type::Empty => 0,
             _ => todo!("get_type_size for {:?}", ty),
         }
@@ -270,22 +274,23 @@ impl Context {
         sig
     }
 
-    pub fn should_pass_by_ref(&self, id: NodeId) -> bool {
-        matches!(
-            self.get_type(id),
-            Type::Struct { .. } | Type::Enum { .. } | Type::Array(_)
-        )
+    pub fn should_pass_id_by_ref(&self, id: NodeId) -> bool {
+        self.is_aggregate_type(self.get_type(id))
     }
 
-    pub fn is_aggregate_type(&self, id: NodeId) -> bool {
+    pub fn id_is_aggregate_type(&self, id: NodeId) -> bool {
         let mut base_ty = self.get_type(id);
         while let Type::Pointer(inner) = base_ty {
             base_ty = self.get_type(inner);
         }
 
+        self.is_aggregate_type(base_ty)
+    }
+
+    pub fn is_aggregate_type(&self, ty: Type) -> bool {
         matches!(
-            base_ty,
-            Type::Struct { .. } | Type::Enum { .. } | Type::Array(_)
+            ty,
+            Type::Struct { .. } | Type::Enum { .. } | Type::Array(_) | Type::String
         )
     }
 }
@@ -306,6 +311,16 @@ pub struct Enum {
 
 pub fn print_enum_tag(n: *const Enum) {
     println!("{}", unsafe { (*n).tag });
+}
+
+pub fn put_char(n: u8) {
+    print!("{}", n as char);
+}
+
+pub fn print_str(s: *const u8, len: i64) {
+    print!("{}", unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(s, len as usize))
+    });
 }
 
 struct ToplevelCompileContext<'a> {
@@ -331,11 +346,11 @@ impl<'a> FunctionCompileContext<'a> {
             _ => return Ok(()),
         };
 
-        if id.0 < 10 {
-            self.builder.set_srcloc(SourceLoc::new(id.0 as u32));
-        } else {
-            self.builder.set_srcloc(SourceLoc::default());
-        }
+        // if id.0 < 10 {
+        //     self.builder.set_srcloc(SourceLoc::new(id.0 as u32));
+        // } else {
+        //     self.builder.set_srcloc(SourceLoc::default());
+        // }
 
         match self.ctx.nodes[id] {
             Node::Symbol(sym) => {
@@ -456,7 +471,7 @@ impl<'a> FunctionCompileContext<'a> {
                 let params = self.builder.block_params(self.current_block);
                 let param_value = params[index as usize];
 
-                let pass_base_by_ref = self.ctx.is_aggregate_type(id);
+                let pass_base_by_ref = self.ctx.id_is_aggregate_type(id);
 
                 if self.ctx.addressable_nodes.contains(&id) || pass_base_by_ref {
                     // we need our own storage
@@ -617,7 +632,7 @@ impl<'a> FunctionCompileContext<'a> {
                 }
 
                 // If this is member access on an aggregate type, then decrease the pointiness if it's above 0
-                if self.ctx.is_aggregate_type(value) && pointiness > 1 {
+                if self.ctx.id_is_aggregate_type(value) && pointiness > 1 {
                     pointiness -= 1;
                 }
 
@@ -952,10 +967,9 @@ impl<'a> FunctionCompileContext<'a> {
                 let members = self.ctx.id_vecs[members].clone();
 
                 // create stack slot big enough for all of the members
-                let size = self.ctx.id_type_size(ty);
                 let member_storage_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
-                    size: size * members.borrow().len() as u32,
+                    size: member_size * members.borrow().len() as u32,
                 });
                 let member_storage_slot_addr = self.builder.ins().stack_addr(
                     self.ctx.module.isa().pointer_type(),
@@ -1005,6 +1019,51 @@ impl<'a> FunctionCompileContext<'a> {
                 let array_ptr_value = self.builder.ins().iadd(array_ptr_value, index_value);
 
                 self.ctx.values.insert(id, Value::Value(array_ptr_value));
+
+                Ok(())
+            }
+            Node::StringLiteral(sym) => {
+                // todo(chad): strings should live in global memory. So this is pretty much all a hack for now
+                let sym_str = self.ctx.string_interner.resolve(sym.0).unwrap();
+
+                let member_size = self.ctx.type_size(Type::U8);
+
+                // create stack slot big enough for all of the members
+                let member_storage_slot = self.builder.create_sized_stack_slot(StackSlotData {
+                    kind: StackSlotKind::ExplicitSlot,
+                    size: member_size * sym_str.len() as u32,
+                });
+
+                for (i, byte) in sym_str.bytes().enumerate() {
+                    let byte = self.builder.ins().iconst(types::I8, byte as i64);
+
+                    self.builder
+                        .ins()
+                        .stack_store(byte, member_storage_slot, i as i32);
+                }
+
+                let member_storage_slot_addr = self.builder.ins().stack_addr(
+                    self.ctx.module.isa().pointer_type(),
+                    member_storage_slot,
+                    0,
+                );
+
+                let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                    kind: StackSlotKind::ExplicitSlot,
+                    size: self.ctx.id_type_size(id),
+                });
+                let slot_addr =
+                    self.builder
+                        .ins()
+                        .stack_addr(self.ctx.module.isa().pointer_type(), slot, 0);
+
+                let len = self.builder.ins().iconst(types::I64, sym_str.len() as i64);
+                self.builder
+                    .ins()
+                    .store(MemFlags::new(), member_storage_slot_addr, slot_addr, 0);
+                self.builder.ins().store(MemFlags::new(), len, slot_addr, 8);
+
+                self.ctx.values.insert(id, Value::Value(slot_addr));
 
                 Ok(())
             }
@@ -1148,7 +1207,7 @@ impl<'a> FunctionCompileContext<'a> {
             ty = self.ctx.get_type(inner);
         }
 
-        if let Type::Array(_) = ty {
+        if let Type::Array(_) | Type::String = ty {
             let data_sym = self.ctx.string_interner.get_or_intern("data");
             let len_sym = self.ctx.string_interner.get_or_intern("len");
             if member_name.0 == data_sym {
@@ -1209,7 +1268,7 @@ impl<'a> FunctionCompileContext<'a> {
     fn rvalue(&mut self, id: NodeId) -> CraneliftValue {
         let value = self.as_cranelift_value(self.ctx.values[&id]);
 
-        if self.ctx.addressable_nodes.contains(&id) && !self.ctx.should_pass_by_ref(id) {
+        if self.ctx.addressable_nodes.contains(&id) && !self.ctx.should_pass_id_by_ref(id) {
             let ty = self.ctx.get_cranelift_type(id);
             self.builder.ins().load(ty, MemFlags::new(), value, 0)
         } else {
@@ -1445,7 +1504,7 @@ impl<'a> ToplevelCompileContext<'a> {
                             let params = builder.block_params(ebb);
                             let param_value = params[0];
 
-                            if self.ctx.should_pass_by_ref(param) {
+                            if self.ctx.should_pass_id_by_ref(param) {
                                 let size = self.ctx.id_type_size(param);
 
                                 let source_value = param_value;

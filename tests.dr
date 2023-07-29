@@ -3,6 +3,8 @@ extern print_f64(n: f64);
 extern print_enum_tag(f: *Baz);
 extern malloc(n: i64) *struct{};
 extern free(n: *struct{});
+extern put_char(ch: u8);
+extern print_str(ch: *u8, len: i64);
 
 fn heapify(v: _T!) *T {
     let a = #cast(*T) malloc(#size_of(T));
@@ -192,7 +194,23 @@ fn test_threading() i64 {
     return 0;
 }
 
+fn print_string(s: string) {
+    print_str(s.data, s.len);
+    return;
+}
+
+fn assert_equal(a: _T!, b: T) {
+    if a != b {
+        print_string("assertion failed\n");
+    }
+    return;
+}
+
 fn main() i64 {
+    let te1 = 3i64;
+    let te2 = 3;
+    assert_equal(te1, te2);
+    
     let f = Foo { 3, 8 };
     let pf = &f;
     let ppf = &pf;

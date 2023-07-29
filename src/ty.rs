@@ -20,6 +20,7 @@ pub enum Type {
     F32,
     F64,
     Bool,
+    String,
     Func {
         input_tys: IdVec,
         return_ty: Option<NodeId>,
@@ -976,6 +977,7 @@ impl Context {
                     | Type::F32
                     | Type::F64
                     | Type::Bool
+                    | Type::String
                     | Type::EnumNoneType
                     | Type::Infer(_) => {}
                 }
@@ -1024,6 +1026,9 @@ impl Context {
             Node::BoolLiteral(_) => {
                 self.types.insert(id, Type::Bool);
             }
+            Node::StringLiteral(_) => {
+                self.types.insert(id, Type::String);
+            }
             Node::Symbol(sym) => {
                 let resolved = self.scope_get(sym, id);
 
@@ -1059,7 +1064,7 @@ impl Context {
                     }
                 }
 
-                if self.is_aggregate_type(id) {
+                if self.id_is_aggregate_type(id) {
                     self.addressable_nodes.insert(id);
                 }
 
@@ -1308,8 +1313,6 @@ impl Context {
                         }
                     }
                     Type::Array(array_ty) => {
-                        // todo(chad): not sure whether this is a hack or not.
-                        // The alternative would be to look up the actual Array declaration and use that
                         let name = self.string_interner.resolve(member_name_sym.0).unwrap();
                         match name {
                             "len" => {
@@ -1317,6 +1320,26 @@ impl Context {
                             }
                             "data" => {
                                 self.types.insert(id, Type::Pointer(array_ty));
+                            }
+                            _ => {
+                                self.errors.push(CompileError::Node(
+                                    format!(
+                                        "Array has no member {:?}: options are 'len' or 'data'",
+                                        name
+                                    ),
+                                    member,
+                                ));
+                            }
+                        }
+                    }
+                    Type::String => {
+                        let name = self.string_interner.resolve(member_name_sym.0).unwrap();
+                        match name {
+                            "len" => {
+                                self.types.insert(id, Type::I64);
+                            }
+                            "data" => {
+                                self.types.insert(id, Type::Infer(None));
                             }
                             _ => {
                                 self.errors.push(CompileError::Node(
@@ -1666,6 +1689,9 @@ impl Context {
                     Type::Array(array_element_ty) => {
                         self.match_types(label, array_element_ty);
                     }
+                    Type::String => {
+                        self.types.insert(label, Type::U8);
+                    }
                     _ => todo!(),
                 }
 
@@ -1751,7 +1777,7 @@ impl Context {
                     if let Some(return_ty) = return_ty {
                         self.match_types(id, return_ty);
 
-                        if self.should_pass_by_ref(return_ty) {
+                        if self.should_pass_id_by_ref(return_ty) {
                             self.addressable_nodes.insert(id);
                         }
                     }

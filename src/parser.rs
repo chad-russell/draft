@@ -141,6 +141,7 @@ pub enum Token {
     I16,
     I32,
     I64,
+    String,
     U8,
     U16,
     U32,
@@ -150,6 +151,7 @@ pub enum Token {
     True,
     False,
     Symbol(Sym),
+    StringLiteral(Sym),
     IntegerLiteral(i64, NumericSpecification),
     FloatLiteral(f64, NumericSpecification),
     Plus,
@@ -249,6 +251,52 @@ impl<'a, W: Source> Parser<'a, W> {
         let start = self.source_info.loc;
         self.source_info.top = self.source_info.second;
 
+        let mut str_lit = String::new();
+        let str_lit_index = if self.source_info.source.char_count() > 1 && self.source_info.source.starts_with("\"") {
+            let mut escaped = false;
+            let mut index = 1;
+            while index < self.source_info.source.char_count() {
+                let c = self.source_info.source.char_at(index).unwrap();
+                if c == '"' && !escaped {
+                    break;
+                } else if c == '\\' {
+                    escaped = true;
+                } else {
+                    if escaped {
+                        match c {
+                            'n' => str_lit.push('\n'),
+                            '0' => str_lit.push('\0'),
+                            _ => str_lit.push(c),
+                        }
+                    } else {
+                        str_lit.push(c);
+                    }
+                    escaped = false;
+                }
+                index += 1;
+            }
+
+            index += 1; // skip the closing quote
+
+            Some(index)
+        } else {
+            None
+        };
+
+        if let Some(str_lit_index) = str_lit_index {
+            let str_lit_sym = Sym(self.ctx.string_interner.get_or_intern(str_lit));
+
+            self.source_info.eat(str_lit_index);
+
+            let end = self.source_info.loc;
+            self.source_info.second = Lexeme::new(
+                Token::StringLiteral(str_lit_sym),
+                self.source_info.make_range(start, end),
+            );
+
+            return;
+        }
+
         let is_underscore = if self.source_info.source.char_count() > 1 {
             self.source_info.source.starts_with("_")
                 && !breaks_symbol(self.source_info.source.char_at(1).unwrap())
@@ -336,6 +384,9 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
         if self.source_info.prefix_keyword("i64", Token::I64) {
+            return;
+        }
+        if self.source_info.prefix_keyword("string", Token::String) {
             return;
         }
         if self.source_info.prefix_keyword("u8", Token::U8) {
@@ -1033,6 +1084,7 @@ impl<'a, W: Source> Parser<'a, W> {
             match self.source_info.top.tok {
                 Token::IntegerLiteral(_, _)
                 | Token::FloatLiteral(_, _)
+                | Token::StringLiteral(_)
                 | Token::LCurly
                 | Token::LParen
                 | Token::LSquare
@@ -1233,6 +1285,15 @@ impl<'a, W: Source> Parser<'a, W> {
             }
             Token::If => self.parse_if(),
             Token::IntegerLiteral(_, _) | Token::FloatLiteral(_, _) => self.parse_numeric_literal(),
+            Token::StringLiteral(sym) => {
+                self.pop();
+                let id = self.ctx.push_node(
+                    self.source_info.top.range,
+                    Node::StringLiteral(sym),
+                );
+                self.ctx.addressable_nodes.insert(id);
+                Ok(id)
+            }
             Token::Fn => self.parse_fn(true),
             Token::Star => {
                 self.pop(); // `*`
@@ -1796,6 +1857,11 @@ impl<'a, W: Source> Parser<'a, W> {
                 let range = self.source_info.top.range;
                 self.pop();
                 Ok(self.ctx.push_node(range, Node::Type(Type::F64)))
+            }
+            Token::String => {
+                let range = self.source_info.top.range;
+                self.pop();
+                Ok(self.ctx.push_node(range, Node::Type(Type::String)))
             }
             Token::Fn => {
                 let range = self.source_info.top.range;

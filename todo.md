@@ -11,6 +11,7 @@
             return 0;
         }
     ```
+- [ ] shouldn't have to type `return` at the end of every function with no return type
 
 # Features
 - [x] test returning structs from a function
@@ -39,9 +40,10 @@
 - [x] arrays assignable to Array type
 - [x] pipe/threading/ufcs operator
     - [ ] threading operator can choose where the argument gets threaded into
-- [ ] strings
+- [x] strings
 - [ ] interfaces
-- [ ] modules
+- [ ] modules, imports
+    - [ ] import "whatever/bar"::{ A, B::{C, D}, E::* }
 - [ ] short-circuit and/or operators
 - [ ] defer
 - [ ] question mark operator (how would this work? do we need interfaces after all?)
@@ -62,6 +64,7 @@
 - [ ] debugger
 
 # Performance
+- [ ] use the `stack_store` cranelift ir instruction
 - [ ] when doing codegen for aggregate types, they don't always need their own slot. Usually it's going to get copied into the slot of somethign else like a let binding, so we can just directly codegen it into that slot
 - [ ] consider disabling bounds checking on array (DenseStorage) accesses
 - [ ] multithreading?

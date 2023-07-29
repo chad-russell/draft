@@ -348,7 +348,7 @@ impl Context {
 
                     for &param in self.id_vecs[params].clone().borrow().iter() {
                         // All structs passed as function args are passed by address (for now...)
-                        if self.is_aggregate_type(param) {
+                        if self.id_is_aggregate_type(param) {
                             self.addressable_nodes.insert(param);
                             self.match_addressable(param, param); // todo(chad): @hack?
                         }

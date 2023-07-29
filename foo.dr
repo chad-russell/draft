@@ -1,3 +1,9 @@
+extern put_char(ch: u8);
+extern print_str(ch: *u8, len: i64);
+
 fn main() i64 {
+    let s = "Hello, Becca!\n";
+    print_str(s.data, s.len);
+
     return 0;
 }
