@@ -37,7 +37,8 @@
 - [x] !=, <, >, <=, >= operators
 - [x] while loops
 - [x] arrays assignable to Array type
-- [ ] pipe/threading/ufcs operator
+- [x] pipe/threading/ufcs operator
+    - [ ] threading operator can choose where the argument gets threaded into
 - [ ] strings
 - [ ] interfaces
 - [ ] modules
