@@ -1,3 +1,5 @@
+use tracing::instrument;
+
 use crate::{
     CompileError, Context, IdVec, Node, NodeElse, NodeId, NumericSpecification, Op, ParseTarget,
     StaticMemberResolution, Sym,
@@ -39,6 +41,7 @@ pub enum Type {
 }
 
 impl Type {
+    #[instrument(name = "Type::is_basic", skip_all)]
     pub fn is_basic(&self) -> bool {
         matches!(
             &self,
@@ -57,6 +60,7 @@ impl Type {
         )
     }
 
+    #[instrument(name = "Type::is_int", skip_all)]
     pub fn is_int(&self) -> bool {
         matches!(
             &self,
@@ -72,6 +76,7 @@ impl Type {
         )
     }
 
+    #[instrument(name = "Type::is_float", skip_all)]
     pub fn is_float(&self) -> bool {
         matches!(&self, Type::FloatLiteral | Type::F32 | Type::F64)
     }
@@ -103,6 +108,7 @@ pub struct AddressableMatch {
 }
 
 impl Context {
+    #[instrument(skip_all)]
     pub fn unify_types(&mut self) {
         self.unification_data.reset();
 
@@ -128,6 +134,7 @@ impl Context {
         }
     }
 
+    #[instrument(skip_all)]
     pub fn unify(&mut self, first: Type, second: Type, err_ids: (NodeId, NodeId)) -> Type {
         match (first, second) {
             (a, b) if a == b => a,
@@ -167,6 +174,7 @@ impl Context {
         }
     }
 
+    #[instrument(skip_all)]
     pub fn rearrange_params(
         &mut self,
         given: &[NodeId],
@@ -295,11 +303,13 @@ impl Context {
         Ok(rearranged_given)
     }
 
+    #[instrument(skip_all)]
     pub fn match_types(&mut self, ty1: NodeId, ty2: NodeId) {
         self.handle_match_types(ty1, ty2);
         self.merge_type_matches(ty1, ty2);
     }
 
+    #[instrument(skip_all)]
     pub fn match_addressable(&mut self, n1: NodeId, n2: NodeId) {
         let id1 = self.find_addressable_array_index(n1);
         let id2 = self.find_addressable_array_index(n2);
@@ -432,6 +442,7 @@ impl Context {
         }
     }
 
+    #[instrument(skip_all)]
     pub fn handle_match_types(&mut self, ty1: NodeId, ty2: NodeId) {
         if ty1 == ty2 {
             return;
@@ -600,6 +611,7 @@ impl Context {
         }
     }
 
+    #[instrument(skip_all)]
     pub fn check_int_literal_type(&self, bt: Type) -> bool {
         matches!(
             bt,
@@ -615,18 +627,22 @@ impl Context {
         )
     }
 
+    #[instrument(skip_all)]
     pub fn check_float_literal_type(&self, bt: Type) -> bool {
         matches!(bt, Type::FloatLiteral | Type::F32 | Type::F64)
     }
 
+    #[instrument(skip_all)]
     pub fn get_type(&self, id: NodeId) -> Type {
         return self.types.get(&id).cloned().unwrap_or(Type::Infer(None));
     }
 
+    #[instrument(skip_all)]
     pub fn is_fully_concrete(&mut self, id: NodeId) -> bool {
         self.is_fully_concrete_ty(self.get_type(id))
     }
 
+    #[instrument(skip_all)]
     pub fn is_fully_concrete_ty(&mut self, ty: Type) -> bool {
         if let Type::Pointer(pt) = ty {
             if self.circular_concrete_types.contains(&pt) {
@@ -665,14 +681,17 @@ impl Context {
         )
     }
 
+    #[instrument(skip_all)]
     pub fn find_type_array_index(&self, id: NodeId) -> Option<usize> {
         self.type_array_reverse_map.get(&id).cloned()
     }
 
+    #[instrument(skip_all)]
     pub fn find_addressable_array_index(&self, id: NodeId) -> Option<usize> {
         self.addressable_array_reverse_map.get(&id).cloned()
     }
 
+    #[instrument(skip_all)]
     pub fn merge_type_matches(&mut self, ty1: NodeId, ty2: NodeId) {
         match (self.get_type(ty1), self.get_type(ty2)) {
             (Type::Infer(_), Type::Infer(_)) => (),
@@ -819,6 +838,7 @@ impl Context {
         }
     }
 
+    #[instrument(skip_all)]
     pub fn assign_type(&mut self, id: NodeId) {
         if self.completes.contains(&id) {
             return;
@@ -838,6 +858,7 @@ impl Context {
         }
     }
 
+    #[instrument(skip_all)]
     pub fn assign_type_inner(&mut self, id: NodeId) -> bool {
         match self.nodes[id] {
             Node::FnDefinition {
@@ -847,310 +868,55 @@ impl Context {
                 returns,
                 ..
             } => {
-                // don't directly codegen a polymorph, wait until it's copied first
-                if self.polymorph_sources.contains_key(&id) {
-                    return true;
-                }
-
-                if let Some(return_ty) = return_ty {
-                    self.assign_type(return_ty);
-                }
-
-                for &param in self.id_vecs[params].clone().borrow().iter() {
-                    self.assign_type(param);
-                }
-
-                self.types.insert(
-                    id,
-                    Type::Func {
-                        return_ty,
-                        input_tys: params,
-                    },
-                );
-
-                for &stmt in self.id_vecs[stmts].clone().borrow().iter() {
-                    self.assign_type(stmt);
-                }
-
-                for &ret_id in self.id_vecs[returns].clone().borrow().iter() {
-                    let ret_id = match self.nodes[ret_id] {
-                        Node::Return(Some(id)) => Ok(id),
-                        Node::Return(None) if return_ty.is_some() => Err(CompileError::Node(
-                            "Empty return not allowed".to_string(),
-                            ret_id,
-                        )),
-                        Node::Return(None) => Ok(ret_id),
-                        a => panic!("Expected return, got {:?}", a),
-                    };
-
-                    match (ret_id, return_ty) {
-                        (Err(err), _) => self.errors.push(err),
-                        (Ok(ret_id), Some(return_ty)) => {
-                            self.match_types(return_ty, ret_id);
-                        }
-                        (Ok(ret_id), None) => {
-                            if let Node::Return(Some(_)) = self.nodes[ret_id] {
-                                self.errors.push(CompileError::Node(
-                                    "Return type not specified".to_string(),
-                                    ret_id,
-                                ));
-                            }
-                        }
-                    }
-                }
-
-                if !self.topo.contains(&id) {
-                    self.topo.push(id);
+                if let Some(value) = self.assign_type_fn(id, return_ty, params, stmts, returns) {
+                    return value;
                 }
             }
             Node::Extern {
                 params, return_ty, ..
             } => {
-                if let Some(return_ty) = return_ty {
-                    self.assign_type(return_ty);
-                }
-
-                for &param in self.id_vecs[params].clone().borrow().iter() {
-                    self.assign_type(param);
-                }
-
-                self.types.insert(
-                    id,
-                    Type::Func {
-                        return_ty,
-                        input_tys: params,
-                    },
-                );
+                self.assign_type_extern(return_ty, params, id);
             }
             Node::Type(ty) => {
-                self.types.insert(id, ty);
-
-                match ty {
-                    Type::Func {
-                        return_ty,
-                        input_tys,
-                        ..
-                    } => {
-                        if let Some(return_ty) = return_ty {
-                            self.assign_type(return_ty);
-                        }
-
-                        for &input_ty in self.id_vecs[input_tys].clone().borrow().iter() {
-                            self.assign_type(input_ty);
-                        }
-                    }
-                    Type::Struct { name, params } => {
-                        if let Some(name) = name {
-                            self.assign_type(name);
-                        }
-
-                        for &field in self.id_vecs[params].clone().borrow().iter() {
-                            self.assign_type(field);
-                        }
-                    }
-                    Type::Enum { name, params } => {
-                        if let Some(name) = name {
-                            self.assign_type(name);
-                        }
-
-                        for &field in self.id_vecs[params].clone().borrow().iter() {
-                            self.assign_type(field);
-                        }
-                    }
-                    Type::Pointer(ty) => {
-                        self.assign_type(ty);
-                    }
-                    Type::Array(ty) => {
-                        self.assign_type(ty);
-                    }
-                    Type::Empty
-                    | Type::IntLiteral
-                    | Type::I8
-                    | Type::I16
-                    | Type::I32
-                    | Type::I64
-                    | Type::U8
-                    | Type::U16
-                    | Type::U32
-                    | Type::U64
-                    | Type::FloatLiteral
-                    | Type::F32
-                    | Type::F64
-                    | Type::Bool
-                    | Type::String
-                    | Type::EnumNoneType
-                    | Type::Infer(_) => {}
-                }
+                self.assign_type_type(id, ty);
             }
             Node::Return(ret_id) => {
-                if let Some(ret_id) = ret_id {
-                    self.assign_type(ret_id);
-                    self.match_types(id, ret_id);
-                }
+                self.assign_type_return(ret_id, id);
             }
-            Node::IntLiteral(_, spec) => match spec {
-                NumericSpecification::None => {
-                    self.types.insert(id, Type::IntLiteral);
-                }
-                NumericSpecification::I8 => {
-                    self.types.insert(id, Type::I8);
-                }
-                NumericSpecification::I16 => {
-                    self.types.insert(id, Type::I16);
-                }
-                NumericSpecification::I32 => {
-                    self.types.insert(id, Type::I32);
-                }
-                NumericSpecification::I64 => {
-                    self.types.insert(id, Type::I64);
-                }
-                NumericSpecification::U8 => {
-                    self.types.insert(id, Type::U8);
-                }
-                NumericSpecification::U16 => {
-                    self.types.insert(id, Type::U16);
-                }
-                NumericSpecification::U32 => {
-                    self.types.insert(id, Type::U32);
-                }
-                NumericSpecification::U64 => {
-                    self.types.insert(id, Type::U64);
-                }
-                NumericSpecification::F32 => {
-                    self.types.insert(id, Type::F32);
-                }
-                NumericSpecification::F64 => {
-                    self.types.insert(id, Type::F64);
-                }
-            },
+            Node::IntLiteral(_, spec) => self.assign_type_int_literal(spec, id),
             Node::BoolLiteral(_) => {
-                self.types.insert(id, Type::Bool);
+                self.assign_type_bool(id);
             }
             Node::StringLiteral(_) => {
-                self.types.insert(id, Type::String);
+                self.assign_type_string_literal(id);
             }
             Node::Symbol(sym) => {
-                let resolved = self.scope_get(sym, id);
-
-                match resolved {
-                    Some(resolved) => {
-                        self.assign_type(resolved);
-                        self.match_types(id, resolved);
-                        self.match_addressable(id, resolved);
-
-                        if let Some(&resolved) = self.polymorph_sources.get(&resolved) {
-                            self.polymorph_sources.insert(id, resolved);
-                        }
-                    }
-                    None => {
-                        self.errors
-                            .push(CompileError::Node("Symbol not found".to_string(), id));
-                    }
-                }
+                self.assign_type_symbol(sym, id);
             }
             Node::FnDeclParam { ty, default, .. } => {
-                if let Some(ty) = ty {
-                    self.assign_type(ty);
-
-                    if self.polymorph_sources.contains_key(&ty) {
-                        self.errors.push(CompileError::Node(
-                            format!(
-                                "Generic arguments needed: {} is not a concrete type",
-                                self.nodes[ty].ty()
-                            ),
-                            ty,
-                        ));
-                        return true;
-                    }
-                }
-
-                if self.id_is_aggregate_type(id) {
-                    self.addressable_nodes.insert(id);
-                }
-
-                if let Some(default) = default {
-                    self.assign_type(default);
-                    self.match_types(id, default);
-                }
-
-                if let Some(ty) = ty {
-                    self.match_types(id, ty);
+                if let Some(value) = self.assign_type_fn_decl_param(ty, id, default) {
+                    return value;
                 }
             }
             Node::StructDeclParam { ty, default, .. } => {
-                if let Some(ty) = ty {
-                    self.assign_type(ty);
-                }
-
-                if let Some(default) = default {
-                    self.assign_type(default);
-                    self.match_types(id, default);
-                }
-
-                if let Some(ty) = ty {
-                    self.match_types(id, ty);
-                }
+                self.assign_type_struct_decl_param(ty, default, id);
             }
             Node::EnumDeclParam { ty, .. } => {
-                if let Some(ty) = ty {
-                    self.assign_type(ty);
-                }
-
-                if let Some(ty) = ty {
-                    self.match_types(id, ty);
-                }
+                self.assign_type_enum_decl_param(ty, id);
             }
             Node::ValueParam { name, value, .. } => {
-                self.assign_type(value);
-                self.check_not_unspecified_polymorph(value);
-                self.match_types(id, value);
-                if let Some(name) = name {
-                    self.match_types(name, value);
-                }
-
-                self.match_addressable(id, value);
+                self.assign_type_value_param(value, id, name);
             }
             Node::Let { ty, expr, .. } => {
-                if let Some(expr) = expr {
-                    self.assign_type(expr);
-                    self.match_types(id, expr);
-                    self.check_not_unspecified_polymorph(expr);
-                }
-
-                if let Some(ty) = ty {
-                    if self.polymorph_sources.contains_key(&ty) {
-                        self.errors.push(CompileError::Node(
-                            format!(
-                                "Generic arguments needed: {} is not a concrete type",
-                                self.nodes[ty].ty()
-                            ),
-                            ty,
-                        ));
-                        return true;
-                    }
-
-                    self.assign_type(ty);
-                    self.match_types(id, ty);
+                if let Some(value) = self.assign_type_let(expr, id, ty) {
+                    return value;
                 }
             }
-            Node::FloatLiteral(_, spec) => match spec {
-                NumericSpecification::None => {
-                    self.types.insert(id, Type::FloatLiteral);
+            Node::FloatLiteral(_, spec) => {
+                if let Some(value) = self.assign_type_float_literal(spec, id) {
+                    return value;
                 }
-                NumericSpecification::F32 => {
-                    self.types.insert(id, Type::F32);
-                }
-                NumericSpecification::F64 => {
-                    self.types.insert(id, Type::F64);
-                }
-                _ => {
-                    self.errors.push(CompileError::Node(
-                        "Under-specified float literal".to_string(),
-                        id,
-                    ));
-                    return true;
-                }
-            },
+            }
             Node::Assign { name, expr, .. } => {
                 self.in_assign_lhs = true;
                 self.assign_type(name);
@@ -1716,6 +1482,366 @@ impl Context {
         return true;
     }
 
+    #[instrument(skip_all)]
+    fn assign_type_float_literal(
+        &mut self,
+        spec: NumericSpecification,
+        id: NodeId,
+    ) -> Option<bool> {
+        match spec {
+            NumericSpecification::None => {
+                self.types.insert(id, Type::FloatLiteral);
+            }
+            NumericSpecification::F32 => {
+                self.types.insert(id, Type::F32);
+            }
+            NumericSpecification::F64 => {
+                self.types.insert(id, Type::F64);
+            }
+            _ => {
+                self.errors.push(CompileError::Node(
+                    "Under-specified float literal".to_string(),
+                    id,
+                ));
+                return Some(true);
+            }
+        }
+        None
+    }
+
+    #[instrument(skip_all)]
+    fn assign_type_let(
+        &mut self,
+        expr: Option<NodeId>,
+        id: NodeId,
+        ty: Option<NodeId>,
+    ) -> Option<bool> {
+        if let Some(expr) = expr {
+            self.assign_type(expr);
+            self.match_types(id, expr);
+            self.check_not_unspecified_polymorph(expr);
+        }
+
+        if let Some(ty) = ty {
+            if self.polymorph_sources.contains_key(&ty) {
+                self.errors.push(CompileError::Node(
+                    format!(
+                        "Generic arguments needed: {} is not a concrete type",
+                        self.nodes[ty].ty()
+                    ),
+                    ty,
+                ));
+                return Some(true);
+            }
+
+            self.assign_type(ty);
+            self.match_types(id, ty);
+        }
+        None
+    }
+
+    #[instrument(skip_all)]
+    fn assign_type_value_param(&mut self, value: NodeId, id: NodeId, name: Option<NodeId>) {
+        self.assign_type(value);
+        self.check_not_unspecified_polymorph(value);
+        self.match_types(id, value);
+        if let Some(name) = name {
+            self.match_types(name, value);
+        }
+
+        self.match_addressable(id, value);
+    }
+
+    #[instrument(skip_all)]
+    fn assign_type_enum_decl_param(&mut self, ty: Option<NodeId>, id: NodeId) {
+        if let Some(ty) = ty {
+            self.assign_type(ty);
+        }
+
+        if let Some(ty) = ty {
+            self.match_types(id, ty);
+        }
+    }
+
+    #[instrument(skip_all)]
+    fn assign_type_struct_decl_param(
+        &mut self,
+        ty: Option<NodeId>,
+        default: Option<NodeId>,
+        id: NodeId,
+    ) {
+        if let Some(ty) = ty {
+            self.assign_type(ty);
+        }
+
+        if let Some(default) = default {
+            self.assign_type(default);
+            self.match_types(id, default);
+        }
+
+        if let Some(ty) = ty {
+            self.match_types(id, ty);
+        }
+    }
+
+    #[instrument(skip_all)]
+    fn assign_type_fn_decl_param(
+        &mut self,
+        ty: Option<NodeId>,
+        id: NodeId,
+        default: Option<NodeId>,
+    ) -> Option<bool> {
+        if let Some(ty) = ty {
+            self.assign_type(ty);
+
+            if self.polymorph_sources.contains_key(&ty) {
+                self.errors.push(CompileError::Node(
+                    format!(
+                        "Generic arguments needed: {} is not a concrete type",
+                        self.nodes[ty].ty()
+                    ),
+                    ty,
+                ));
+                return Some(true);
+            }
+        }
+        if self.id_is_aggregate_type(id) {
+            self.addressable_nodes.insert(id);
+        }
+        if let Some(default) = default {
+            self.assign_type(default);
+            self.match_types(id, default);
+        }
+
+        if let Some(ty) = ty {
+            self.match_types(id, ty);
+        }
+        None
+    }
+
+    #[instrument(skip_all)]
+    fn assign_type_symbol(&mut self, sym: Sym, id: NodeId) {
+        let resolved = self.scope_get(sym, id);
+
+        match resolved {
+            Some(resolved) => {
+                self.assign_type(resolved);
+                self.match_types(id, resolved);
+                self.match_addressable(id, resolved);
+
+                if let Some(&resolved) = self.polymorph_sources.get(&resolved) {
+                    self.polymorph_sources.insert(id, resolved);
+                }
+            }
+            None => {
+                self.errors
+                    .push(CompileError::Node("Symbol not found".to_string(), id));
+            }
+        }
+    }
+
+    #[instrument(skip_all)]
+    fn assign_type_string_literal(&mut self, id: NodeId) {
+        self.types.insert(id, Type::String);
+    }
+
+    #[instrument(skip_all)]
+    fn assign_type_bool(&mut self, id: NodeId) {
+        self.types.insert(id, Type::Bool);
+    }
+
+    #[instrument(skip_all)]
+    fn assign_type_int_literal(&mut self, spec: NumericSpecification, id: NodeId) {
+        match spec {
+            NumericSpecification::None => {
+                self.types.insert(id, Type::IntLiteral);
+            }
+            NumericSpecification::I8 => {
+                self.types.insert(id, Type::I8);
+            }
+            NumericSpecification::I16 => {
+                self.types.insert(id, Type::I16);
+            }
+            NumericSpecification::I32 => {
+                self.types.insert(id, Type::I32);
+            }
+            NumericSpecification::I64 => {
+                self.types.insert(id, Type::I64);
+            }
+            NumericSpecification::U8 => {
+                self.types.insert(id, Type::U8);
+            }
+            NumericSpecification::U16 => {
+                self.types.insert(id, Type::U16);
+            }
+            NumericSpecification::U32 => {
+                self.types.insert(id, Type::U32);
+            }
+            NumericSpecification::U64 => {
+                self.types.insert(id, Type::U64);
+            }
+            NumericSpecification::F32 => {
+                self.types.insert(id, Type::F32);
+            }
+            NumericSpecification::F64 => {
+                self.types.insert(id, Type::F64);
+            }
+        }
+    }
+
+    #[instrument(skip_all)]
+    fn assign_type_return(&mut self, ret_id: Option<NodeId>, id: NodeId) {
+        if let Some(ret_id) = ret_id {
+            self.assign_type(ret_id);
+            self.match_types(id, ret_id);
+        }
+    }
+
+    #[instrument(skip_all)]
+    fn assign_type_type(&mut self, id: NodeId, ty: Type) {
+        self.types.insert(id, ty);
+
+        match ty {
+            Type::Func {
+                return_ty,
+                input_tys,
+                ..
+            } => {
+                if let Some(return_ty) = return_ty {
+                    self.assign_type(return_ty);
+                }
+
+                for &input_ty in self.id_vecs[input_tys].clone().borrow().iter() {
+                    self.assign_type(input_ty);
+                }
+            }
+            Type::Struct { name, params } => {
+                if let Some(name) = name {
+                    self.assign_type(name);
+                }
+
+                for &field in self.id_vecs[params].clone().borrow().iter() {
+                    self.assign_type(field);
+                }
+            }
+            Type::Enum { name, params } => {
+                if let Some(name) = name {
+                    self.assign_type(name);
+                }
+
+                for &field in self.id_vecs[params].clone().borrow().iter() {
+                    self.assign_type(field);
+                }
+            }
+            Type::Pointer(ty) => {
+                self.assign_type(ty);
+            }
+            Type::Array(ty) => {
+                self.assign_type(ty);
+            }
+            Type::Empty
+            | Type::IntLiteral
+            | Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::I64
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::FloatLiteral
+            | Type::F32
+            | Type::F64
+            | Type::Bool
+            | Type::String
+            | Type::EnumNoneType
+            | Type::Infer(_) => {}
+        }
+    }
+
+    #[instrument(skip_all)]
+    fn assign_type_extern(&mut self, return_ty: Option<NodeId>, params: IdVec, id: NodeId) {
+        if let Some(return_ty) = return_ty {
+            self.assign_type(return_ty);
+        }
+
+        for &param in self.id_vecs[params].clone().borrow().iter() {
+            self.assign_type(param);
+        }
+
+        self.types.insert(
+            id,
+            Type::Func {
+                return_ty,
+                input_tys: params,
+            },
+        );
+    }
+
+    #[instrument(skip_all)]
+    fn assign_type_fn(
+        &mut self,
+        id: NodeId,
+        return_ty: Option<NodeId>,
+        params: IdVec,
+        stmts: IdVec,
+        returns: IdVec,
+    ) -> Option<bool> {
+        // don't directly codegen a polymorph, wait until it's copied first
+        if self.polymorph_sources.contains_key(&id) {
+            return Some(true);
+        }
+        if let Some(return_ty) = return_ty {
+            self.assign_type(return_ty);
+        }
+        for &param in self.id_vecs[params].clone().borrow().iter() {
+            self.assign_type(param);
+        }
+        self.types.insert(
+            id,
+            Type::Func {
+                return_ty,
+                input_tys: params,
+            },
+        );
+        for &stmt in self.id_vecs[stmts].clone().borrow().iter() {
+            self.assign_type(stmt);
+        }
+        for &ret_id in self.id_vecs[returns].clone().borrow().iter() {
+            let ret_id = match self.nodes[ret_id] {
+                Node::Return(Some(id)) => Ok(id),
+                Node::Return(None) if return_ty.is_some() => Err(CompileError::Node(
+                    "Empty return not allowed".to_string(),
+                    ret_id,
+                )),
+                Node::Return(None) => Ok(ret_id),
+                a => panic!("Expected return, got {:?}", a),
+            };
+
+            match (ret_id, return_ty) {
+                (Err(err), _) => self.errors.push(err),
+                (Ok(ret_id), Some(return_ty)) => {
+                    self.match_types(return_ty, ret_id);
+                }
+                (Ok(ret_id), None) => {
+                    if let Node::Return(Some(_)) = self.nodes[ret_id] {
+                        self.errors.push(CompileError::Node(
+                            "Return type not specified".to_string(),
+                            ret_id,
+                        ));
+                    }
+                }
+            }
+        }
+
+        if !self.topo.contains(&id) {
+            self.topo.push(id);
+        }
+
+        None
+    }
+
+    #[instrument(skip_all)]
     fn assign_type_inner_call(&mut self, id: NodeId, mut func: NodeId, params: IdVec) -> bool {
         self.assign_type(func);
 
@@ -1792,6 +1918,7 @@ impl Context {
         return true;
     }
 
+    #[instrument(skip_all)]
     fn match_params_to_named_struct(
         &mut self,
         params: IdVec,
@@ -1828,6 +1955,7 @@ impl Context {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     pub fn copy_polymorph_if_needed(&mut self, ty: NodeId) -> Result<NodeId, CompileError> {
         if let Some(&ty) = self.polymorph_sources.get(&ty) {
             let parse_target = match self.nodes[ty] {
@@ -1843,6 +1971,7 @@ impl Context {
         }
     }
 
+    #[instrument(skip_all)]
     pub fn check_not_unspecified_polymorph(&mut self, value: NodeId) {
         if self.polymorph_sources.get(&value).is_some() {
             self.errors.push(CompileError::Node(

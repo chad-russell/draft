@@ -6,6 +6,7 @@ use std::rc::Rc;
 use string_interner::StringInterner;
 
 use cranelift_jit::JITModule;
+use tracing::instrument;
 
 use crate::{
     AddressableMatch, Args, CompileError, IdVec, Location, Node, NodeId, Range, RopeySource, Scope,
@@ -113,6 +114,7 @@ pub struct Context {
     pub id_vecs: IdVecs,
     pub node_scopes: DenseStorage<ScopeId>,
     pub polymorph_target: bool,
+    pub string_constants: Vec<NodeId>,
 
     // stack of returns - pushed when entering parsing a function, popped when exiting
     pub returns: Vec<Vec<NodeId>>,
@@ -152,6 +154,7 @@ pub struct Context {
 unsafe impl Send for Context {}
 
 impl Context {
+    #[instrument(skip_all)]
     pub fn new(args: Args) -> Self {
         Self {
             args,
@@ -168,6 +171,7 @@ impl Context {
             polymorph_target: false,
             polymorph_sources: Default::default(),
             polymorph_copies: Default::default(),
+            string_constants: Default::default(),
 
             returns: Default::default(),
             resolves: Default::default(),
@@ -198,6 +202,7 @@ impl Context {
         }
     }
 
+    #[instrument(skip_all)]
     pub fn reset(&mut self) {
         self.string_interner = StringInterner::new();
         self.file_sources.clear();
@@ -208,6 +213,7 @@ impl Context {
         self.node_scopes.clear();
         self.addressable_nodes.clear();
         self.polymorph_target = false;
+        self.string_constants.clear();
         self.polymorph_sources.clear();
         self.polymorph_copies.clear();
         self.returns.clear();
@@ -237,6 +243,7 @@ impl Context {
         self.values.clear();
     }
 
+    #[instrument(skip_all)]
     pub fn make_source_info_from_file(&mut self, file_name: &str) -> SourceInfo<StaticStrSource> {
         let path = PathBuf::from(file_name);
         let source_str = std::fs::read_to_string(&path).unwrap();
@@ -268,6 +275,7 @@ impl Context {
         }
     }
 
+    #[instrument(skip_all)]
     pub fn make_ropey_source_info_from_file(&mut self, file_name: &str) -> SourceInfo<RopeySource> {
         let path = PathBuf::from(file_name);
         let source_str = std::fs::read_to_string(&path).unwrap();
@@ -299,6 +307,7 @@ impl Context {
         }
     }
 
+    #[instrument(skip_all)]
     pub fn make_source_info_from_range(&mut self, range: Range) -> SourceInfo<StaticStrSource> {
         let source_path = PathBuf::from(range.source_path);
         let source = self.file_sources.get(&source_path).unwrap();
@@ -321,6 +330,7 @@ impl Context {
         }
     }
 
+    #[instrument(skip_all)]
     pub fn prepare(&mut self) -> Result<(), CompileError> {
         for id in self.top_level.clone() {
             self.assign_type(id);
@@ -402,25 +412,6 @@ impl Context {
                     })
                     .collect::<Vec<_>>()
             );
-
-            // println!(
-            //     "addressability matches: {:#?}",
-            //     self.addressable_matches
-            //         .iter()
-            //         .map(|tm| {
-            //             tm.ids
-            //                 .iter()
-            //                 .map(|id| {
-            //                     (
-            //                         self.nodes[*id].ty(),
-            //                         self.ranges[*id],
-            //                         self.addressable_nodes.contains(id),
-            //                     )
-            //                 })
-            //                 .collect::<Vec<_>>()
-            //         })
-            //         .collect::<Vec<_>>()
-            // );
         }
 
         // Check if any types are still unassigned
@@ -443,19 +434,27 @@ impl Context {
             }
         }
 
-        if self.errors.is_empty() {
-            self.predeclare_functions()
-        } else {
-            Err(self.errors[0].clone())
+        if !self.errors.is_empty() {
+            return Err(self.errors[0].clone());
         }
+
+        self.predeclare_string_constants()?;
+        self.predeclare_functions()?;
+
+        Ok(())
     }
 
+    #[instrument(skip_all)]
     pub fn get_symbol(&self, sym_id: NodeId) -> Sym {
         self.nodes[sym_id].as_symbol().unwrap()
     }
 
+    #[instrument(skip_all)]
     pub fn report_error(&self, err: CompileError) {
         match err {
+            CompileError::Message(msg) => {
+                println!("{}", msg);
+            }
             CompileError::Generic(msg, range) => {
                 println!("{:?}: {}", range, msg);
             }
@@ -468,10 +467,12 @@ impl Context {
         }
     }
 
+    #[instrument(skip_all)]
     pub fn char_offset_for_location(&self, source_path: &str, start: Location) -> usize {
         self.line_offsets[source_path][start.line - 1] + start.col
     }
 
+    #[instrument(skip_all)]
     pub fn char_span(&self, range: Range) -> usize {
         return self.char_offset_for_location(range.source_path, range.end)
             - self.char_offset_for_location(range.source_path, range.start);

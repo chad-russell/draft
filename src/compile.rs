@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::SourceLoc;
+// use cranelift_codegen::ir::SourceLoc;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 
 use cranelift_codegen::ir::{
@@ -13,6 +13,7 @@ use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context as CodegenContext;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
+use tracing::instrument;
 
 use crate::{CompileError, Context, IdVec, Node, NodeId, Op, StaticMemberResolution, Type};
 
@@ -23,6 +24,7 @@ pub enum Value {
 }
 
 impl Context {
+    #[instrument(skip_all)]
     pub fn make_module() -> JITModule {
         let mut flags_builder = settings::builder();
         flags_builder.set("is_pic", "false").unwrap();
@@ -68,6 +70,16 @@ impl Context {
         JITModule::new(jit_builder)
     }
 
+    #[instrument(skip_all)]
+    pub fn predeclare_string_constants(&mut self) -> Result<(), CompileError> {
+        self.module
+            .declare_data("string_constants", Linkage::Local, false, false)
+            .map_err(|err| CompileError::Message(err.to_string()))?;
+
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
     pub fn predeclare_functions(&mut self) -> Result<(), CompileError> {
         let mut codegen_ctx = self.module.make_context();
         let mut func_ctx = FunctionBuilderContext::new();
@@ -94,14 +106,10 @@ impl Context {
             .finalize_definitions()
             .expect("Failed to finalize definitions");
 
-        // if self.args.dump_ir {
-        //     let decls = self.module.declarations();
-        //     println!("{:?}", decls);
-        // }
-
         Ok(())
     }
 
+    #[instrument(skip_all)]
     pub fn predeclare_function(&mut self, id: NodeId) -> Result<(), CompileError> {
         if let Node::FnDefinition {
             name,
@@ -137,6 +145,7 @@ impl Context {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     fn func_name(&self, name: Option<NodeId>, anonymous_id: NodeId) -> String {
         name.map(|n| {
             let sym = self.nodes[n].as_symbol().unwrap();
@@ -153,6 +162,7 @@ impl Context {
         .unwrap_or_else(|| format!("anonymous__{}", anonymous_id.0))
     }
 
+    #[instrument(skip_all)]
     pub fn call_fn(&mut self, fn_name: &str) -> Result<(), CompileError> {
         let fn_name_interned = self.string_interner.get_or_intern(fn_name);
 
@@ -177,6 +187,7 @@ impl Context {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     fn get_cranelift_type(&self, param: NodeId) -> CraneliftType {
         match self.types[&param] {
             Type::I8 | Type::U8 | Type::Bool => types::I8,
@@ -196,18 +207,22 @@ impl Context {
         }
     }
 
+    #[instrument(skip_all)]
     fn get_pointer_type(&self) -> CraneliftType {
         self.module.isa().pointer_type()
     }
 
+    #[instrument(skip_all)]
     fn enum_tag_size(&self) -> u32 {
         std::mem::size_of::<u16>() as u32
     }
 
+    #[instrument(skip_all)]
     fn id_type_size(&self, param: NodeId) -> StackSize {
         self.type_size(self.types[&param])
     }
 
+    #[instrument(skip_all)]
     fn type_size(&self, ty: Type) -> StackSize {
         match ty {
             Type::I8 | Type::U8 | Type::Bool => 1,
@@ -241,6 +256,7 @@ impl Context {
         }
     }
 
+    #[instrument(skip_all)]
     pub fn get_func_id(&self, id: NodeId) -> FuncId {
         match self.values[&id] {
             Value::Func(f) => f,
@@ -248,6 +264,7 @@ impl Context {
         }
     }
 
+    #[instrument(skip_all)]
     pub fn get_func_signature(&self, func: NodeId, param_ids: &Vec<NodeId>) -> Signature {
         let func_ty = self.get_type(func);
         let return_ty = match func_ty {
@@ -274,10 +291,12 @@ impl Context {
         sig
     }
 
+    #[instrument(skip_all)]
     pub fn should_pass_id_by_ref(&self, id: NodeId) -> bool {
         self.is_aggregate_type(self.get_type(id))
     }
 
+    #[instrument(skip_all)]
     pub fn id_is_aggregate_type(&self, id: NodeId) -> bool {
         let mut base_ty = self.get_type(id);
         while let Type::Pointer(inner) = base_ty {
@@ -287,6 +306,7 @@ impl Context {
         self.is_aggregate_type(base_ty)
     }
 
+    #[instrument(skip_all)]
     pub fn is_aggregate_type(&self, ty: Type) -> bool {
         matches!(
             ty,
@@ -339,6 +359,7 @@ struct FunctionCompileContext<'a> {
 }
 
 impl<'a> FunctionCompileContext<'a> {
+    #[instrument(skip_all)]
     pub fn compile_id(&mut self, id: NodeId) -> Result<(), CompileError> {
         // idempotency
         match self.ctx.values.get(&id) {
@@ -1111,6 +1132,7 @@ impl<'a> FunctionCompileContext<'a> {
         }
     }
 
+    #[instrument(skip_all)]
     fn compile_ids(&mut self, ids: IdVec) -> Result<(), CompileError> {
         for id in self.ctx.id_vecs[ids].clone().borrow().iter() {
             self.compile_id(*id)?;
@@ -1119,6 +1141,7 @@ impl<'a> FunctionCompileContext<'a> {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     fn compile_id_for_call(
         &mut self,
         id: NodeId,
@@ -1167,15 +1190,18 @@ impl<'a> FunctionCompileContext<'a> {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     fn switch_to_block(&mut self, block: Block) {
         self.builder.switch_to_block(block);
         self.current_block = block;
     }
 
+    #[instrument(skip_all)]
     fn exit_current_block(&mut self) {
         self.exited_blocks.insert(self.current_block);
     }
 
+    #[instrument(skip_all)]
     fn store_in_slot_if_addressable(&mut self, id: NodeId) {
         if !self.ctx.addressable_nodes.contains(&id) {
             return;
@@ -1195,10 +1221,12 @@ impl<'a> FunctionCompileContext<'a> {
         self.ctx.values.insert(id, value);
     }
 
+    #[instrument(skip_all)]
     fn load(&mut self, ty: types::Type, value: CraneliftValue, offset: i32) -> CraneliftValue {
         self.builder.ins().load(ty, MemFlags::new(), value, offset)
     }
 
+    #[instrument(skip_all)]
     fn get_member_offset(&mut self, value: NodeId, member: NodeId) -> Result<u32, CompileError> {
         let member_name = self.ctx.nodes[member].as_symbol().unwrap();
 
@@ -1249,6 +1277,7 @@ impl<'a> FunctionCompileContext<'a> {
         ));
     }
 
+    #[instrument(skip_all)]
     fn as_cranelift_value(&mut self, value: Value) -> CraneliftValue {
         match value {
             Value::Value(val) => val,
@@ -1265,6 +1294,7 @@ impl<'a> FunctionCompileContext<'a> {
         }
     }
 
+    #[instrument(skip_all)]
     fn rvalue(&mut self, id: NodeId) -> CraneliftValue {
         let value = self.as_cranelift_value(self.ctx.values[&id]);
 
@@ -1276,6 +1306,7 @@ impl<'a> FunctionCompileContext<'a> {
         }
     }
 
+    #[instrument(skip_all)]
     fn store(&mut self, id: NodeId, dest: Value) {
         if self.ctx.addressable_nodes.contains(&id) {
             self.store_copy(id, dest);
@@ -1284,6 +1315,7 @@ impl<'a> FunctionCompileContext<'a> {
         }
     }
 
+    #[instrument(skip_all)]
     fn store_with_offset(&mut self, id: NodeId, dest: Value, offset: u32) {
         if self.ctx.addressable_nodes.contains(&id) {
             let dest = if offset == 0 {
@@ -1300,6 +1332,7 @@ impl<'a> FunctionCompileContext<'a> {
         }
     }
 
+    #[instrument(skip_all)]
     fn store_copy(&mut self, id: NodeId, dest: Value) {
         let size = self.ctx.id_type_size(id);
 
@@ -1309,6 +1342,7 @@ impl<'a> FunctionCompileContext<'a> {
         self.emit_small_memory_copy(dest_value, source_value, size as _);
     }
 
+    #[instrument(skip_all)]
     fn store_value(&mut self, id: NodeId, dest: Value, offset: Option<i32>) {
         let source_value = match self.ctx.values[&id] {
             Value::Value(value) => value,
@@ -1336,6 +1370,7 @@ impl<'a> FunctionCompileContext<'a> {
         }
     }
 
+    #[instrument(skip_all)]
     fn emit_small_memory_copy(
         &mut self,
         dest_value: CraneliftValue,

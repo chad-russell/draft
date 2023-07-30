@@ -108,14 +108,14 @@ fn test_vec_stuff_1() i64 {
 }
 
 // Declare the interafce itself
-struct Interface {
+struct IDoThing {
     data: *_T!,
     vtable: struct {
         do_thing: fn(n: *T) i64,
     },
 }
 
-fn do_thing(i: Interface!) _ {
+fn do_thing(i: IDoThing!) _ {
     return i.vtable.do_thing(i.data);
 }
 
@@ -125,7 +125,7 @@ struct IFoo {
 }
 
 fn foo_to_interface(foo: *IFoo) _ {
-    return Interface {
+    return IDoThing {
         data: foo,
         vtable: _{
             do_thing: fn(foo: *IFoo) i64 {
@@ -142,7 +142,7 @@ struct IBar {
 }
 
 fn bar_to_interface(bar: *IBar) _ {
-    return Interface {
+    return IDoThing {
         data: bar,
         vtable: _{
             do_thing: fn(bar: *IBar) i64 {
@@ -158,7 +158,7 @@ fn test_interfaces() i64 {
 
     let i1 = foo_to_interface(&f);
     // let i2 = bar_to_interface(&b);
-    let i2 = Interface { &b, _{ fn(bar: *IBar) i64 { return bar.x + bar.y; } } };
+    let i2 = IDoThing { &b, _{ fn(bar: *IBar) i64 { return bar.x + bar.y; } } };
 
     print_i64(do_thing(i1));
     print_i64(do_thing(i2));
@@ -207,9 +207,11 @@ fn assert_equal(a: _T!, b: T) {
 }
 
 fn main() i64 {
-    let te1 = 3i64;
-    let te2 = 3;
-    assert_equal(te1, te2);
+    {
+        let te1 = 3i64;
+        let te2 = 3;
+        assert_equal(te1, te2);
+    };
     
     let f = Foo { 3, 8 };
     let pf = &f;

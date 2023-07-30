@@ -6,6 +6,9 @@ pub struct Args {
     pub input: String,
 
     #[arg(long)]
+    pub tracing: bool,
+
+    #[arg(long)]
     pub dump_ir: bool,
 
     #[arg(long)]

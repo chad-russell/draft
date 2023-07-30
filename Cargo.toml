@@ -15,6 +15,6 @@ cranelift-frontend = "0.97.1"
 string-interner = "0.14.0"
 ropey = "1.6.0"
 clap = { version = "4.3.15", features = ["derive"] }
-
-[profile.release]
-debug = true
+tracing = "0.1.37"
+tracing-tracy = "0.10.2"
+tracing-subscriber = "0.3.17"

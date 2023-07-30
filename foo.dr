@@ -2,8 +2,8 @@ extern put_char(ch: u8);
 extern print_str(ch: *u8, len: i64);
 
 fn main() i64 {
-    let s = "Hello, Becca!\n";
-    print_str(s.data, s.len);
+    let a: []i64 = [1, 2, 3];
+    a -> into_iter -> print_each;
 
     return 0;
 }

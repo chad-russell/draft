@@ -41,20 +41,21 @@
 - [x] pipe/threading/ufcs operator
     - [ ] threading operator can choose where the argument gets threaded into
 - [x] strings
-- [ ] interfaces
 - [ ] modules, imports
-    - [ ] import "whatever/bar"::{ A, B::{C, D}, E::* }
+    - [ ] import {A, B::{C, D}, E::* } from "whatever/bar"
+- [ ] #const
+- [ ] interfaces
+- [ ] any / #astof(...)
 - [ ] short-circuit and/or operators
-- [ ] defer
-- [ ] question mark operator (how would this work? do we need interfaces after all?)
-- [ ] string interpolation (need a default stringification function for everything, how does that work? interfaces again?)
 - [ ] pattern matching (on enums only at first, very simple single-depth match)
     - [ ] `matches(...)`
     - [ ] `match`
     - [ ] `if let`
     - [ ] `let else`
+- [ ] defer
+- [ ] question mark operator
+- [ ] string interpolation (need a default stringification function for everything, how does that work? interfaces again?)
 - [ ] coroutines
-- [ ] any / #astof(...)
 - [ ] c interop
     - [x] extern functions POC
     - [ ] make sure extern functions works with libs/dylibs when compiling to binary
