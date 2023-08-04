@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use cranelift_module::DataId;
 use string_interner::StringInterner;
 
 use cranelift_jit::JITModule;
@@ -114,7 +115,9 @@ pub struct Context {
     pub id_vecs: IdVecs,
     pub node_scopes: DenseStorage<ScopeId>,
     pub polymorph_target: bool,
-    pub string_constants: Vec<NodeId>,
+    pub string_literals: Vec<NodeId>,
+    pub string_literal_offsets: SecondaryMap<usize>, // Offset into the global data segment for the start of the string literal with
+    pub string_literal_data_id: Option<DataId>,
 
     // stack of returns - pushed when entering parsing a function, popped when exiting
     pub returns: Vec<Vec<NodeId>>,
@@ -171,7 +174,9 @@ impl Context {
             polymorph_target: false,
             polymorph_sources: Default::default(),
             polymorph_copies: Default::default(),
-            string_constants: Default::default(),
+            string_literals: Default::default(),
+            string_literal_offsets: Default::default(),
+            string_literal_data_id: None,
 
             returns: Default::default(),
             resolves: Default::default(),
@@ -213,7 +218,9 @@ impl Context {
         self.node_scopes.clear();
         self.addressable_nodes.clear();
         self.polymorph_target = false;
-        self.string_constants.clear();
+        self.string_literals.clear();
+        self.string_literal_offsets.clear();
+        self.string_literal_data_id = None;
         self.polymorph_sources.clear();
         self.polymorph_copies.clear();
         self.returns.clear();

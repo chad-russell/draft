@@ -37,10 +37,10 @@ fn main() {
         )
         .expect("Failed to set tracing_tracy subscriber");
 
-        loop {
-            run(&mut context).unwrap();
-            context.reset();
-        }
+        // loop {
+        run(&mut context).unwrap();
+        // context.reset();
+        // }
     } else {
         match run(&mut context) {
             Ok(_) => {}

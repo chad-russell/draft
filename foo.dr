@@ -1,9 +1,18 @@
 extern put_char(ch: u8);
 extern print_str(ch: *u8, len: i64);
+extern print_i64(n: i64);
+
+fn print_string(s: string) {
+    print_str(s.data, s.len);
+    return;
+}
+
+fn sub(a: i64, b: i64) i64 {
+    return b;
+}
 
 fn main() i64 {
-    let a: []i64 = [1, 2, 3];
-    a -> into_iter -> print_each;
+    4 |> sub(@, 3) |> print_i64;
 
     return 0;
 }

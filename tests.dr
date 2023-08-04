@@ -153,15 +153,11 @@ fn bar_to_interface(bar: *IBar) _ {
 }
 
 fn test_interfaces() i64 {
-    let f = IFoo { x: 42 };
+    &IFoo { 42 } |> foo_to_interface |> do_thing |> print_i64;
+    
     let b = IBar { x: 1, y: 2 };
-
-    let i1 = foo_to_interface(&f);
-    // let i2 = bar_to_interface(&b);
     let i2 = IDoThing { &b, _{ fn(bar: *IBar) i64 { return bar.x + bar.y; } } };
-
-    print_i64(do_thing(i1));
-    print_i64(do_thing(i2));
+    i2 |> do_thing |> print_i64;
 
     return 0;
 }
@@ -190,7 +186,7 @@ fn add_two(m: i64, n: i64) i64 {
 }
 
 fn test_threading() i64 {
-    print_i64(3i64 -> add_two(8) -> add_two(8) -> add_one);
+    print_i64(3i64 |> add_two(8) |> add_two(8) |> add_one);
     return 0;
 }
 

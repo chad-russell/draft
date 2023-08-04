@@ -1,7 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::immediates::Imm64;
+use cranelift_codegen::ir::{FuncRef, GlobalValue, GlobalValueData};
 // use cranelift_codegen::ir::SourceLoc;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 
@@ -12,7 +14,7 @@ use cranelift_codegen::ir::{
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context as CodegenContext;
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
+use cranelift_module::{default_libcall_names, DataDescription, FuncId, Init, Linkage, Module};
 use tracing::instrument;
 
 use crate::{CompileError, Context, IdVec, Node, NodeId, Op, StaticMemberResolution, Type};
@@ -47,22 +49,8 @@ impl Context {
         // no hot swapping for now
         jit_builder.hotswap(false);
 
-        // jit_builder.symbol("__panic", panic_helper as *const u8);
-        // jit_builder.symbol("__dbg_poke", dbg_poke as *const u8);
-        // jit_builder.symbol("__dbg_repr_internal", dbg_repr_internal as *const u8);
-        // jit_builder.symbol("print_i8", print_i8 as *const u8);
-        // jit_builder.symbol("print_i16", print_i16 as *const u8);
-        // jit_builder.symbol("print_i32", print_i32 as *const u8);
         jit_builder.symbol("print_i64", print_i64 as *const u8);
-        // jit_builder.symbol("print_u8", print_u8 as *const u8);
-        // jit_builder.symbol("print_u16", print_u16 as *const u8);
-        // jit_builder.symbol("print_u32", print_u32 as *const u8);
-        // jit_builder.symbol("print_u64", print_u64 as *const u8);
-        // jit_builder.symbol("print_f32", print_f32 as *const u8);
         jit_builder.symbol("print_f64", print_f64 as *const u8);
-        // jit_builder.symbol("alloc", libc::malloc as *const u8);
-        // jit_builder.symbol("realloc", libc::realloc as *const u8);
-        // jit_builder.symbol("debug_data", &semantic as *const _ as *const u8);
         jit_builder.symbol("print_enum_tag", print_enum_tag as *const u8);
         jit_builder.symbol("put_char", put_char as *const u8);
         jit_builder.symbol("print_str", print_str as *const u8);
@@ -72,9 +60,26 @@ impl Context {
 
     #[instrument(skip_all)]
     pub fn predeclare_string_constants(&mut self) -> Result<(), CompileError> {
-        self.module
+        let data_id = self
+            .module
             .declare_data("string_constants", Linkage::Local, false, false)
             .map_err(|err| CompileError::Message(err.to_string()))?;
+        self.string_literal_data_id = Some(data_id);
+
+        let mut bytes = Vec::new();
+        for id in self.string_literals.iter() {
+            let Node::StringLiteral(sym) = self.nodes[id] else { unreachable!() };
+            let s = self.string_interner.resolve(sym.0).unwrap();
+            self.string_literal_offsets.insert(*id, bytes.len());
+            bytes.extend(s.as_bytes());
+        }
+
+        let mut desc = DataDescription::new();
+        desc.init = Init::Bytes {
+            contents: bytes.into_boxed_slice(),
+        };
+
+        self.module.define_data(data_id, &desc).unwrap();
 
         Ok(())
     }
@@ -315,7 +320,7 @@ impl Context {
     }
 }
 
-pub fn print_i64(n: u64) {
+pub fn print_i64(n: i64) {
     println!("{}", n);
 }
 
@@ -356,6 +361,8 @@ struct FunctionCompileContext<'a> {
     pub current_block: Block,          // where we are currently emitting instructions
     pub resolve_addr: Option<Value>, // the address of the stack slot where we store the value of any Node::Resolve we encounter
     pub resolve_jump_target: Option<Block>, // the jump target for any Node::Resolve we encounter
+    pub declared_func_ids: HashMap<FuncId, FuncRef>,
+    pub global_str_ptr: Option<GlobalValue>,
 }
 
 impl<'a> FunctionCompileContext<'a> {
@@ -540,6 +547,60 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
+            Node::BinOp { op, lhs, rhs } if op == Op::And => {
+                let variable = Variable::new(id.0);
+                self.builder.declare_var(variable, types::I8);
+
+                let test_rhs_block = self.builder.create_block();
+                let cont_block = self.builder.create_block();
+
+                self.compile_id(lhs)?;
+                let lhs_rvalue = self.rvalue(lhs);
+                self.builder.def_var(variable, lhs_rvalue);
+                self.builder
+                    .ins()
+                    .brif(lhs_rvalue, test_rhs_block, &[], cont_block, &[]);
+
+                self.switch_to_block(test_rhs_block);
+                self.compile_id(rhs)?;
+                let rhs_rvalue = self.rvalue(rhs);
+                self.builder.def_var(variable, rhs_rvalue);
+                self.builder.ins().jump(cont_block, &[]);
+
+                self.switch_to_block(cont_block);
+
+                let variable_value = self.builder.use_var(variable);
+                self.ctx.values.insert(id, Value::Value(variable_value));
+
+                Ok(())
+            }
+            Node::BinOp { op, lhs, rhs } if op == Op::Or => {
+                let variable = Variable::new(id.0);
+                self.builder.declare_var(variable, types::I8);
+
+                let test_rhs_block = self.builder.create_block();
+                let cont_block = self.builder.create_block();
+
+                self.compile_id(lhs)?;
+                let lhs_rvalue = self.rvalue(lhs);
+                self.builder.def_var(variable, lhs_rvalue);
+                self.builder
+                    .ins()
+                    .brif(lhs_rvalue, cont_block, &[], test_rhs_block, &[]);
+
+                self.switch_to_block(test_rhs_block);
+                self.compile_id(rhs)?;
+                let rhs_rvalue = self.rvalue(rhs);
+                self.builder.def_var(variable, rhs_rvalue);
+                self.builder.ins().jump(cont_block, &[]);
+
+                self.switch_to_block(cont_block);
+
+                let variable_value = self.builder.use_var(variable);
+                self.ctx.values.insert(id, Value::Value(variable_value));
+
+                Ok(())
+            }
             Node::BinOp { op, lhs, rhs } => {
                 self.compile_id(lhs)?;
                 self.compile_id(rhs)?;
@@ -607,6 +668,7 @@ impl<'a> FunctionCompileContext<'a> {
                                 lhs_value,
                                 rhs_value,
                             ),
+                            Op::And | Op::Or => unreachable!(),
                         };
                         self.ctx.values.insert(id, Value::Value(value));
                     }
@@ -1044,30 +1106,8 @@ impl<'a> FunctionCompileContext<'a> {
                 Ok(())
             }
             Node::StringLiteral(sym) => {
-                // todo(chad): strings should live in global memory. So this is pretty much all a hack for now
+                // todo(chad): store this length somewhere the first time we look it up, so we don't have to look it up again just to get the length
                 let sym_str = self.ctx.string_interner.resolve(sym.0).unwrap();
-
-                let member_size = self.ctx.type_size(Type::U8);
-
-                // create stack slot big enough for all of the members
-                let member_storage_slot = self.builder.create_sized_stack_slot(StackSlotData {
-                    kind: StackSlotKind::ExplicitSlot,
-                    size: member_size * sym_str.len() as u32,
-                });
-
-                for (i, byte) in sym_str.bytes().enumerate() {
-                    let byte = self.builder.ins().iconst(types::I8, byte as i64);
-
-                    self.builder
-                        .ins()
-                        .stack_store(byte, member_storage_slot, i as i32);
-                }
-
-                let member_storage_slot_addr = self.builder.ins().stack_addr(
-                    self.ctx.module.isa().pointer_type(),
-                    member_storage_slot,
-                    0,
-                );
 
                 let slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
@@ -1078,10 +1118,29 @@ impl<'a> FunctionCompileContext<'a> {
                         .ins()
                         .stack_addr(self.ctx.module.isa().pointer_type(), slot, 0);
 
+                let gsp = self.global_str_ptr.get_or_insert_with(|| {
+                    self.ctx.module.declare_data_in_func(
+                        self.ctx.string_literal_data_id.unwrap(),
+                        self.builder.func,
+                    )
+                });
+
+                let offset = *self.ctx.string_literal_offsets.get(&id).unwrap();
+                let offset_str_ptr = if offset == 0 {
+                    *gsp
+                } else {
+                    self.builder.create_global_value(GlobalValueData::IAddImm {
+                        base: *gsp,
+                        offset: Imm64::new(offset as _),
+                        global_type: types::I64,
+                    })
+                };
+                let offset_str_ptr = self.builder.ins().global_value(types::I64, offset_str_ptr);
+
                 let len = self.builder.ins().iconst(types::I64, sym_str.len() as i64);
                 self.builder
                     .ins()
-                    .store(MemFlags::new(), member_storage_slot_addr, slot_addr, 0);
+                    .store(MemFlags::new(), offset_str_ptr, slot_addr, 0);
                 self.builder.ins().store(MemFlags::new(), len, slot_addr, 8);
 
                 self.ctx.values.insert(id, Value::Value(slot_addr));
@@ -1159,10 +1218,11 @@ impl<'a> FunctionCompileContext<'a> {
 
         // direct call?
         let call_inst = if let Some(Value::Func(func_id)) = self.ctx.values.get(&func) {
-            let func_ref = self
-                .ctx
-                .module
-                .declare_func_in_func(*func_id, self.builder.func);
+            let func_ref = *self.declared_func_ids.entry(*func_id).or_insert_with(|| {
+                self.ctx
+                    .module
+                    .declare_func_in_func(*func_id, self.builder.func)
+            });
             self.builder.ins().call(func_ref, &param_values)
         } else {
             let sig_ref = self
@@ -1282,10 +1342,11 @@ impl<'a> FunctionCompileContext<'a> {
         match value {
             Value::Value(val) => val,
             Value::Func(func_id) => {
-                let func_ref = self
-                    .ctx
-                    .module
-                    .declare_func_in_func(func_id, self.builder.func);
+                let func_ref = *self.declared_func_ids.entry(func_id).or_insert_with(|| {
+                    self.ctx
+                        .module
+                        .declare_func_in_func(func_id, self.builder.func)
+                });
 
                 self.builder
                     .ins()
@@ -1347,10 +1408,11 @@ impl<'a> FunctionCompileContext<'a> {
         let source_value = match self.ctx.values[&id] {
             Value::Value(value) => value,
             Value::Func(func_id) => {
-                let func_ref = self
-                    .ctx
-                    .module
-                    .declare_func_in_func(func_id, self.builder.func);
+                let func_ref = *self.declared_func_ids.entry(func_id).or_insert_with(|| {
+                    self.ctx
+                        .module
+                        .declare_func_in_func(func_id, self.builder.func)
+                });
                 self.builder
                     .ins()
                     .func_addr(self.ctx.get_cranelift_type(id), func_ref)
@@ -1448,6 +1510,8 @@ impl<'a> ToplevelCompileContext<'a> {
                     current_block: ebb,
                     resolve_addr: None,
                     resolve_jump_target: None,
+                    declared_func_ids: Default::default(),
+                    global_str_ptr: None,
                 };
 
                 for &stmt in builder_ctx.ctx.id_vecs[stmts].clone().borrow().iter() {

@@ -932,6 +932,11 @@ impl Context {
                 self.assign_type(rhs);
 
                 match op {
+                    Op::And | Op::Or => {
+                        self.types.insert(id, Type::Bool);
+                        self.match_types(id, lhs);
+                        self.match_types(lhs, rhs);
+                    }
                     Op::Add | Op::Sub | Op::Mul | Op::Div => {
                         self.match_types(lhs, rhs);
                         self.match_types(id, lhs);
@@ -1477,6 +1482,7 @@ impl Context {
 
                 self.assign_type(block);
             }
+            Node::ThreadingParamTarget => todo!(),
         }
 
         return true;

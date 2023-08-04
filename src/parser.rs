@@ -133,7 +133,8 @@ pub enum Token {
     GtEq,
     LtEq,
     Eq,
-    Arrow,
+    Thread,
+    Atmark,
     Fn,
     Extern,
     Let,
@@ -142,6 +143,7 @@ pub enum Token {
     For,
     While,
     In,
+    Bool,
     I8,
     I16,
     I32,
@@ -163,6 +165,8 @@ pub enum Token {
     Dash,
     Star,
     Slash,
+    And,
+    Or,
     Return,
     Resolve,
     Struct,
@@ -370,6 +374,12 @@ impl<'a, W: Source> Parser<'a, W> {
         if self.source_info.prefix_keyword("in", Token::In) {
             return;
         }
+        if self.source_info.prefix_keyword("and", Token::And) {
+            return;
+        }
+        if self.source_info.prefix_keyword("or", Token::Or) {
+            return;
+        }
         if self.source_info.prefix_keyword("return", Token::Return) {
             return;
         }
@@ -380,6 +390,9 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
         if self.source_info.prefix_keyword("enum", Token::Enum) {
+            return;
+        }
+        if self.source_info.prefix_keyword("bool", Token::Bool) {
             return;
         }
         if self.source_info.prefix_keyword("i8", Token::I8) {
@@ -481,7 +494,10 @@ impl<'a, W: Source> Parser<'a, W> {
         if self.source_info.prefix("=", Token::Eq) {
             return;
         }
-        if self.source_info.prefix("->", Token::Arrow) {
+        if self.source_info.prefix("@", Token::Atmark) {
+            return;
+        }
+        if self.source_info.prefix("|>", Token::Thread) {
             return;
         }
         if self.source_info.prefix("_{", Token::UnderscoreLCurly) {
@@ -763,7 +779,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse_value_params(&mut self) -> Result<IdVec, CompileError> {
+    pub fn parse_value_params(&mut self, is_threading_func_call: bool) -> Result<IdVec, CompileError> {
         let mut params = Vec::new();
 
         while self.source_info.top.tok != Token::RParen && self.source_info.top.tok != Token::RCurly
@@ -781,6 +797,13 @@ impl<'a, W: Source> Parser<'a, W> {
                         value,
                         index: params.len() as u16,
                     },
+                ));
+            } else if is_threading_func_call && self.source_info.top.tok == Token::Atmark {
+                let range = self.source_info.top.range;
+                self.pop(); // `@`
+                params.push(self.ctx.push_node(
+                    range,
+                    Node::ThreadingParamTarget,
                 ));
             } else {
                 let value = self.parse_expression(true)?;
@@ -1132,7 +1155,7 @@ impl<'a, W: Source> Parser<'a, W> {
                         break;
                     }
 
-                    let id = self.parse_expression_piece(struct_literals_allowed)?;
+                    let id = self.parse_expression_piece(struct_literals_allowed, false)?;
                     output.push(Shunting::Id(id))
                 }
                 Token::Star => {
@@ -1151,7 +1174,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
                         self.pop(); // `*`
 
-                        let expr = self.parse_expression_piece(struct_literals_allowed)?;
+                        let expr = self.parse_expression_piece(struct_literals_allowed, false)?;
                         let id = self.ctx.push_node(
                             Range::new(start, self.ctx.ranges[expr].end, self.source_info.path),
                             Node::Deref(expr),
@@ -1160,7 +1183,7 @@ impl<'a, W: Source> Parser<'a, W> {
                         output.push(Shunting::Id(id))
                     }
                 }
-                Token::Arrow => {
+                Token::Thread => {
                     if !parsing_op {
                         break;
                     }
@@ -1176,10 +1199,10 @@ impl<'a, W: Source> Parser<'a, W> {
                     let mut values = vec![value];
 
                     // Threading function call?
-                    while self.source_info.top.tok == Token::Arrow {
-                        self.pop(); // `->`
-                        let value = self.parse_expression_piece(false)?;
-                        values.push(value);
+                    while self.source_info.top.tok == Token::Thread {
+                        self.pop(); // `|>`
+                        let value = self.parse_expression_piece(false, true)?;
+                        values.push(value );
                     }
 
                     let unrolled = self.unroll_threading_call(&mut values);
@@ -1194,7 +1217,9 @@ impl<'a, W: Source> Parser<'a, W> {
                 | Token::Gt
                 | Token::Lt
                 | Token::GtEq
-                | Token::LtEq => {
+                | Token::LtEq 
+                | Token::And 
+                | Token::Or => {
                     if !parsing_op {
                         break;
                     }
@@ -1260,14 +1285,36 @@ impl<'a, W: Source> Parser<'a, W> {
         let (inner_func_id, params) = match self.ctx.nodes[inner_func_id] {
             Node::Call { func, params } | Node::ThreadingCall { func, params} => {
                 let params_vec = &self.ctx.id_vecs[params];
-                params_vec.borrow_mut().insert(0, value_param_id);
 
+                // If one of the params is a threading target, replace it with the param in question
+                // If more than one of the params is a threading target, that's an error
+                // If none are a threading target, insert the param at position 0
+                
+                let mut threading_target = None;
                 for (pid, param) in params_vec.borrow().iter().enumerate() {
                     match &mut self.ctx.nodes[*param] {
-                        Node::ValueParam { index, .. } => {
-                            *index = pid as u16;
+                        Node::ThreadingParamTarget => {
+                            if threading_target.is_some() {
+                                self.ctx.errors.push(CompileError::Node("Multiple threading param targets specified - can have at most one in a threading call".to_string(), *param));
+                            }
+                            threading_target = Some(pid);
                         },
-                        a => panic!("Expected ValueParam, got {}", a.ty()),
+                        _ => ()
+                    }
+                }
+
+                if let Some(tt) = threading_target {
+                    params_vec.borrow_mut()[tt] = value_param_id;
+                } else {
+                    params_vec.borrow_mut().insert(0, value_param_id);
+
+                    for (pid, param) in params_vec.borrow().iter().enumerate() {
+                        match &mut self.ctx.nodes[*param] {
+                            Node::ValueParam { index, .. } => {
+                                *index = pid as u16;
+                            },
+                            a => panic!("Expected ValueParam, got {}", a.ty()),
+                        }
                     }
                 }
             
@@ -1288,6 +1335,7 @@ impl<'a, W: Source> Parser<'a, W> {
     pub fn parse_expression_piece(
         &mut self,
         struct_literals_allowed: bool,
+        is_threading_func_call: bool,
     ) -> Result<NodeId, CompileError> {
         let start = self.source_info.top.range.start;
 
@@ -1315,14 +1363,14 @@ impl<'a, W: Source> Parser<'a, W> {
                     Node::StringLiteral(sym),
                 );
                 self.ctx.addressable_nodes.insert(id);
-                self.ctx.string_constants.push(id);
+                self.ctx.string_literals.push(id);
                 Ok(id)
             }
             Token::Fn => self.parse_fn(true),
             Token::Star => {
                 self.pop(); // `*`
 
-                let expr = self.parse_expression_piece(true)?;
+                let expr = self.parse_expression_piece(true, false)?;
                 let id = self.ctx.push_node(
                     Range::new(start, self.ctx.ranges[expr].end, self.source_info.path),
                     Node::Deref(expr),
@@ -1333,7 +1381,7 @@ impl<'a, W: Source> Parser<'a, W> {
             Token::AddressOf => {
                 self.pop(); // `&`
 
-                let expr = self.parse_expression_piece(true)?;
+                let expr = self.parse_expression_piece(true, false)?;
                 self.ctx.addressable_nodes.insert(expr);
 
                 let end = self.ctx.ranges[expr].end;
@@ -1490,7 +1538,7 @@ impl<'a, W: Source> Parser<'a, W> {
             // function call?
             while self.source_info.top.tok == Token::LParen {
                 self.pop(); // `(`
-                let params = self.parse_value_params()?;
+                let params = self.parse_value_params(is_threading_func_call)?;
                 let end = self.expect_range(start, Token::RParen)?.end;
                 value = self.ctx.push_node(
                     Range::new(start, end, self.source_info.path),
@@ -1566,7 +1614,7 @@ impl<'a, W: Source> Parser<'a, W> {
             Some(sym)
         };
 
-        let params = self.parse_value_params()?;
+        let params = self.parse_value_params(false)?;
         let range = self.expect_range(start, Token::RCurly)?;
 
         let struct_node = self
@@ -1841,6 +1889,11 @@ impl<'a, W: Source> Parser<'a, W> {
     #[instrument(skip_all)]
     fn parse_type(&mut self) -> Result<NodeId, CompileError> {
         match self.source_info.top.tok {
+            Token::Bool => {
+                let range = self.source_info.top.range;
+                self.pop();
+                Ok(self.ctx.push_node(range, Node::Type(Type::Bool)))
+            }
             Token::I8 => {
                 let range = self.source_info.top.range;
                 self.pop();
@@ -2210,12 +2263,14 @@ pub enum Op {
     Lt,
     GtEq,
     LtEq,
+    And,
+    Or,
 }
 
 impl Op {
     fn precedence(self) -> u8 {
         match self {
-            Op::Add | Op::Sub => 1,
+            Op::And | Op::Or | Op::Add | Op::Sub => 1,
             Op::Mul | Op::Div => 2,
             Op::Gt | Op::Lt | Op::GtEq | Op::LtEq | Op::EqEq | Op::Neq => 3,
         }
@@ -2235,6 +2290,8 @@ impl From<Token> for Op {
             Token::Lt => Op::Lt,
             Token::GtEq => Op::GtEq,
             Token::LtEq => Op::LtEq,
+            Token::And => Op::And,
+            Token::Or => Op::Or,
             _ => unreachable!(),
         }
     }
