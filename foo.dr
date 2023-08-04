@@ -15,7 +15,6 @@ struct Foo { }
 
 impl IFoo for Foo {
     fn foo() {
-        let m: Foo = self;
         print_string("Foo");
         return;
     }
