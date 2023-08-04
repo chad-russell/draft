@@ -10,9 +10,9 @@ use cranelift_jit::JITModule;
 use tracing::instrument;
 
 use crate::{
-    AddressableMatch, Args, CompileError, IdVec, Location, Node, NodeId, Range, RopeySource, Scope,
-    ScopeId, Scopes, Source, SourceInfo, StaticStrSource, Sym, Type, TypeMatch, UnificationData,
-    Value,
+    AddressableMatch, Args, CompileError, DraftResult, IdVec, Location, Node, NodeId, Range,
+    RopeySource, Scope, ScopeId, Scopes, Source, SourceInfo, StaticStrSource, Sym, Type, TypeMatch,
+    UnificationData, Value,
 };
 
 #[derive(Clone)]
@@ -338,7 +338,7 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn prepare(&mut self) -> Result<(), CompileError> {
+    pub fn prepare(&mut self) -> DraftResult<()> {
         for id in self.top_level.clone() {
             self.assign_type(id);
             self.unify_types();

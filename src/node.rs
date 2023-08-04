@@ -72,6 +72,11 @@ pub enum Node {
         params: IdVec,
         return_ty: Option<NodeId>,
     },
+    InterfaceFnDecl {
+        name: NodeId,
+        params: IdVec,
+        return_ty: Option<NodeId>,
+    },
     StructDeclParam {
         name: NodeId,
         ty: Option<NodeId>,
@@ -158,6 +163,15 @@ pub enum Node {
         value: NodeId,
     },
     SizeOf(NodeId),
+    Interface {
+        name: NodeId,
+        fns: IdVec,
+    },
+    Impl {
+        interface: NodeId,
+        ty: NodeId,
+        impls: IdVec,
+    },
 }
 
 impl Node {
@@ -207,6 +221,9 @@ impl Node {
             Node::ArrayAccess { .. } => "ArrayAccess".to_string(),
             Node::Cast { .. } => "Cast".to_string(),
             Node::SizeOf(_) => "SizeOf".to_string(),
+            Node::Interface { .. } => "Interface".to_string(),
+            Node::InterfaceFnDecl { .. } => "InterfaceFnDecl".to_string(),
+            Node::Impl { .. } => "Impl".to_string(),
         }
     }
 }

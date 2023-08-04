@@ -14,6 +14,7 @@
     - [x] functions
     - [x] structs
     - [x] enums
+    - [ ] interfaces
 - [x] booleans
 - [x] if/else
     - [x] as expressions
@@ -21,7 +22,14 @@
 - [x] enums
 - [x] #cast
     - [x] restrict to only pointers (?)
-- [x] arrays
+- [-] slices
+    - [ ] Make a distinction between arrays and slices:
+        `let a: [3]i64 = [1, 2, 3];` is basically identical memory-wise to a struct with 3 members. Can be indexed like a slice
+        `let a: [_]i64 = [1, 2, 3];` is the same thing, inferring 3 as the len
+        `let a: []i64 = _{ data: &[1, 2, 3], len: 3 };` is a slice. So an array literal expression can be type-coerced to an array or a slice
+        `let a: []i64 = [1, 2, 3] as []i64;` is the same as above
+        `let a: []i64 = [1, 2, 3] as []_;` is the same as above
+        `let a: []i64 = [1, 2, 3] as _;` is the same as above
 - [x] for loops
 - [x] !=, <, >, <=, >= operators
 - [x] while loops
@@ -37,6 +45,10 @@
     - [ ] `if let`
     - [ ] `let else`
 - [ ] interfaces
+    - [ ] dynamic
+    - [ ] static
+    - [ ] default implementation for methods
+    - [ ] implement interface for a polymorph (generically)
 - [ ] continue
 - [ ] defer
 - [ ] labelled blocks (use as target for resolve/continue/defer)
@@ -90,7 +102,7 @@ interface SayHello {
 // struct SayHello {
 //   data: *_T!,
 //   vtable: *struct{
-//     fn say_hello(self: *T),
+//     say_hello: fn(self: *T),
 //   }
 // }
 
@@ -105,25 +117,32 @@ impl SayHello for Foo {
     }
 }
 
-fn dynamic_say_hello(s: SayHello!(*)) {
-    s..say_hello();
+fn dynamic_say_hello(s: dyn SayHello) {
+    s->say_hello();
 }
 
-fn static_say_hello_1(s: SayHello!(_T!)) {
-    s..say_hello();
+fn static_say_hello_1(s: SayHello for _T!) {
+    s->say_hello();
 }
 
 fn static_say_hello_2(s: _T!) {
-    (impl SayHello for T)::say_hello(&s);
+    // #vtable resolves to a module containing symbols for each fn in the implementation of SayHello for T
+    #vtable(SayHello, T)::say_hello(&s);  
+
+    // #vtable_ptr resolves to a pointer to global memory where the vtable is stored
+    // equivalent to: `(s as dyn SayHello).vtable`
+    #vtable_ptr(SayHello, T).say_hello(&s);  
 }
 
 fn main() {
     let f = Foo { 3, 4 };
 
-    let fsh = impl SayHello for Foo;
+    let fsh = f as dyn SayHello;
     dynamic_say_hello(fsh);
 
-    static_say_hello(f);
+    static_say_hello_1(f as SayHello);
+
+    static_say_hello_2(f);
 }
 
 ---

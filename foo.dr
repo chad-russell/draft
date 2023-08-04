@@ -7,12 +7,20 @@ fn print_string(s: string) {
     return;
 }
 
-fn sub(a: i64, b: i64) i64 {
-    return b;
+interface IFoo {
+    fn foo();
+}
+
+struct Foo { }
+
+impl IFoo for Foo {
+    fn foo() {
+        let m: Foo = self;
+        print_string("Foo");
+        return;
+    }
 }
 
 fn main() i64 {
-    4 |> sub(@, 3) |> print_i64;
-
     return 0;
 }

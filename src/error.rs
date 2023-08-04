@@ -8,3 +8,5 @@ pub enum CompileError {
     Node(String, NodeId),
     Node2(String, NodeId, NodeId),
 }
+
+pub type DraftResult<T> = Result<T, CompileError>;

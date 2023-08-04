@@ -4,7 +4,7 @@ use string_interner::symbol::SymbolU32;
 use tracing::instrument;
 
 use crate::{
-    CompileError, Context, IdVec, Node, NodeElse, NodeId, Source, SourceInfo, StaticStrSource, Type,
+    CompileError, DraftResult, Context, IdVec, Node, NodeElse, NodeId, Source, SourceInfo, StaticStrSource, Type,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
@@ -136,6 +136,8 @@ pub enum Token {
     Thread,
     Atmark,
     Fn,
+    Interface,
+    Impl,
     Extern,
     Let,
     If,
@@ -351,6 +353,12 @@ impl<'a, W: Source> Parser<'a, W> {
         }
 
         if self.source_info.prefix_keyword("fn", Token::Fn) {
+            return;
+        }
+        if self.source_info.prefix_keyword("interface", Token::Interface) {
+            return;
+        }
+        if self.source_info.prefix_keyword("impl", Token::Impl) {
             return;
         }
         if self.source_info.prefix_keyword("extern", Token::Extern) {
@@ -652,7 +660,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    fn expect(&mut self, tok: Token) -> Result<(), CompileError> {
+    fn expect(&mut self, tok: Token) -> DraftResult<()> {
         match self.source_info.top.tok {
             t if t == tok => {
                 self.pop();
@@ -667,7 +675,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    fn expect_range(&mut self, start: Location, token: Token) -> Result<Range, CompileError> {
+    fn expect_range(&mut self, start: Location, token: Token) -> DraftResult<Range> {
         let range = self
             .source_info
             .make_range(start, self.source_info.top.range.end);
@@ -683,7 +691,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse(&mut self) -> Result<(), CompileError> {
+    pub fn parse(&mut self) -> DraftResult<()> {
         self.pop();
         self.pop();
 
@@ -696,9 +704,11 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse_top_level(&mut self) -> Result<NodeId, CompileError> {
+    pub fn parse_top_level(&mut self) -> DraftResult<NodeId> {
         let tl = match self.source_info.top.tok {
             Token::Fn => self.parse_fn(false),
+            Token::Interface => self.parse_interface(),
+            Token::Impl => self.parse_impl(),
             Token::Extern => self.parse_extern(),
             Token::Struct => self.parse_struct_definition(),
             Token::Enum => self.parse_enum_definition(),
@@ -713,7 +723,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    fn parse_symbol(&mut self) -> Result<NodeId, CompileError> {
+    fn parse_symbol(&mut self) -> DraftResult<NodeId> {
         let range = self.source_info.top.range;
         match self.source_info.top.tok {
             Token::Symbol(sym) => {
@@ -728,7 +738,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse_poly_specialize(&mut self, sym: Sym) -> Result<NodeId, CompileError> {
+    pub fn parse_poly_specialize(&mut self, sym: Sym) -> DraftResult<NodeId> {
         let mut range = self.source_info.top.range;
 
         self.pop();
@@ -779,7 +789,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse_value_params(&mut self, is_threading_func_call: bool) -> Result<IdVec, CompileError> {
+    pub fn parse_value_params(&mut self, is_threading_func_call: bool) -> DraftResult<IdVec> {
         let mut params = Vec::new();
 
         while self.source_info.top.tok != Token::RParen && self.source_info.top.tok != Token::RCurly
@@ -828,7 +838,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    fn parse_decl_params(&mut self, parse_type: DeclParamParseType) -> Result<IdVec, CompileError> {
+    fn parse_decl_params(&mut self, parse_type: DeclParamParseType) -> DraftResult<IdVec> {
         let mut params = Vec::new();
 
         while self.source_info.top.tok != Token::RParen && self.source_info.top.tok != Token::RCurly
@@ -906,7 +916,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse_struct_definition(&mut self) -> Result<NodeId, CompileError> {
+    pub fn parse_struct_definition(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
         self.pop(); // `struct`
@@ -952,7 +962,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse_enum_definition(&mut self) -> Result<NodeId, CompileError> {
+    pub fn parse_enum_definition(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
         self.pop(); // `enum`
@@ -996,7 +1006,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse_fn(&mut self, anonymous: bool) -> Result<NodeId, CompileError> {
+    pub fn parse_fn(&mut self, anonymous: bool) -> DraftResult<NodeId> {
         let old_polymorph_target = self.ctx.polymorph_target;
         self.ctx.polymorph_target = false;
 
@@ -1074,7 +1084,184 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse_extern(&mut self) -> Result<NodeId, CompileError> {
+    pub fn parse_impl_fn(&mut self, for_id: NodeId) -> DraftResult<NodeId> {
+        let start = self.source_info.top.range.start;
+
+        self.pop(); // `fn`
+
+        let name = self.parse_symbol()?;
+        let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
+
+        // open a new scope
+        let pushed_scope = self.ctx.push_scope();
+
+        self.in_fn_params_decl = true;
+
+        let self_param_range = self.source_info.top.range;
+        let self_symbol = Sym(self.ctx.string_interner.get_or_intern("self"));
+        let self_symbol_node = self.ctx.push_node(self_param_range, Node::Symbol(self_symbol));
+        let self_ptr_ty = self.ctx.push_node(self_param_range, Node::Type(Type::Pointer(for_id)));
+        let self_param = self.ctx.push_node(self_param_range, Node::FnDeclParam { 
+            name: self_symbol_node, 
+            ty: Some(self_ptr_ty), 
+            default: None, 
+            index: 0 
+        });
+        self.ctx.scope_insert(self_symbol, self_param);
+        
+        self.expect(Token::LParen)?;
+        let params = self.parse_decl_params(DeclParamParseType::Fn)?;
+        let params_vec = self.ctx.id_vecs[params].clone();
+        params_vec.borrow_mut().insert(0, self_param);
+        for (idx, &p) in params_vec.borrow_mut().iter().enumerate() {
+            let Node::FnDeclParam { index, .. } = &mut self.ctx.nodes[p] else { unreachable!() };
+            *index = idx as u16;
+        }
+
+        self.expect(Token::RParen)?;
+        self.in_fn_params_decl = false;
+
+        let return_ty = if self.source_info.top.tok != Token::LCurly {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        self.expect(Token::LCurly)?;
+
+        self.ctx.returns.push(Vec::new());
+
+        let mut stmts = Vec::new();
+        while self.source_info.top.tok != Token::RCurly {
+            let stmt = self.parse_block_stmt()?;
+            stmts.push(stmt);
+        }
+        let stmts = self.ctx.push_id_vec(stmts);
+
+        let range = self.expect_range(start, Token::RCurly)?;
+
+        let returns = self.ctx.returns.pop().unwrap();
+        let returns = self.ctx.push_id_vec(returns);
+        let func = self.ctx.push_node(
+            range,
+            Node::FnDefinition {
+                name: Some(name),
+                scope: self.ctx.top_scope,
+                params,
+                return_ty,
+                stmts,
+                returns,
+            },
+        );
+
+        // pop the top scope
+        self.ctx.pop_scope(pushed_scope);
+
+        if !self.is_polymorph_copying {
+            self.ctx.scope_insert(name_sym, func);
+        }
+
+        self.ctx.funcs.push(func);
+
+        Ok(func)
+    }
+
+    #[instrument(skip_all)]
+    pub fn parse_interface(&mut self) -> DraftResult<NodeId> {
+        let start = self.source_info.top.range.start;
+        self.pop(); // `interface`
+
+        let name = self.parse_symbol()?;
+        let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
+
+        let pushed_scope = self.ctx.push_scope();
+
+        let mut fns = Vec::new();
+
+        self.expect(Token::LCurly)?;
+        while self.source_info.top.tok != Token::RCurly {
+            let new_fn = self.parse_fn_decl()?;
+            fns.push(new_fn);
+        }
+        let range = self.expect_range(start, Token::RCurly)?;
+
+        self.ctx.pop_scope(pushed_scope);
+
+        let fns = self.ctx.push_id_vec(fns);
+
+        let interface_id = self.ctx.push_node(range, Node::Interface { name, fns });
+
+        self.ctx.scope_insert(name_sym, interface_id);
+
+        Ok(interface_id)
+    }
+
+    #[instrument(skip_all)]
+    pub fn parse_impl(&mut self) -> DraftResult<NodeId> {
+        let start = self.source_info.top.range.start;
+
+        self.pop(); // `impl`
+
+        let interface = self.parse_symbol()?;
+
+        self.expect(Token::For)?;
+
+        let ty = self.parse_type()?;
+        
+        self.expect(Token::LCurly)?;
+
+        let mut impls = Vec::new();
+
+        while self.source_info.top.tok != Token::RCurly {
+            let fn_impl = self.parse_impl_fn(ty)?; 
+            impls.push(fn_impl);
+        }
+
+        let impls = self.ctx.push_id_vec(impls);
+
+        let range = self.expect_range(start, Token::RCurly)?;
+
+        Ok(self.ctx.push_node(range, Node::Impl {
+            interface, ty, impls
+        }))
+    }
+
+    #[instrument(skip_all)]
+    pub fn parse_fn_decl(&mut self) -> DraftResult<NodeId> {
+        let start = self.source_info.top.range.start;
+
+        self.pop(); // `fn`
+
+        let name = self.parse_symbol()?;
+
+        self.in_fn_params_decl = true;
+        self.expect(Token::LParen)?;
+        let params = self.parse_decl_params(DeclParamParseType::Fn)?;
+        self.expect(Token::RParen)?;
+        self.in_fn_params_decl = false;
+
+        let return_ty = if self.source_info.top.tok != Token::Semicolon {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        let range = self.expect_range(start, Token::Semicolon)?;
+
+        let id = self.ctx.push_node(
+            range,
+            Node::InterfaceFnDecl {
+                name,
+                params,
+                return_ty,
+            },
+        );
+
+        Ok(id)
+    }
+
+    #[instrument(skip_all)]
+    pub fn parse_extern(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
         self.pop(); // `extern`
@@ -1116,7 +1303,7 @@ impl<'a, W: Source> Parser<'a, W> {
     pub fn parse_expression(
         &mut self,
         struct_literals_allowed: bool,
-    ) -> Result<NodeId, CompileError> {
+    ) -> DraftResult<NodeId> {
         let mut operators = Vec::<Op>::new();
         let mut output = Vec::new();
 
@@ -1336,7 +1523,7 @@ impl<'a, W: Source> Parser<'a, W> {
         &mut self,
         struct_literals_allowed: bool,
         is_threading_func_call: bool,
-    ) -> Result<NodeId, CompileError> {
+    ) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
         let mut value = match self.source_info.top.tok {
@@ -1602,7 +1789,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    fn parse_struct_literal(&mut self) -> Result<NodeId, CompileError> {
+    fn parse_struct_literal(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
         let name = if self.source_info.top.tok == Token::UnderscoreLCurly {
@@ -1627,7 +1814,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    fn parse_numeric_literal(&mut self) -> Result<NodeId, CompileError> {
+    fn parse_numeric_literal(&mut self) -> DraftResult<NodeId> {
         match self.source_info.top.tok {
             Token::IntegerLiteral(i, s) => {
                 let range = self.source_info.top.range;
@@ -1647,7 +1834,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse_let(&mut self) -> Result<NodeId, CompileError> {
+    pub fn parse_let(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
         self.pop(); // `let`
@@ -1684,7 +1871,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse_block(&mut self, is_standalone: bool) -> Result<NodeId, CompileError> {
+    pub fn parse_block(&mut self, is_standalone: bool) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
         self.expect(Token::LCurly)?;
@@ -1724,7 +1911,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse_if(&mut self) -> Result<NodeId, CompileError> {
+    pub fn parse_if(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
         self.pop(); // `if`
@@ -1763,7 +1950,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse_for(&mut self) -> Result<NodeId, CompileError> {
+    pub fn parse_for(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
         self.pop(); // `for`
@@ -1794,7 +1981,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse_while(&mut self) -> Result<NodeId, CompileError> {
+    pub fn parse_while(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
         self.pop(); // `while`
@@ -1814,7 +2001,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse_block_stmt(&mut self) -> Result<NodeId, CompileError> {
+    pub fn parse_block_stmt(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
         let r = match self.source_info.top.tok {
@@ -1855,6 +2042,8 @@ impl<'a, W: Source> Parser<'a, W> {
             Token::Struct => self.parse_struct_definition(),
             Token::Enum => self.parse_enum_definition(),
             Token::Fn => self.parse_fn(false),
+            Token::Interface => self.parse_interface(),
+            Token::Impl => self.parse_impl(),
             _ => {
                 let lvalue = self.parse_expression(true)?;
 
@@ -1887,7 +2076,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    fn parse_type(&mut self) -> Result<NodeId, CompileError> {
+    fn parse_type(&mut self) -> DraftResult<NodeId> {
         match self.source_info.top.tok {
             Token::Bool => {
                 let range = self.source_info.top.range;
@@ -2078,7 +2267,7 @@ impl<'a, W: Source> Parser<'a, W> {
         &mut self,
         output: &mut Vec<Shunting>,
         err_node_id: NodeId,
-    ) -> Result<NodeId, CompileError> {
+    ) -> DraftResult<NodeId> {
         if output.is_empty() {
             return Err(CompileError::Node(
                 "Unfinished expression".to_string(),
@@ -2132,7 +2321,7 @@ impl Shunting {
 
 impl Context {
     #[instrument(skip_all)]
-    pub fn parse_file(&mut self, file_name: &str) -> Result<(), CompileError> {
+    pub fn parse_file(&mut self, file_name: &str) -> DraftResult<()> {
         let mut source = self.make_source_info_from_file(file_name);
         let mut parser = Parser::from_source(self, &mut source);
 
@@ -2140,14 +2329,14 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn ropey_parse_file(&mut self, file_name: &str) -> Result<(), CompileError> {
+    pub fn ropey_parse_file(&mut self, file_name: &str) -> DraftResult<()> {
         let mut source = self.make_ropey_source_info_from_file(file_name);
         let mut parser = Parser::from_source(self, &mut source);
         parser.parse()
     }
 
     #[instrument(skip_all)]
-    pub fn parse_str(&mut self, source: &'static str) -> Result<(), CompileError> {
+    pub fn parse_str(&mut self, source: &'static str) -> DraftResult<()> {
         let mut source = SourceInfo::<StaticStrSource>::from_static_str(source);
         let mut parser = Parser::from_source(self, &mut source);
         parser.parse()
@@ -2157,7 +2346,7 @@ impl Context {
     pub fn parse_source<W: Source>(
         &mut self,
         source: &mut SourceInfo<W>,
-    ) -> Result<(), CompileError> {
+    ) -> DraftResult<()> {
         let mut parser = Parser::<W>::from_source(self, source);
         parser.parse()
     }
@@ -2180,7 +2369,7 @@ impl Context {
     pub fn debug_tokens<W: Source>(
         &mut self,
         source: &mut SourceInfo<W>,
-    ) -> Result<(), CompileError> {
+    ) -> DraftResult<()> {
         let mut parser = Parser::from_source(self, source);
 
         parser.pop();
@@ -2201,7 +2390,7 @@ impl Context {
         &mut self,
         id: NodeId,
         target: ParseTarget,
-    ) -> Result<NodeId, CompileError> {
+    ) -> DraftResult<NodeId> {
         // Re-parse the region of the source code that contains the id
         let range = self.ranges[id];
 
@@ -2214,6 +2403,7 @@ impl Context {
 
         let copied = match target {
             ParseTarget::FnDefinition => parser.parse_fn(false)?,
+            ParseTarget::InterfaceDefinition => parser.parse_interface()?,
             ParseTarget::StructDefinition => {
                 let parsed = parser.parse_struct_definition()?;
 
@@ -2246,6 +2436,7 @@ impl Context {
 
 pub enum ParseTarget {
     FnDefinition,
+    InterfaceDefinition,
     StructDefinition,
     EnumDefinition,
     Type,

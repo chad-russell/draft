@@ -1,8 +1,8 @@
 use tracing::instrument;
 
 use crate::{
-    CompileError, Context, IdVec, Node, NodeElse, NodeId, NumericSpecification, Op, ParseTarget,
-    StaticMemberResolution, Sym,
+    CompileError, Context, DraftResult, IdVec, Node, NodeElse, NodeId, NumericSpecification, Op,
+    ParseTarget, StaticMemberResolution, Sym,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -34,6 +34,10 @@ pub enum Type {
     Enum {
         name: Option<NodeId>,
         params: IdVec,
+    },
+    Interface {
+        name: NodeId,
+        fns: IdVec,
     },
     EnumNoneType, // Type given to enum members with no storage. We need a distinct type to differentiate it from being unassigned
     Pointer(NodeId),
@@ -180,7 +184,7 @@ impl Context {
         given: &[NodeId],
         decl: &[NodeId],
         err_id: NodeId,
-    ) -> Result<Vec<NodeId>, CompileError> {
+    ) -> DraftResult<Vec<NodeId>> {
         let given_len = given.len();
 
         if given.len() > decl.len() {
@@ -1483,6 +1487,94 @@ impl Context {
                 self.assign_type(block);
             }
             Node::ThreadingParamTarget => todo!(),
+            Node::Interface { name, fns } => {
+                let fn_ids = self.id_vecs[fns].clone();
+                for fn_id in fn_ids.borrow().iter() {
+                    self.assign_type(*fn_id);
+                }
+
+                self.types.insert(id, Type::Interface { name, fns });
+            }
+            Node::InterfaceFnDecl {
+                params, return_ty, ..
+            } => {
+                let params = self.id_vecs[params].clone();
+                for pid in params.borrow().iter() {
+                    self.assign_type(*pid);
+                }
+
+                if let Some(return_ty) = return_ty {
+                    self.assign_type(return_ty);
+                }
+            }
+            Node::Impl {
+                interface,
+                ty,
+                impls,
+            } => {
+                self.assign_type(interface);
+                self.assign_type(ty);
+
+                let interface_ty = self.get_type(interface);
+
+                let Type::Interface { fns, .. } = interface_ty else { 
+                    self.errors.push(CompileError::Node(
+                        format!("Impl target is not an interface: it is a {}", self.nodes[interface].ty()),
+                        interface,
+                    ));
+                    return true; 
+                };
+                let fns = self.id_vecs[fns].clone();
+
+                let impls = self.id_vecs[impls].clone();
+
+                if fns.borrow().len() != impls.borrow().len() {
+                    self.errors.push(CompileError::Node(
+                        "Impls and interface fns have different lengths".to_string(),
+                        id,
+                    ));
+                    return true;
+                }
+                
+                for impl_id in impls.borrow().iter() {
+                    self.assign_type(*impl_id);
+
+                    let Node::FnDefinition { name: Some(name), .. } = self.nodes[*impl_id] else { 
+                        self.errors.push(CompileError::Node(
+                            "Expected a named fn definition here".to_string(),
+                            *impl_id,
+                        ));
+                        return true; 
+                    };
+                    
+                    let fn_definition_name_sym = self.get_symbol(name);
+                    let mut found_id = None;
+                    for f in fns.borrow().iter() {
+                        let Node::InterfaceFnDecl { name, .. } = self.nodes[*f] else { 
+                            self.errors.push(CompileError::Node(
+                                "Expected an interface fn decl here".to_string(),
+                                *f,
+                            ));
+                            return true; 
+                        };
+                        let interface_fn_decl_name_sym = self.get_symbol(name);
+                        if fn_definition_name_sym == interface_fn_decl_name_sym {
+                            found_id = Some(*f);
+                            break;
+                        }
+                    }
+
+                    let Some(found_id) = found_id else {
+                        self.errors.push(CompileError::Node(
+                            "Could not find interface fn decl".to_string(),
+                            *impl_id,
+                        ));
+                        return true;
+                    };
+
+                    self.match_types(found_id, *impl_id);
+                }
+            }
         }
 
         return true;
@@ -1745,6 +1837,11 @@ impl Context {
             Type::Array(ty) => {
                 self.assign_type(ty);
             }
+            Type::Interface { fns, .. } => {
+                for &fn_id in self.id_vecs[fns].clone().borrow().iter() {
+                    self.assign_type(fn_id);
+                }
+            }
             Type::Empty
             | Type::IntLiteral
             | Type::I8
@@ -1930,7 +2027,7 @@ impl Context {
         params: IdVec,
         name: NodeId,
         struct_literal_id: NodeId,
-    ) -> Result<(), CompileError> {
+    ) -> DraftResult<()> {
         let Some(Type::Struct { params: decl, .. }) = self.types.get(&name) else { return Ok(()); };
 
         let given = self.id_vecs[params].clone();
@@ -1962,7 +2059,7 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn copy_polymorph_if_needed(&mut self, ty: NodeId) -> Result<NodeId, CompileError> {
+    pub fn copy_polymorph_if_needed(&mut self, ty: NodeId) -> DraftResult<NodeId> {
         if let Some(&ty) = self.polymorph_sources.get(&ty) {
             let parse_target = match self.nodes[ty] {
                 Node::StructDefinition { .. } => ParseTarget::StructDefinition,

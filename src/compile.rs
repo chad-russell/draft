@@ -17,7 +17,9 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, DataDescription, FuncId, Init, Linkage, Module};
 use tracing::instrument;
 
-use crate::{CompileError, Context, IdVec, Node, NodeId, Op, StaticMemberResolution, Type};
+use crate::{
+    CompileError, Context, DraftResult, IdVec, Node, NodeId, Op, StaticMemberResolution, Type,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub enum Value {
@@ -46,7 +48,6 @@ impl Context {
 
         let mut jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
 
-        // no hot swapping for now
         jit_builder.hotswap(false);
 
         jit_builder.symbol("print_i64", print_i64 as *const u8);
@@ -59,7 +60,7 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn predeclare_string_constants(&mut self) -> Result<(), CompileError> {
+    pub fn predeclare_string_constants(&mut self) -> DraftResult<()> {
         let data_id = self
             .module
             .declare_data("string_constants", Linkage::Local, false, false)
@@ -85,7 +86,7 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn predeclare_functions(&mut self) -> Result<(), CompileError> {
+    pub fn predeclare_functions(&mut self) -> DraftResult<()> {
         let mut codegen_ctx = self.module.make_context();
         let mut func_ctx = FunctionBuilderContext::new();
 
@@ -115,7 +116,7 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn predeclare_function(&mut self, id: NodeId) -> Result<(), CompileError> {
+    pub fn predeclare_function(&mut self, id: NodeId) -> DraftResult<()> {
         if let Node::FnDefinition {
             name,
             params,
@@ -168,7 +169,7 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn call_fn(&mut self, fn_name: &str) -> Result<(), CompileError> {
+    pub fn call_fn(&mut self, fn_name: &str) -> DraftResult<()> {
         let fn_name_interned = self.string_interner.get_or_intern(fn_name);
 
         let node_id = self
@@ -367,7 +368,7 @@ struct FunctionCompileContext<'a> {
 
 impl<'a> FunctionCompileContext<'a> {
     #[instrument(skip_all)]
-    pub fn compile_id(&mut self, id: NodeId) -> Result<(), CompileError> {
+    pub fn compile_id(&mut self, id: NodeId) -> DraftResult<()> {
         // idempotency
         match self.ctx.values.get(&id) {
             None => {}
@@ -1192,7 +1193,7 @@ impl<'a> FunctionCompileContext<'a> {
     }
 
     #[instrument(skip_all)]
-    fn compile_ids(&mut self, ids: IdVec) -> Result<(), CompileError> {
+    fn compile_ids(&mut self, ids: IdVec) -> DraftResult<()> {
         for id in self.ctx.id_vecs[ids].clone().borrow().iter() {
             self.compile_id(*id)?;
         }
@@ -1201,12 +1202,7 @@ impl<'a> FunctionCompileContext<'a> {
     }
 
     #[instrument(skip_all)]
-    fn compile_id_for_call(
-        &mut self,
-        id: NodeId,
-        func: NodeId,
-        params: IdVec,
-    ) -> Result<(), CompileError> {
+    fn compile_id_for_call(&mut self, id: NodeId, func: NodeId, params: IdVec) -> DraftResult<()> {
         self.compile_id(func)?;
 
         let param_ids = self.ctx.id_vecs[params].clone();
@@ -1287,7 +1283,7 @@ impl<'a> FunctionCompileContext<'a> {
     }
 
     #[instrument(skip_all)]
-    fn get_member_offset(&mut self, value: NodeId, member: NodeId) -> Result<u32, CompileError> {
+    fn get_member_offset(&mut self, value: NodeId, member: NodeId) -> DraftResult<u32> {
         let member_name = self.ctx.nodes[member].as_symbol().unwrap();
 
         let mut ty = self.ctx.get_type(value);
@@ -1453,7 +1449,7 @@ impl<'a> FunctionCompileContext<'a> {
 }
 
 impl<'a> ToplevelCompileContext<'a> {
-    pub fn compile_toplevel_id(&mut self, id: NodeId) -> Result<(), CompileError> {
+    pub fn compile_toplevel_id(&mut self, id: NodeId) -> DraftResult<()> {
         // idempotency
         match self.ctx.values.get(&id) {
             None | Some(Value::Func(_)) => {}

@@ -5,7 +5,7 @@ use tracing::instrument;
 use tracing_subscriber::layer::SubscriberExt;
 
 #[instrument(skip_all)]
-fn run(context: &mut Context) -> Result<(), CompileError> {
+fn run(context: &mut Context) -> DraftResult<()> {
     let input = context.args.input.clone();
     context.parse_file(&input)?;
 
