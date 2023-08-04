@@ -8,15 +8,18 @@ fn print_string(s: string) {
 }
 
 interface IFoo {
-    fn foo();
+    fn foo() i64;
 }
 
-struct Foo { }
+struct Foo {
+    x: i64,
+    y: i64,
+}
 
 impl IFoo for Foo {
-    fn foo() {
+    fn foo() _ {
         print_string("Foo");
-        return;
+        return self.x + self.y;
     }
 }
 
