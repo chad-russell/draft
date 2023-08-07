@@ -1064,7 +1064,6 @@ impl<'a, W: Source> Parser<'a, W> {
                 return_ty,
                 stmts,
                 returns,
-                hidden_self_param: None,
             },
         );
 
@@ -1117,6 +1116,14 @@ impl<'a, W: Source> Parser<'a, W> {
         self.expect(Token::LParen)?;
         let params = self.parse_decl_params(DeclParamParseType::Fn)?;
 
+        let params_vec = self.ctx.id_vecs[params].clone();
+        params_vec.borrow_mut().insert(0, self_param);
+
+        for (i, param) in params_vec.borrow().iter().enumerate() {
+            let Node::FnDeclParam { index, .. } = &mut self.ctx.nodes[*param] else { unreachable!() };
+            *index = i as u16;
+        }
+
         self.expect(Token::RParen)?;
         self.in_fn_params_decl = false;
 
@@ -1150,7 +1157,6 @@ impl<'a, W: Source> Parser<'a, W> {
                 return_ty,
                 stmts,
                 returns,
-                hidden_self_param: Some(self_param),
             },
         );
 
@@ -1252,9 +1258,31 @@ impl<'a, W: Source> Parser<'a, W> {
 
         let name = self.parse_symbol()?;
 
+        let self_param_range = self.source_info.top.range;
+
         self.in_fn_params_decl = true;
         self.expect(Token::LParen)?;
         let params = self.parse_decl_params(DeclParamParseType::Fn)?;
+
+        // add hidden self param
+        let self_symbol = Sym(self.ctx.string_interner.get_or_intern("self"));
+        let self_symbol_node = self.ctx.push_node(self_param_range, Node::Symbol(self_symbol));
+        let self_ptr_ty = self.ctx.push_node(self_param_range, Node::Type(Type::SelfPointer));
+        let self_param = self.ctx.push_node(self_param_range, Node::FnDeclParam { 
+            name: self_symbol_node, 
+            ty: Some(self_ptr_ty), 
+            default: None, 
+            index: 0 
+        });
+
+        let params_vec = self.ctx.id_vecs[params].clone();
+        params_vec.borrow_mut().insert(0, self_param);
+
+        for (i, param) in params_vec.borrow().iter().enumerate() {
+            let Node::FnDeclParam { index, .. } = &mut self.ctx.nodes[*param] else { unreachable!() };
+            *index = i as u16;
+        }
+        
         self.expect(Token::RParen)?;
         self.in_fn_params_decl = false;
 

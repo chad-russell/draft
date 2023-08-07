@@ -66,7 +66,6 @@ pub enum Node {
         return_ty: Option<NodeId>,
         stmts: IdVec,
         returns: IdVec,
-        hidden_self_param: Option<NodeId>,
     },
     Block {
         stmts: IdVec,

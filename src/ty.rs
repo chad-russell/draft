@@ -8,6 +8,7 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Type {
     Empty,
+    SelfPointer,
     Infer(Option<Sym>),
     IntLiteral,
     I8,
@@ -164,7 +165,7 @@ impl Context {
             // so it doesn't really matter which is chosen
             (Type::Func { .. }, Type::Func { .. })
             | (Type::Enum { .. }, Type::Enum { .. })
-            | (Type::Pointer(_), Type::Pointer(_))
+            | (Type::Pointer(_) | Type::SelfPointer, Type::Pointer(_) | Type::SelfPointer)
             | (Type::Array(_), Type::Array(_)) => first,
 
             // Anything else
@@ -462,6 +463,10 @@ impl Context {
         // );
 
         match (self.get_type(ty1), self.get_type(ty2)) {
+            (Type::Pointer(_), Type::SelfPointer) | (Type::SelfPointer, Type::Pointer(_)) => {
+                // This is always valid, because literally the only way to get a SelfPointer is by construction from the compiler.
+                // So we already know it's valid
+            }
             (Type::Pointer(pt1), Type::Pointer(pt2)) => {
                 self.match_types(pt1, pt2);
             }
@@ -1894,6 +1899,7 @@ impl Context {
                 }
             }
             Type::Empty
+            | Type::SelfPointer
             | Type::IntLiteral
             | Type::I8
             | Type::I16

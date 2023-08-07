@@ -163,16 +163,11 @@ impl Context {
             name,
             params,
             return_ty,
-            hidden_self_param,
             ..
         } = self.nodes[id]
         {
             let mut sig = self.module.make_signature();
 
-            if let Some(hidden_self_param) = hidden_self_param {
-                sig.params
-                    .push(AbiParam::new(self.get_cranelift_type(hidden_self_param)));
-            }
             for &param in self.id_vecs[params].borrow().iter() {
                 sig.params
                     .push(AbiParam::new(self.get_cranelift_type(param)));
@@ -1579,18 +1574,12 @@ impl<'a> ToplevelCompileContext<'a> {
                 stmts,
                 params,
                 return_ty,
-                hidden_self_param,
                 ..
             } => {
                 let name_str = self.ctx.func_name(name, id);
 
                 let mut sig = self.ctx.module.make_signature();
 
-                if let Some(hidden_self_param) = hidden_self_param {
-                    sig.params.push(AbiParam::new(
-                        self.ctx.get_cranelift_type(hidden_self_param),
-                    ));
-                }
                 for &param in self.ctx.id_vecs[params].borrow().iter() {
                     sig.params
                         .push(AbiParam::new(self.ctx.get_cranelift_type(param)));
