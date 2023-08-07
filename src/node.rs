@@ -26,6 +26,11 @@ pub enum NodeElse {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub enum AsCastStyle {
+    ToInterface(NodeId),
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum Node {
     Symbol(Sym),
     PolySpecialize {
@@ -61,6 +66,7 @@ pub enum Node {
         return_ty: Option<NodeId>,
         stmts: IdVec,
         returns: IdVec,
+        hidden_self_param: Option<NodeId>,
     },
     Block {
         stmts: IdVec,
@@ -166,11 +172,17 @@ pub enum Node {
     Interface {
         name: NodeId,
         fns: IdVec,
+        vtable_struct: NodeId,
     },
     Impl {
         interface: NodeId,
         ty: NodeId,
         impls: IdVec,
+    },
+    AsCast {
+        value: NodeId,
+        ty: NodeId,
+        style: Option<AsCastStyle>,
     },
 }
 
@@ -224,6 +236,7 @@ impl Node {
             Node::Interface { .. } => "Interface".to_string(),
             Node::InterfaceFnDecl { .. } => "InterfaceFnDecl".to_string(),
             Node::Impl { .. } => "Impl".to_string(),
+            Node::AsCast { .. } => "AsCast".to_string(),
         }
     }
 }

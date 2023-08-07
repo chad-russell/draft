@@ -14,17 +14,21 @@ use cranelift_codegen::ir::{
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context as CodegenContext;
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{default_libcall_names, DataDescription, FuncId, Init, Linkage, Module};
+use cranelift_module::{
+    default_libcall_names, DataDescription, DataId, FuncId, Init, Linkage, Module,
+};
 use tracing::instrument;
 
 use crate::{
-    CompileError, Context, DraftResult, IdVec, Node, NodeId, Op, StaticMemberResolution, Type,
+    AsCastStyle, CompileError, Context, DraftResult, IdVec, Node, NodeId, Op,
+    StaticMemberResolution, Type,
 };
 
 #[derive(Clone, Copy, Debug)]
 pub enum Value {
     Func(FuncId),
     Value(CraneliftValue),
+    Data(DataId),
 }
 
 impl Context {
@@ -86,11 +90,41 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn predeclare_functions(&mut self) -> DraftResult<()> {
-        let mut codegen_ctx = self.module.make_context();
-        let mut func_ctx = FunctionBuilderContext::new();
+    pub fn predeclare_vtables(&mut self) -> DraftResult<()> {
+        for t in self.impls.clone() {
+            let Node::Impl { impls, .. } = self.nodes[t] else { unreachable!() };
 
-        for &t in self.topo.clone().iter() {
+            let data_id = self
+                .module
+                .declare_data(&format!("vtable__{}", t.0), Linkage::Local, false, false)
+                .map_err(|err| CompileError::Message(err.to_string()))?;
+
+            let mut desc = DataDescription::new();
+            desc.init = Init::Zeros {
+                size: self.id_vecs[impls].clone().borrow().len()
+                    * self.get_pointer_type().bytes() as usize,
+            };
+
+            for (idx, &t) in self.id_vecs[impls].clone().borrow().iter().enumerate() {
+                assert!(self.completes.contains(&t));
+
+                let Value::Func(func_id) =  self.values[&t] else { todo!() };
+                let func_id = self.module.declare_func_in_data(func_id, &mut desc);
+
+                desc.write_function_addr(idx as u32 * self.get_pointer_type().bits(), func_id);
+            }
+
+            self.module.define_data(data_id, &desc).unwrap();
+
+            self.values.insert(t, Value::Data(data_id));
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    pub fn predeclare_functions(&mut self) -> DraftResult<()> {
+        for t in self.topo.clone() {
             if !self.completes.contains(&t) {
                 continue;
             }
@@ -98,13 +132,21 @@ impl Context {
             self.predeclare_function(t)?;
         }
 
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    pub fn define_functions(&mut self) -> DraftResult<()> {
+        let mut codegen_ctx = self.module.make_context();
+        let mut func_ctx = FunctionBuilderContext::new();
+
         let mut compile_ctx = ToplevelCompileContext {
             ctx: self,
             codegen_ctx: &mut codegen_ctx,
             func_ctx: &mut func_ctx,
         };
 
-        for &t in compile_ctx.ctx.topo.clone().iter() {
+        for t in compile_ctx.ctx.topo.clone() {
             compile_ctx.compile_toplevel_id(t)?;
         }
 
@@ -121,11 +163,16 @@ impl Context {
             name,
             params,
             return_ty,
+            hidden_self_param,
             ..
         } = self.nodes[id]
         {
             let mut sig = self.module.make_signature();
 
+            if let Some(hidden_self_param) = hidden_self_param {
+                sig.params
+                    .push(AbiParam::new(self.get_cranelift_type(hidden_self_param)));
+            }
             for &param in self.id_vecs[params].borrow().iter() {
                 sig.params
                     .push(AbiParam::new(self.get_cranelift_type(param)));
@@ -256,7 +303,7 @@ impl Context {
                     .unwrap_or_default()
                     + self.enum_tag_size()
             }
-            Type::Array(_) | Type::String => 16,
+            Type::Array(_) | Type::String | Type::Interface { .. } => 16,
             Type::EnumNoneType | Type::Empty => 0,
             _ => todo!("get_type_size for {:?}", ty),
         }
@@ -363,6 +410,7 @@ struct FunctionCompileContext<'a> {
     pub resolve_addr: Option<Value>, // the address of the stack slot where we store the value of any Node::Resolve we encounter
     pub resolve_jump_target: Option<Block>, // the jump target for any Node::Resolve we encounter
     pub declared_func_ids: HashMap<FuncId, FuncRef>,
+    pub declared_data_ids: HashMap<DataId, GlobalValue>,
     pub global_str_ptr: Option<GlobalValue>,
 }
 
@@ -1184,6 +1232,45 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
+            Node::AsCast {
+                value,
+                style: Some(AsCastStyle::ToInterface(found_impl)),
+                ..
+            } => {
+                self.compile_id(value)?;
+
+                let Node::Impl { impls: _, .. } = self.ctx.nodes[found_impl] else { unreachable!() };
+
+                // pointer to vtable
+                let vtable_ptr = self.ctx.values.get(&found_impl).unwrap();
+                let vtable_ptr = self.as_cranelift_value(*vtable_ptr);
+
+                // pointer to data
+                let &data_ptr = self.ctx.values.get(&value).unwrap();
+                let data_ptr = self.as_cranelift_value(data_ptr);
+
+                // Package these up into a struct
+                let size = self.ctx.id_type_size(id);
+                let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                    kind: StackSlotKind::ExplicitSlot,
+                    size,
+                });
+                let slot_addr =
+                    self.builder
+                        .ins()
+                        .stack_addr(self.ctx.module.isa().pointer_type(), slot, 0);
+
+                self.builder.ins().stack_store(data_ptr, slot, 0);
+                self.builder.ins().stack_store(
+                    vtable_ptr,
+                    slot,
+                    self.ctx.get_pointer_type().bytes() as i32,
+                );
+
+                self.ctx.values.insert(id, Value::Value(slot_addr));
+
+                Ok(())
+            }
             Node::FnDefinition { .. }
             | Node::StructDefinition { .. }
             | Node::EnumDefinition { .. }
@@ -1303,8 +1390,20 @@ impl<'a> FunctionCompileContext<'a> {
             }
         }
 
+        if let Type::Interface { .. } = ty {
+            let data_sym = self.ctx.string_interner.get_or_intern("data");
+            let vtable_sym = self.ctx.string_interner.get_or_intern("vtable");
+            if member_name.0 == data_sym {
+                return Ok(0);
+            } else if member_name.0 == vtable_sym {
+                return Ok(self.ctx.get_pointer_type().bytes());
+            } else {
+                panic!()
+            }
+        }
+
         let Type::Struct { params, .. } = ty else {
-            panic!("Not a struct");
+            panic!("Not a struct: {:?}", ty);
         };
 
         let fields = self.ctx.id_vecs[params].clone();
@@ -1347,6 +1446,15 @@ impl<'a> FunctionCompileContext<'a> {
                 self.builder
                     .ins()
                     .func_addr(self.ctx.get_pointer_type(), func_ref)
+            }
+            Value::Data(data_id) => {
+                let data_ref = *self.declared_data_ids.entry(data_id).or_insert_with(|| {
+                    self.ctx
+                        .module
+                        .declare_data_in_func(data_id, self.builder.func)
+                });
+
+                self.builder.ins().global_value(types::I64, data_ref)
             }
         }
     }
@@ -1413,6 +1521,14 @@ impl<'a> FunctionCompileContext<'a> {
                     .ins()
                     .func_addr(self.ctx.get_cranelift_type(id), func_ref)
             }
+            Value::Data(data_id) => {
+                let data_ref = *self.declared_data_ids.entry(data_id).or_insert_with(|| {
+                    self.ctx
+                        .module
+                        .declare_data_in_func(data_id, self.builder.func)
+                });
+                self.builder.ins().global_value(types::I64, data_ref)
+            }
         };
 
         match dest {
@@ -1463,12 +1579,18 @@ impl<'a> ToplevelCompileContext<'a> {
                 stmts,
                 params,
                 return_ty,
+                hidden_self_param,
                 ..
             } => {
                 let name_str = self.ctx.func_name(name, id);
 
                 let mut sig = self.ctx.module.make_signature();
 
+                if let Some(hidden_self_param) = hidden_self_param {
+                    sig.params.push(AbiParam::new(
+                        self.ctx.get_cranelift_type(hidden_self_param),
+                    ));
+                }
                 for &param in self.ctx.id_vecs[params].borrow().iter() {
                     sig.params
                         .push(AbiParam::new(self.ctx.get_cranelift_type(param)));
@@ -1507,6 +1629,7 @@ impl<'a> ToplevelCompileContext<'a> {
                     resolve_addr: None,
                     resolve_jump_target: None,
                     declared_func_ids: Default::default(),
+                    declared_data_ids: Default::default(),
                     global_str_ptr: None,
                 };
 

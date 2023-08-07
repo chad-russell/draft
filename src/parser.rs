@@ -145,6 +145,7 @@ pub enum Token {
     For,
     While,
     In,
+    As,
     Bool,
     I8,
     I16,
@@ -380,6 +381,9 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
         if self.source_info.prefix_keyword("in", Token::In) {
+            return;
+        }
+        if self.source_info.prefix_keyword("as", Token::As) {
             return;
         }
         if self.source_info.prefix_keyword("and", Token::And) {
@@ -1060,6 +1064,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 return_ty,
                 stmts,
                 returns,
+                hidden_self_param: None,
             },
         );
 
@@ -1111,12 +1116,6 @@ impl<'a, W: Source> Parser<'a, W> {
         
         self.expect(Token::LParen)?;
         let params = self.parse_decl_params(DeclParamParseType::Fn)?;
-        let params_vec = self.ctx.id_vecs[params].clone();
-        params_vec.borrow_mut().insert(0, self_param);
-        for (idx, &p) in params_vec.borrow_mut().iter().enumerate() {
-            let Node::FnDeclParam { index, .. } = &mut self.ctx.nodes[p] else { unreachable!() };
-            *index = idx as u16;
-        }
 
         self.expect(Token::RParen)?;
         self.in_fn_params_decl = false;
@@ -1151,6 +1150,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 return_ty,
                 stmts,
                 returns,
+                hidden_self_param: Some(self_param),
             },
         );
 
@@ -1177,19 +1177,33 @@ impl<'a, W: Source> Parser<'a, W> {
         let pushed_scope = self.ctx.push_scope();
 
         let mut fns = Vec::new();
+        let mut vtable_struct_params = Vec::new();
+        let mut vtable_idx = 0;
 
         self.expect(Token::LCurly)?;
         while self.source_info.top.tok != Token::RCurly {
-            let new_fn = self.parse_fn_decl()?;
+            let new_fn = self.parse_interface_fn_decl()?;
             fns.push(new_fn);
+
+            let Node::InterfaceFnDecl { name, .. } = self.ctx.nodes[new_fn] else { unreachable!() };
+            let vtable_arg = self.ctx.push_node(self.ctx.ranges[new_fn], Node::StructDeclParam { name, ty: Some(new_fn), default: None, index: vtable_idx });
+            vtable_idx += 1;
+            vtable_struct_params.push(vtable_arg);
         }
         let range = self.expect_range(start, Token::RCurly)?;
+
+        let vtable_struct_params = self.ctx.push_id_vec(vtable_struct_params);
+        let vtable_struct = self.ctx.push_node(range, Node::StructDefinition {
+            name,
+            params: vtable_struct_params,
+            scope: self.ctx.top_scope,
+        });
 
         self.ctx.pop_scope(pushed_scope);
 
         let fns = self.ctx.push_id_vec(fns);
 
-        let interface_id = self.ctx.push_node(range, Node::Interface { name, fns });
+        let interface_id = self.ctx.push_node(range, Node::Interface { name, fns, vtable_struct });
 
         self.ctx.scope_insert(name_sym, interface_id);
 
@@ -1221,13 +1235,17 @@ impl<'a, W: Source> Parser<'a, W> {
 
         let range = self.expect_range(start, Token::RCurly)?;
 
-        Ok(self.ctx.push_node(range, Node::Impl {
+        let id = self.ctx.push_node(range, Node::Impl {
             interface, ty, impls
-        }))
+        });
+
+        self.ctx.impls.insert(id);
+
+        Ok(id)
     }
 
     #[instrument(skip_all)]
-    pub fn parse_fn_decl(&mut self) -> DraftResult<NodeId> {
+    pub fn parse_interface_fn_decl(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
         self.pop(); // `fn`
@@ -1719,7 +1737,7 @@ impl<'a, W: Source> Parser<'a, W> {
             )),
         }?;
 
-        while let Token::LParen | Token::LSquare | Token::Dot | Token::DoubleColon =
+        while let Token::LParen | Token::LSquare | Token::Dot | Token::DoubleColon | Token::As =
             self.source_info.top.tok
         {
             // function call?
@@ -1780,6 +1798,21 @@ impl<'a, W: Source> Parser<'a, W> {
                         value,
                         member,
                         resolved: None,
+                    },
+                );
+            }
+            
+            // as cast?
+            if self.source_info.top.tok == Token::As {
+                self.pop(); // `as`
+                let ty = self.parse_type()?;
+                let end = self.ctx.ranges[ty].end;
+                value = self.ctx.push_node(
+                    Range::new(start, end, self.source_info.path),
+                    Node::AsCast {
+                        value,
+                        ty,
+                        style: None,
                     },
                 );
             }

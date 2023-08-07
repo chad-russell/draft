@@ -49,6 +49,7 @@
     - [ ] static
     - [ ] default implementation for methods
     - [ ] implement interface for a polymorph (generically)
+- [ ] ascast -- do the same thing as for symbols, where we copy over the addressability etc.
 - [ ] continue
 - [ ] defer
 - [ ] labelled blocks (use as target for resolve/continue/defer)

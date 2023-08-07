@@ -2,7 +2,7 @@ use tracing::instrument;
 
 use crate::{
     CompileError, Context, DraftResult, IdVec, Node, NodeElse, NodeId, NumericSpecification, Op,
-    ParseTarget, StaticMemberResolution, Sym,
+    ParseTarget, StaticMemberResolution, Sym, AsCastStyle,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -38,6 +38,7 @@ pub enum Type {
     Interface {
         name: NodeId,
         fns: IdVec,
+        vtable_struct: NodeId,
     },
     EnumNoneType, // Type given to enum members with no storage. We need a distinct type to differentiate it from being unassigned
     Pointer(NodeId),
@@ -577,7 +578,6 @@ impl Context {
             (Type::Array(n1), Type::Array(n2)) => {
                 self.match_types(n1, n2);
             }
-            (bt1, bt2) if bt1 == bt2 => (),
             (Type::IntLiteral, bt) | (bt, Type::IntLiteral) if bt.is_basic() => {
                 if !self.check_int_literal_type(bt) {
                     self.errors.push(CompileError::Node2(
@@ -596,6 +596,7 @@ impl Context {
                     ));
                 }
             }
+            (bt1, bt2) if bt1 == bt2 => (),
             (Type::Infer(_), _) | (_, Type::Infer(_)) => (),
             (_, _) => {
                 self.errors.push(CompileError::Node2(
@@ -1060,11 +1061,12 @@ impl Context {
                                     name: Some(name), ..
                                 }
                                 | Node::StructDeclParam { name, .. } => *name,
-                                _ => {
+                                a => {
                                     self.errors.push(CompileError::Node(
                                         format!(
-                                            "Cannot perform member access as this field's name ({:?}) could not be found",
+                                            "Cannot perform member access as this field's name (at {:?}) could not be found. Node type: {:?}",
                                             &self.ranges[field],
+                                            a.ty()
                                         ),
                                         id,
                                     ));
@@ -1120,6 +1122,26 @@ impl Context {
                                 self.errors.push(CompileError::Node(
                                     format!(
                                         "Array has no member {:?}: options are 'len' or 'data'",
+                                        name
+                                    ),
+                                    member,
+                                ));
+                            }
+                        }
+                    }
+                    Type::Interface { vtable_struct, .. } => {
+                        let name = self.string_interner.resolve(member_name_sym.0).unwrap();
+                        match name {
+                            "data" => {
+                                self.types.insert(id, Type::Pointer(self.ty_empty.unwrap()));
+                            }
+                            "vtable" => {
+                                self.types.insert(id, self.get_type(vtable_struct) );
+                            }
+                            _ => {
+                                self.errors.push(CompileError::Node(
+                                    format!(
+                                        "Interface has no member {:?}: options are 'data' or 'vtable'",
                                         name
                                     ),
                                     member,
@@ -1487,25 +1509,29 @@ impl Context {
                 self.assign_type(block);
             }
             Node::ThreadingParamTarget => todo!(),
-            Node::Interface { name, fns } => {
+            Node::Interface { name, fns, vtable_struct } => {
                 let fn_ids = self.id_vecs[fns].clone();
                 for fn_id in fn_ids.borrow().iter() {
                     self.assign_type(*fn_id);
                 }
 
-                self.types.insert(id, Type::Interface { name, fns });
+                self.assign_type(vtable_struct);
+
+                self.types.insert(id, Type::Interface { name, fns, vtable_struct });
             }
             Node::InterfaceFnDecl {
                 params, return_ty, ..
             } => {
-                let params = self.id_vecs[params].clone();
-                for pid in params.borrow().iter() {
+                let params_vec = self.id_vecs[params].clone();
+                for pid in params_vec.borrow().iter() {
                     self.assign_type(*pid);
                 }
 
                 if let Some(return_ty) = return_ty {
                     self.assign_type(return_ty);
                 }
+
+                self.types.insert(id, Type::Func { input_tys: params, return_ty });
             }
             Node::Impl {
                 interface,
@@ -1574,6 +1600,31 @@ impl Context {
 
                     self.match_types(found_id, *impl_id);
                 }
+            }
+            Node::AsCast { value, ty, .. } => {
+                self.assign_type(value);
+                self.assign_type(ty);
+
+                match (self.get_type(value), self.get_type(ty)) {
+                    (Type::Infer(_), _) | (_, Type::Infer(_)) => {
+                        self.deferreds.push(id);
+                        return false;
+                    }
+                    (Type::Interface { .. }, _impl_ty) | (_impl_ty, Type::Interface { .. }) => {
+                        // todo(chad): do a real search
+                        let found_impl = self.impls.iter().next().unwrap();
+                        self.nodes[id] = Node::AsCast {
+                            value,
+                            ty,
+                            style: Some(AsCastStyle::ToInterface(*found_impl)),
+                        };
+                    }
+                    _ => todo!(),
+                }
+
+                // self.match_types(value, ty);
+
+                self.match_types(id, ty);
             }
         }
 

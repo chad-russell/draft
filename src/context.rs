@@ -117,7 +117,10 @@ pub struct Context {
     pub polymorph_target: bool,
     pub string_literals: Vec<NodeId>,
     pub string_literal_offsets: SecondaryMap<usize>, // Offset into the global data segment for the start of the string literal with
+
+    // todo(chad): switch to MaybeUninit at some point
     pub string_literal_data_id: Option<DataId>,
+    pub ty_empty: Option<NodeId>,
 
     // stack of returns - pushed when entering parsing a function, popped when exiting
     pub returns: Vec<Vec<NodeId>>,
@@ -152,6 +155,7 @@ pub struct Context {
     pub completes: SecondarySet,
     pub circular_dependency_nodes: SecondarySet,
     pub circular_concrete_types: SecondarySet,
+    pub impls: SecondarySet,
 }
 
 unsafe impl Send for Context {}
@@ -159,7 +163,7 @@ unsafe impl Send for Context {}
 impl Context {
     #[instrument(skip_all)]
     pub fn new(args: Args) -> Self {
-        Self {
+        let mut ctx = Self {
             args,
 
             string_interner: StringInterner::new(),
@@ -177,6 +181,7 @@ impl Context {
             string_literals: Default::default(),
             string_literal_offsets: Default::default(),
             string_literal_data_id: None,
+            ty_empty: None,
 
             returns: Default::default(),
             resolves: Default::default(),
@@ -196,6 +201,7 @@ impl Context {
             topo: Default::default(),
             circular_dependency_nodes: Default::default(),
             circular_concrete_types: Default::default(),
+            impls: Default::default(),
             unification_data: Default::default(),
             deferreds: Default::default(),
             addressable_matches: Default::default(),
@@ -204,7 +210,15 @@ impl Context {
 
             module: Self::make_module(),
             values: Default::default(),
-        }
+        };
+
+        ctx.ty_empty = Some(ctx.push_node(
+            Range::new(Location::default(), Location::default(), ""),
+            Node::Type(Type::Empty),
+        ));
+        ctx.types.insert(ctx.ty_empty.unwrap(), Type::Empty);
+
+        ctx
     }
 
     #[instrument(skip_all)]
@@ -221,6 +235,7 @@ impl Context {
         self.string_literals.clear();
         self.string_literal_offsets.clear();
         self.string_literal_data_id = None;
+        self.ty_empty = None;
         self.polymorph_sources.clear();
         self.polymorph_copies.clear();
         self.returns.clear();
@@ -242,6 +257,7 @@ impl Context {
         self.topo.clear();
         self.circular_dependency_nodes.clear();
         self.circular_concrete_types.clear();
+        self.impls.clear();
         self.unification_data.reset();
         self.deferreds.clear();
         self.in_assign_lhs = false;
@@ -447,6 +463,8 @@ impl Context {
 
         self.predeclare_string_constants()?;
         self.predeclare_functions()?;
+        self.predeclare_vtables()?;
+        self.define_functions()?;
 
         Ok(())
     }
@@ -454,6 +472,12 @@ impl Context {
     #[instrument(skip_all)]
     pub fn get_symbol(&self, sym_id: NodeId) -> Sym {
         self.nodes[sym_id].as_symbol().unwrap()
+    }
+
+    #[instrument(skip_all)]
+    pub fn get_symbol_str(&self, sym_id: NodeId) -> &str {
+        let sym = self.get_symbol(sym_id);
+        self.string_interner.resolve(sym.0).unwrap()
     }
 
     #[instrument(skip_all)]
