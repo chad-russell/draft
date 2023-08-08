@@ -16,7 +16,7 @@ fn freeify(v: *_T!) {
     free(#cast v);
     return;
 }
-    
+
 struct Foo {
     x: i64, 
     y: i64,
@@ -139,17 +139,6 @@ fn foo_to_interface(foo: *IFoo) _ {
 struct IBar {
     x: i64,
     y: i64,
-}
-
-fn bar_to_interface(bar: *IBar) _ {
-    return IDoThing {
-        data: bar,
-        vtable: _{
-            do_thing: fn(bar: *IBar) i64 {
-                return bar.x + bar.y;
-            },
-        },
-    };
 }
 
 fn test_interfaces() i64 {

@@ -463,7 +463,6 @@ impl Context {
 
         self.predeclare_string_constants()?;
         self.predeclare_functions()?;
-        self.predeclare_vtables()?;
         self.define_functions()?;
 
         Ok(())

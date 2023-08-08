@@ -715,8 +715,6 @@ impl<'a, W: Source> Parser<'a, W> {
     pub fn parse_top_level(&mut self) -> DraftResult<NodeId> {
         let tl = match self.source_info.top.tok {
             Token::Fn => self.parse_fn(false),
-            Token::Interface => self.parse_interface(),
-            Token::Impl => self.parse_impl(),
             Token::Extern => self.parse_extern(),
             Token::Struct => self.parse_struct_definition(),
             Token::Enum => self.parse_enum_definition(),
@@ -949,7 +947,7 @@ impl<'a, W: Source> Parser<'a, W> {
         let struct_node = self.ctx.push_node(
             range,
             Node::StructDefinition {
-                name,
+                name: Some(name),
                 params: fields,
                 scope: struct_scope,
             },
@@ -1174,154 +1172,6 @@ impl<'a, W: Source> Parser<'a, W> {
         self.ctx.funcs.push(func);
 
         Ok(func)
-    }
-
-    #[instrument(skip_all)]
-    pub fn parse_interface(&mut self) -> DraftResult<NodeId> {
-        let start = self.source_info.top.range.start;
-        self.pop(); // `interface`
-
-        let name = self.parse_symbol()?;
-        let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
-
-        let pushed_scope = self.ctx.push_scope();
-
-        let mut fns = Vec::new();
-        let mut vtable_struct_params = Vec::new();
-        let mut vtable_idx = 0;
-
-        self.expect(Token::LCurly)?;
-        while self.source_info.top.tok != Token::RCurly {
-            let new_fn = self.parse_interface_fn_decl()?;
-            fns.push(new_fn);
-
-            let Node::InterfaceFnDecl { name, .. } = self.ctx.nodes[new_fn] else { unreachable!() };
-            let vtable_arg = self.ctx.push_node(self.ctx.ranges[new_fn], Node::StructDeclParam { name, ty: Some(new_fn), default: None, index: vtable_idx });
-            vtable_idx += 1;
-            vtable_struct_params.push(vtable_arg);
-        }
-        let range = self.expect_range(start, Token::RCurly)?;
-
-        let vtable_struct_params = self.ctx.push_id_vec(vtable_struct_params);
-        let vtable_struct = self.ctx.push_node(range, Node::StructDefinition {
-            name,
-            params: vtable_struct_params,
-            scope: self.ctx.top_scope,
-        });
-
-        self.ctx.pop_scope(pushed_scope);
-
-        let fns = self.ctx.push_id_vec(fns);
-
-        let interface_id = self.ctx.push_node(range, Node::Interface { name, fns, vtable_struct });
-
-        self.ctx.scope_insert(name_sym, interface_id);
-
-        Ok(interface_id)
-    }
-
-    #[instrument(skip_all)]
-    pub fn parse_impl(&mut self) -> DraftResult<NodeId> {
-        let start = self.source_info.top.range.start;
-
-        self.pop(); // `impl`
-
-        let interface = self.parse_symbol()?;
-
-        self.expect(Token::For)?;
-
-        let ty = self.parse_type()?;
-        
-        self.expect(Token::LCurly)?;
-
-        let mut impls = Vec::new();
-        let mut vtable_struct_params = Vec::new();
-        let mut vtable_idx = 0;
-
-        while self.source_info.top.tok != Token::RCurly {
-            let fn_impl = self.parse_impl_fn(ty)?; 
-            impls.push(fn_impl);
-
-            let Node::FnDefinition { name: Some(name), .. } = self.ctx.nodes[fn_impl] else { unreachable!() };
-            let vtable_arg = self.ctx.push_node(self.ctx.ranges[fn_impl], Node::StructDeclParam { name, ty: Some(fn_impl), default: None, index: vtable_idx });
-            vtable_idx += 1;
-            vtable_struct_params.push(vtable_arg);
-        }
-
-        let impls = self.ctx.push_id_vec(impls);
-
-        let range = self.expect_range(start, Token::RCurly)?;
-
-        let vtable_struct_params = self.ctx.push_id_vec(vtable_struct_params);
-        let vtable_struct = self.ctx.push_node(range, Node::StructDefinition {
-            name: interface,
-            params: vtable_struct_params,
-            scope: self.ctx.top_scope,
-        });
-
-        let id = self.ctx.push_node(range, Node::Impl {
-            interface, ty, impls, vtable_struct
-        });
-
-        self.ctx.impls.insert(id);
-
-        Ok(id)
-    }
-
-    #[instrument(skip_all)]
-    pub fn parse_interface_fn_decl(&mut self) -> DraftResult<NodeId> {
-        let start = self.source_info.top.range.start;
-
-        self.pop(); // `fn`
-
-        let name = self.parse_symbol()?;
-
-        let self_param_range = self.source_info.top.range;
-
-        self.in_fn_params_decl = true;
-        self.expect(Token::LParen)?;
-        let params = self.parse_decl_params(DeclParamParseType::Fn)?;
-
-        // add hidden self param
-        let self_symbol = Sym(self.ctx.string_interner.get_or_intern("self"));
-        let self_symbol_node = self.ctx.push_node(self_param_range, Node::Symbol(self_symbol));
-        let self_ptr_ty = self.ctx.push_node(self_param_range, Node::Type(Type::SelfPointer));
-        let self_param = self.ctx.push_node(self_param_range, Node::FnDeclParam { 
-            name: self_symbol_node, 
-            ty: Some(self_ptr_ty), 
-            default: None, 
-            index: 0 
-        });
-
-        let params_vec = self.ctx.id_vecs[params].clone();
-        params_vec.borrow_mut().insert(0, self_param);
-
-        for (i, param) in params_vec.borrow().iter().enumerate() {
-            let Node::FnDeclParam { index, .. } = &mut self.ctx.nodes[*param] else { unreachable!() };
-            *index = i as u16;
-        }
-        
-        self.expect(Token::RParen)?;
-        self.in_fn_params_decl = false;
-
-        let return_ty = if self.source_info.top.tok != Token::Semicolon {
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
-
-        let range = self.expect_range(start, Token::Semicolon)?;
-
-        let id = self.ctx.push_node(
-            range,
-            Node::InterfaceFnDecl {
-                name,
-                params,
-                return_ty,
-            },
-        );
-
-        Ok(id)
     }
 
     #[instrument(skip_all)]
@@ -1833,21 +1683,6 @@ impl<'a, W: Source> Parser<'a, W> {
                 self.ctx.addressable_nodes.insert(value);
             }
 
-            // interface arrow call?
-            while self.source_info.top.tok == Token::Arrow {
-                self.pop(); // `->`
-
-                let member = self.parse_symbol()?;
-                let end = self.ctx.ranges[member].end;
-
-                value = self.ctx.push_node(
-                    Range::new(start, end, self.source_info.path),
-                    Node::InterfaceArrow { value, member },
-                );
-
-                self.ctx.addressable_nodes.insert(value);
-            }
-
             // static member access?
             while self.source_info.top.tok == Token::DoubleColon {
                 self.pop(); // `::`
@@ -2136,8 +1971,6 @@ impl<'a, W: Source> Parser<'a, W> {
             Token::Struct => self.parse_struct_definition(),
             Token::Enum => self.parse_enum_definition(),
             Token::Fn => self.parse_fn(false),
-            Token::Interface => self.parse_interface(),
-            Token::Impl => self.parse_impl(),
             _ => {
                 let lvalue = self.parse_expression(true)?;
 
@@ -2497,18 +2330,15 @@ impl Context {
 
         let copied = match target {
             ParseTarget::FnDefinition => parser.parse_fn(false)?,
-            ParseTarget::InterfaceDefinition => parser.parse_interface()?,
             ParseTarget::StructDefinition => {
                 let parsed = parser.parse_struct_definition()?;
 
                 // if the struct has generic params, we need to copy those too
-                // todo(chad): @hack_polymorph
                 let Node::StructDefinition { params, .. } = self.nodes[parsed] else { panic!() };
                 let params = self.id_vecs[params].clone();
                 for param in params.borrow().iter() {
                     let Node::StructDeclParam { ty, .. } = self.nodes[param] else { panic!() };
                     if let Some(ty) = ty {
-                        // todo(chad): @hack_polymorph
                         if let Node::Symbol(_) = self.nodes[ty] {
                             let copied = self.copy_polymorph_if_needed(ty)?;
                             self.nodes[ty] = self.nodes[copied];
@@ -2530,7 +2360,6 @@ impl Context {
 
 pub enum ParseTarget {
     FnDefinition,
-    InterfaceDefinition,
     StructDefinition,
     EnumDefinition,
     Type,

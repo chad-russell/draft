@@ -1,9 +1,8 @@
-use cranelift_object::object::elf::RHF_DELTA_C_PLUS_PLUS;
 use tracing::instrument;
 
 use crate::{
     CompileError, Context, DraftResult, IdVec, Node, NodeElse, NodeId, NumericSpecification, Op,
-    ParseTarget, StaticMemberResolution, Sym, AsCastStyle,
+    ParseTarget, StaticMemberResolution, Sym,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -269,7 +268,8 @@ impl Context {
                 let given_name = match &self.nodes[g] {
                     Node::ValueParam {
                         name: Some(name), ..
-                    } | Node::StructDeclParam { name, .. } => *name,
+                    }
+                    | Node::StructDeclParam { name, .. } => *name,
                     a => {
                         return Err(CompileError::Node(
                             format!("Expected ValueParam, got {:?}", a.ty()),
@@ -972,15 +972,11 @@ impl Context {
                     self.assign_type(param);
                 }
 
-                self.types.insert(
-                    id,
-                    Type::Struct {
-                        name: Some(name),
-                        params,
-                    },
-                );
+                self.types.insert(id, Type::Struct { name, params });
 
-                self.match_types(id, name);
+                if let Some(name) = name {
+                    self.match_types(id, name);
+                }
             }
             Node::EnumDefinition { name, params } => {
                 // don't directly codegen a polymorph, wait until it's copied first
@@ -1142,7 +1138,7 @@ impl Context {
                                 self.types.insert(id, Type::Pointer(self.ty_empty.unwrap()));
                             }
                             "vtable" => {
-                                self.types.insert(id, Type::Pointer(vtable_struct) );
+                                self.types.insert(id, Type::Pointer(vtable_struct));
                             }
                             _ => {
                                 self.errors.push(CompileError::Node(
@@ -1515,109 +1511,6 @@ impl Context {
                 self.assign_type(block);
             }
             Node::ThreadingParamTarget => todo!(),
-            Node::Interface { name, fns, vtable_struct } => {
-                let fn_ids = self.id_vecs[fns].clone();
-                for fn_id in fn_ids.borrow().iter() {
-                    self.assign_type(*fn_id);
-                }
-
-                self.assign_type(vtable_struct);
-
-                self.types.insert(id, Type::Interface { name, fns, vtable_struct });
-            }
-            Node::InterfaceFnDecl {
-                params, return_ty, ..
-            } => {
-                let params_vec = self.id_vecs[params].clone();
-                for pid in params_vec.borrow().iter() {
-                    self.assign_type(*pid);
-                }
-
-                if let Some(return_ty) = return_ty {
-                    self.assign_type(return_ty);
-                }
-
-                self.types.insert(id, Type::Func { input_tys: params, return_ty });
-            }
-            Node::Impl {
-                interface,
-                ty,
-                impls,
-                vtable_struct,
-            } => {
-                self.assign_type(interface);
-                self.assign_type(ty);
-                self.assign_type(vtable_struct);
-
-                let interface_ty = self.get_type(interface);
-
-                let Type::Interface { fns, vtable_struct: decl_vtable_struct, .. } = interface_ty else { 
-                    self.errors.push(CompileError::Node(
-                        format!("Impl target is not an interface: it is a {}", self.nodes[interface].ty()),
-                        interface,
-                    ));
-                    return true; 
-                };
-                let fns = self.id_vecs[fns].clone();
-
-                let impls = self.id_vecs[impls].clone();
-
-                if fns.borrow().len() != impls.borrow().len() {
-                    self.errors.push(CompileError::Node(
-                        "Impls and interface fns have different lengths".to_string(),
-                        id,
-                    ));
-                    return true;
-                }
-                
-                for impl_id in impls.borrow().iter() {
-                    self.assign_type(*impl_id);
-
-                    let Node::FnDefinition { name: Some(name), .. } = self.nodes[*impl_id] else { 
-                        self.errors.push(CompileError::Node(
-                            "Expected a named fn definition here".to_string(),
-                            *impl_id,
-                        ));
-                        return true; 
-                    };
-                    
-                    let fn_definition_name_sym = self.get_symbol(name);
-                    let mut found_id = None;
-                    for f in fns.borrow().iter() {
-                        let Node::InterfaceFnDecl { name, .. } = self.nodes[*f] else { 
-                            self.errors.push(CompileError::Node(
-                                "Expected an interface fn decl here".to_string(),
-                                *f,
-                            ));
-                            return true; 
-                        };
-                        let interface_fn_decl_name_sym = self.get_symbol(name);
-                        if fn_definition_name_sym == interface_fn_decl_name_sym {
-                            found_id = Some(*f);
-                            break;
-                        }
-                    }
-
-                    let Some(found_id) = found_id else {
-                        self.errors.push(CompileError::Node(
-                            "Could not find interface fn decl".to_string(),
-                            *impl_id,
-                        ));
-                        return true;
-                    };
-
-                    self.match_types(found_id, *impl_id);
-                }
-
-                let Node::StructDefinition { params: decl_params, .. } = self.nodes[decl_vtable_struct] else { unreachable!() };
-                let Node::StructDefinition { params: given_params, .. } = self.nodes[vtable_struct] else { unreachable!() };
-                
-                let decl_params = self.id_vecs[decl_params].clone();
-                let given_params = self.id_vecs[given_params].clone();
-
-                let rearranged = self.rearrange_params(&given_params.borrow(), &decl_params.borrow(), id).unwrap();
-                *decl_params.borrow_mut() = rearranged;
-            }
             Node::AsCast { value, ty, .. } => {
                 self.assign_type(value);
                 self.assign_type(ty);
@@ -1627,14 +1520,32 @@ impl Context {
                         self.deferreds.push(id);
                         return false;
                     }
-                    (Type::Interface { .. }, _impl_ty) | (_impl_ty, Type::Interface { .. }) => {
+                    (_impl_ty, Type::Interface { .. }) => {
                         // todo(chad): do a real search
-                        let found_impl = self.impls.iter().next().unwrap();
-                        self.nodes[id] = Node::AsCast {
-                            value,
-                            ty,
-                            style: Some(AsCastStyle::ToInterface(*found_impl)),
-                        };
+                        // Searching for an `impl I for F` where `I` is `ty`, and `F` is the type of `value`
+                        // for imp in self.impls.iter() {
+                        //     let Node::Impl { interface, for_ty, .. } = self.nodes[*imp] else { unreachable!() };
+                        //     let interface_ty = self.get_type(interface);
+                        //     let for_ty_ty = self.get_type(for_ty);
+
+                        //     if let Type::Interface { .. } = interface_ty {
+                        //         if for_ty_ty == _impl_ty {
+                        //             self.nodes[id] = Node::AsCast {
+                        //                 value,
+                        //                 ty,
+                        //                 style: Some(AsCastStyle::ToInterface(*imp)),
+                        //             };
+                        //             break;
+                        //         }
+                        //     }
+                        // }
+
+                        // let found_impl = self.impls.iter().next().unwrap();
+                        // self.nodes[id] = Node::AsCast {
+                        //     value,
+                        //     ty,
+                        //     style: Some(AsCastStyle::ToInterface(*found_impl)),
+                        // };
                     }
                     _ => todo!(),
                 }
@@ -1644,45 +1555,6 @@ impl Context {
                 // self.match_types(value, ty);
 
                 self.match_types(id, ty);
-            }
-            Node::InterfaceArrow { value, member } => {
-                self.assign_type(value);
-                let interface_ty = self.get_type(value);
-
-                if let Type::Infer(_) = interface_ty {
-                    return false;
-                }
-                
-                self.assign_type(member);
-                let member_name_sym = self.get_symbol(member);
-
-                // make sure interface_ty is an interface, look up the member
-                let Type::Interface { fns, .. } = interface_ty else { 
-                    self.errors.push(CompileError::Node(
-                        format!("Interface arrow target is not an interface: it is a {}", self.nodes[value].ty()),
-                        value,
-                    ));
-                    return true; 
-                };
-
-                let fns = self.id_vecs[fns].clone();
-                let mut found_id = None;
-                for f in fns.borrow().iter() {
-                    let Node::InterfaceFnDecl { name, .. } = self.nodes[*f] else { 
-                        self.errors.push(CompileError::Node(
-                            "Expected an interface fn decl here".to_string(),
-                            *f,
-                        ));
-                        return true; 
-                    };
-                    let interface_fn_decl_name_sym = self.get_symbol(name);
-                    if interface_fn_decl_name_sym == member_name_sym {
-                        found_id = Some(*f);
-                        break;
-                    }
-                }
-
-                todo!();
             }
         }
 

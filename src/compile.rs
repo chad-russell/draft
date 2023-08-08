@@ -20,8 +20,7 @@ use cranelift_module::{
 use tracing::instrument;
 
 use crate::{
-    AsCastStyle, CompileError, Context, DraftResult, IdVec, Node, NodeId, Op,
-    StaticMemberResolution, Type,
+    CompileError, Context, DraftResult, IdVec, Node, NodeId, Op, StaticMemberResolution, Type,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -90,39 +89,6 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn predeclare_vtables(&mut self) -> DraftResult<()> {
-        for t in self.impls.clone() {
-            let Node::Impl { impls, .. } = self.nodes[t] else { unreachable!() };
-
-            let data_id = self
-                .module
-                .declare_data(&format!("vtable__{}", t.0), Linkage::Local, false, false)
-                .map_err(|err| CompileError::Message(err.to_string()))?;
-
-            let mut desc = DataDescription::new();
-            desc.init = Init::Zeros {
-                size: self.id_vecs[impls].clone().borrow().len()
-                    * self.get_pointer_type().bytes() as usize,
-            };
-
-            for (idx, &t) in self.id_vecs[impls].clone().borrow().iter().enumerate() {
-                assert!(self.completes.contains(&t));
-
-                let Value::Func(func_id) =  self.values[&t] else { todo!() };
-                let func_id = self.module.declare_func_in_data(func_id, &mut desc);
-
-                desc.write_function_addr(idx as u32 * self.get_pointer_type().bytes(), func_id);
-            }
-
-            self.module.define_data(data_id, &desc).unwrap();
-
-            self.values.insert(t, Value::Data(data_id));
-        }
-
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
     pub fn predeclare_functions(&mut self) -> DraftResult<()> {
         for t in self.topo.clone() {
             if !self.completes.contains(&t) {
@@ -180,7 +146,7 @@ impl Context {
                     .push(AbiParam::new(self.get_cranelift_type(return_ty.unwrap())));
             }
 
-            let func_name = self.func_name(name, id);
+            let func_name = self.mangled_func_name(name, id);
 
             let func = self
                 .module
@@ -194,7 +160,7 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    fn func_name(&self, name: Option<NodeId>, anonymous_id: NodeId) -> String {
+    fn mangled_func_name(&self, name: Option<NodeId>, anonymous_id: NodeId) -> String {
         name.map(|n| {
             let sym = self.nodes[n].as_symbol().unwrap();
             if self.polymorph_copies.contains(&anonymous_id) {
@@ -1227,44 +1193,8 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
-            Node::AsCast {
-                value,
-                style: Some(AsCastStyle::ToInterface(found_impl)),
-                ..
-            } => {
-                self.compile_id(value)?;
-
-                let Node::Impl { impls: _, .. } = self.ctx.nodes[found_impl] else { unreachable!() };
-
-                // pointer to vtable
-                let vtable_ptr = self.ctx.values.get(&found_impl).unwrap();
-                let vtable_ptr = self.as_cranelift_value(*vtable_ptr);
-
-                // pointer to data
-                let &data_ptr = self.ctx.values.get(&value).unwrap();
-                let data_ptr = self.as_cranelift_value(data_ptr);
-
-                // Package these up into a struct
-                let size = self.ctx.id_type_size(id);
-                let slot = self.builder.create_sized_stack_slot(StackSlotData {
-                    kind: StackSlotKind::ExplicitSlot,
-                    size,
-                });
-                let slot_addr =
-                    self.builder
-                        .ins()
-                        .stack_addr(self.ctx.module.isa().pointer_type(), slot, 0);
-
-                self.builder.ins().stack_store(data_ptr, slot, 0);
-                self.builder.ins().stack_store(
-                    vtable_ptr,
-                    slot,
-                    self.ctx.get_pointer_type().bytes() as i32,
-                );
-
-                self.ctx.values.insert(id, Value::Value(slot_addr));
-
-                Ok(())
+            Node::AsCast { .. } => {
+                todo!()
             }
             Node::FnDefinition { .. }
             | Node::StructDefinition { .. }
@@ -1577,7 +1507,7 @@ impl<'a> ToplevelCompileContext<'a> {
                 return_ty,
                 ..
             } => {
-                let name_str = self.ctx.func_name(name, id);
+                let name_str = self.ctx.mangled_func_name(name, id);
 
                 let mut sig = self.ctx.module.make_signature();
 
@@ -1600,10 +1530,6 @@ impl<'a> ToplevelCompileContext<'a> {
                 let mut builder = FunctionBuilder::new(&mut self.codegen_ctx.func, self.func_ctx);
                 builder.func.signature = sig;
                 builder.func.collect_debug_info();
-                // builder.func.name = UserFuncName::User(UserExternalName {
-                //     namespace: 0,
-                //     index: func_index.as_u32(),
-                // });
 
                 self.ctx.values.insert(id, Value::Func(func_id));
 

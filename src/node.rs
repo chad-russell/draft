@@ -26,9 +26,7 @@ pub enum NodeElse {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum AsCastStyle {
-    ToInterface(NodeId),
-}
+pub enum AsCastStyle {}
 
 #[derive(Debug, Clone, Copy)]
 pub enum Node {
@@ -77,11 +75,6 @@ pub enum Node {
         params: IdVec,
         return_ty: Option<NodeId>,
     },
-    InterfaceFnDecl {
-        name: NodeId,
-        params: IdVec,
-        return_ty: Option<NodeId>,
-    },
     StructDeclParam {
         name: NodeId,
         ty: Option<NodeId>,
@@ -122,7 +115,7 @@ pub enum Node {
         index: NodeId,
     },
     StructDefinition {
-        name: NodeId,
+        name: Option<NodeId>,
         params: IdVec,
         scope: ScopeId,
     },
@@ -139,10 +132,6 @@ pub enum Node {
         ty: NodeId,
     },
     MemberAccess {
-        value: NodeId,
-        member: NodeId,
-    },
-    InterfaceArrow {
         value: NodeId,
         member: NodeId,
     },
@@ -172,17 +161,6 @@ pub enum Node {
         value: NodeId,
     },
     SizeOf(NodeId),
-    Interface {
-        name: NodeId,
-        fns: IdVec,
-        vtable_struct: NodeId,
-    },
-    Impl {
-        interface: NodeId,
-        ty: NodeId,
-        impls: IdVec,
-        vtable_struct: NodeId,
-    },
     AsCast {
         value: NodeId,
         ty: NodeId,
@@ -237,11 +215,7 @@ impl Node {
             Node::ArrayAccess { .. } => "ArrayAccess".to_string(),
             Node::Cast { .. } => "Cast".to_string(),
             Node::SizeOf(_) => "SizeOf".to_string(),
-            Node::Interface { .. } => "Interface".to_string(),
-            Node::InterfaceFnDecl { .. } => "InterfaceFnDecl".to_string(),
-            Node::Impl { .. } => "Impl".to_string(),
             Node::AsCast { .. } => "AsCast".to_string(),
-            Node::InterfaceArrow { .. } => "InterfaceArrow".to_string(),
         }
     }
 }

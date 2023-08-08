@@ -7,34 +7,23 @@ fn print_string(s: string) {
     return;
 }
 
-interface IFoo {
-    fn foo() i64;
-    fn bar() i64;
-}
-
 struct Foo {
     x: i64,
     y: i64,
-}
-
-impl IFoo for Foo { 
-    fn bar() _ {
-        print_string("bar for Foo\n");
-        return self.x - self.y;
-    }
     
-    fn foo() _ {
-        print_string("foo for Foo\n");
-        return self.x + self.y;
+    const fn new(x: i64, y: i64) -> Foo {
+        return Foo { x: x, y: y };
+    }
+
+    const fn sum(a: i32, this = &#this) -> i64 {
+        return this.x + this.y;
     }
 }
 
 fn main() i64 {
-    let f = Foo { 3, 4 };
-    let iface = f as IFoo;
-
-    iface.vtable.foo(#cast iface.data) |> print_i64;
-    // iface->foo() |> print_i64;
+    let f = Foo::new(1, 2);
+    f.new(3, 4);
+    f->sum(3, @); // f.sum(3, &f);
     
     return 0;
 }
