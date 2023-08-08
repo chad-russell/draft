@@ -111,7 +111,7 @@ impl Context {
                 let Value::Func(func_id) =  self.values[&t] else { todo!() };
                 let func_id = self.module.declare_func_in_data(func_id, &mut desc);
 
-                desc.write_function_addr(idx as u32 * self.get_pointer_type().bits(), func_id);
+                desc.write_function_addr(idx as u32 * self.get_pointer_type().bytes(), func_id);
             }
 
             self.module.define_data(data_id, &desc).unwrap();
@@ -1308,7 +1308,6 @@ impl<'a> FunctionCompileContext<'a> {
                 .get_func_signature(func, param_ids.borrow().as_ref());
             let sig = self.builder.import_signature(sig_ref);
 
-            self.as_cranelift_value(self.ctx.values[&func]);
             let callee = self.rvalue(func);
 
             self.builder.ins().call_indirect(sig, callee, &param_values)
@@ -1512,6 +1511,7 @@ impl<'a> FunctionCompileContext<'a> {
                         .module
                         .declare_func_in_func(func_id, self.builder.func)
                 });
+
                 self.builder
                     .ins()
                     .func_addr(self.ctx.get_cranelift_type(id), func_ref)
@@ -1522,6 +1522,7 @@ impl<'a> FunctionCompileContext<'a> {
                         .module
                         .declare_data_in_func(data_id, self.builder.func)
                 });
+
                 self.builder.ins().global_value(types::I64, data_ref)
             }
         };

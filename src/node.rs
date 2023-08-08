@@ -142,6 +142,10 @@ pub enum Node {
         value: NodeId,
         member: NodeId,
     },
+    InterfaceArrow {
+        value: NodeId,
+        member: NodeId,
+    },
     StaticMemberAccess {
         value: NodeId,
         member: NodeId,
@@ -177,6 +181,7 @@ pub enum Node {
         interface: NodeId,
         ty: NodeId,
         impls: IdVec,
+        vtable_struct: NodeId,
     },
     AsCast {
         value: NodeId,
@@ -236,6 +241,7 @@ impl Node {
             Node::InterfaceFnDecl { .. } => "InterfaceFnDecl".to_string(),
             Node::Impl { .. } => "Impl".to_string(),
             Node::AsCast { .. } => "AsCast".to_string(),
+            Node::InterfaceArrow { .. } => "InterfaceArrow".to_string(),
         }
     }
 }

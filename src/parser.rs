@@ -124,6 +124,7 @@ pub enum Token {
     Colon,
     Comma,
     Dot,
+    Arrow,
     Underscore,
     UnderscoreSymbol(Sym),
     EqEq,
@@ -474,6 +475,9 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
         if self.source_info.prefix(".", Token::Dot) {
+            return;
+        }
+        if self.source_info.prefix("->", Token::Arrow) {
             return;
         }
         if self.source_info.prefix(";", Token::Semicolon) {
@@ -1231,18 +1235,32 @@ impl<'a, W: Source> Parser<'a, W> {
         self.expect(Token::LCurly)?;
 
         let mut impls = Vec::new();
+        let mut vtable_struct_params = Vec::new();
+        let mut vtable_idx = 0;
 
         while self.source_info.top.tok != Token::RCurly {
             let fn_impl = self.parse_impl_fn(ty)?; 
             impls.push(fn_impl);
+
+            let Node::FnDefinition { name: Some(name), .. } = self.ctx.nodes[fn_impl] else { unreachable!() };
+            let vtable_arg = self.ctx.push_node(self.ctx.ranges[fn_impl], Node::StructDeclParam { name, ty: Some(fn_impl), default: None, index: vtable_idx });
+            vtable_idx += 1;
+            vtable_struct_params.push(vtable_arg);
         }
 
         let impls = self.ctx.push_id_vec(impls);
 
         let range = self.expect_range(start, Token::RCurly)?;
 
+        let vtable_struct_params = self.ctx.push_id_vec(vtable_struct_params);
+        let vtable_struct = self.ctx.push_node(range, Node::StructDefinition {
+            name: interface,
+            params: vtable_struct_params,
+            scope: self.ctx.top_scope,
+        });
+
         let id = self.ctx.push_node(range, Node::Impl {
-            interface, ty, impls
+            interface, ty, impls, vtable_struct
         });
 
         self.ctx.impls.insert(id);
@@ -1765,7 +1783,7 @@ impl<'a, W: Source> Parser<'a, W> {
             )),
         }?;
 
-        while let Token::LParen | Token::LSquare | Token::Dot | Token::DoubleColon | Token::As =
+        while let Token::LParen | Token::LSquare | Token::Dot | Token::Arrow | Token::DoubleColon | Token::As =
             self.source_info.top.tok
         {
             // function call?
@@ -1810,6 +1828,21 @@ impl<'a, W: Source> Parser<'a, W> {
                 value = self.ctx.push_node(
                     Range::new(start, end, self.source_info.path),
                     Node::MemberAccess { value, member },
+                );
+
+                self.ctx.addressable_nodes.insert(value);
+            }
+
+            // interface arrow call?
+            while self.source_info.top.tok == Token::Arrow {
+                self.pop(); // `->`
+
+                let member = self.parse_symbol()?;
+                let end = self.ctx.ranges[member].end;
+
+                value = self.ctx.push_node(
+                    Range::new(start, end, self.source_info.path),
+                    Node::InterfaceArrow { value, member },
                 );
 
                 self.ctx.addressable_nodes.insert(value);

@@ -1,3 +1,4 @@
+use cranelift_object::object::elf::RHF_DELTA_C_PLUS_PLUS;
 use tracing::instrument;
 
 use crate::{
@@ -268,7 +269,7 @@ impl Context {
                 let given_name = match &self.nodes[g] {
                     Node::ValueParam {
                         name: Some(name), ..
-                    } => *name,
+                    } | Node::StructDeclParam { name, .. } => *name,
                     a => {
                         return Err(CompileError::Node(
                             format!("Expected ValueParam, got {:?}", a.ty()),
@@ -1141,7 +1142,7 @@ impl Context {
                                 self.types.insert(id, Type::Pointer(self.ty_empty.unwrap()));
                             }
                             "vtable" => {
-                                self.types.insert(id, self.get_type(vtable_struct) );
+                                self.types.insert(id, Type::Pointer(vtable_struct) );
                             }
                             _ => {
                                 self.errors.push(CompileError::Node(
@@ -1542,13 +1543,15 @@ impl Context {
                 interface,
                 ty,
                 impls,
+                vtable_struct,
             } => {
                 self.assign_type(interface);
                 self.assign_type(ty);
+                self.assign_type(vtable_struct);
 
                 let interface_ty = self.get_type(interface);
 
-                let Type::Interface { fns, .. } = interface_ty else { 
+                let Type::Interface { fns, vtable_struct: decl_vtable_struct, .. } = interface_ty else { 
                     self.errors.push(CompileError::Node(
                         format!("Impl target is not an interface: it is a {}", self.nodes[interface].ty()),
                         interface,
@@ -1605,6 +1608,15 @@ impl Context {
 
                     self.match_types(found_id, *impl_id);
                 }
+
+                let Node::StructDefinition { params: decl_params, .. } = self.nodes[decl_vtable_struct] else { unreachable!() };
+                let Node::StructDefinition { params: given_params, .. } = self.nodes[vtable_struct] else { unreachable!() };
+                
+                let decl_params = self.id_vecs[decl_params].clone();
+                let given_params = self.id_vecs[given_params].clone();
+
+                let rearranged = self.rearrange_params(&given_params.borrow(), &decl_params.borrow(), id).unwrap();
+                *decl_params.borrow_mut() = rearranged;
             }
             Node::AsCast { value, ty, .. } => {
                 self.assign_type(value);
@@ -1627,9 +1639,50 @@ impl Context {
                     _ => todo!(),
                 }
 
+                self.match_addressable(id, value);
+
                 // self.match_types(value, ty);
 
                 self.match_types(id, ty);
+            }
+            Node::InterfaceArrow { value, member } => {
+                self.assign_type(value);
+                let interface_ty = self.get_type(value);
+
+                if let Type::Infer(_) = interface_ty {
+                    return false;
+                }
+                
+                self.assign_type(member);
+                let member_name_sym = self.get_symbol(member);
+
+                // make sure interface_ty is an interface, look up the member
+                let Type::Interface { fns, .. } = interface_ty else { 
+                    self.errors.push(CompileError::Node(
+                        format!("Interface arrow target is not an interface: it is a {}", self.nodes[value].ty()),
+                        value,
+                    ));
+                    return true; 
+                };
+
+                let fns = self.id_vecs[fns].clone();
+                let mut found_id = None;
+                for f in fns.borrow().iter() {
+                    let Node::InterfaceFnDecl { name, .. } = self.nodes[*f] else { 
+                        self.errors.push(CompileError::Node(
+                            "Expected an interface fn decl here".to_string(),
+                            *f,
+                        ));
+                        return true; 
+                    };
+                    let interface_fn_decl_name_sym = self.get_symbol(name);
+                    if interface_fn_decl_name_sym == member_name_sym {
+                        found_id = Some(*f);
+                        break;
+                    }
+                }
+
+                todo!();
             }
         }
 

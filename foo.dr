@@ -9,6 +9,7 @@ fn print_string(s: string) {
 
 interface IFoo {
     fn foo() i64;
+    fn bar() i64;
 }
 
 struct Foo {
@@ -16,17 +17,24 @@ struct Foo {
     y: i64,
 }
 
-impl IFoo for Foo {
+impl IFoo for Foo { 
+    fn bar() _ {
+        print_string("bar for Foo\n");
+        return self.x - self.y;
+    }
+    
     fn foo() _ {
-        print_string("Foo");
+        print_string("foo for Foo\n");
         return self.x + self.y;
     }
 }
 
 fn main() i64 {
-    let f = Foo { x: 1, y: 2 };
+    let f = Foo { 3, 4 };
     let iface = f as IFoo;
 
-    iface.vtable.foo(#cast iface.data); // iface->foo();
+    iface.vtable.foo(#cast iface.data) |> print_i64;
+    // iface->foo() |> print_i64;
+    
     return 0;
 }
