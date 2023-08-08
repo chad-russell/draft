@@ -4,7 +4,7 @@ use string_interner::symbol::SymbolU32;
 use tracing::instrument;
 
 use crate::{
-    CompileError, DraftResult, Context, IdVec, Node, NodeElse, NodeId, Source, SourceInfo, StaticStrSource, Type,
+    CompileError, DraftResult, Context, IdVec, Node, NodeElse, NodeId, Source, SourceInfo, StaticStrSource, Type, ArrayLen,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
@@ -137,7 +137,6 @@ pub enum Token {
     Thread,
     Atmark,
     Fn,
-    Interface,
     Impl,
     Extern,
     Let,
@@ -355,9 +354,6 @@ impl<'a, W: Source> Parser<'a, W> {
         }
 
         if self.source_info.prefix_keyword("fn", Token::Fn) {
-            return;
-        }
-        if self.source_info.prefix_keyword("interface", Token::Interface) {
             return;
         }
         if self.source_info.prefix_keyword("impl", Token::Impl) {
@@ -2127,10 +2123,19 @@ impl<'a, W: Source> Parser<'a, W> {
             Token::LSquare => {
                 let start = self.source_info.top.range.start;
                 self.pop(); // `[`
-                self.expect(Token::RSquare)?;
+                let len = if let Token::IntegerLiteral(len, _) = self.source_info.top.tok {
+                    self.pop();
+                    ArrayLen::Some(len as usize)
+                } else if let Token::Underscore = self.source_info.top.tok {
+                    self.pop();
+                    ArrayLen::Infer
+                } else {
+                    ArrayLen::None 
+                };
+                self.expect(Token::RSquare)?; // `]`
                 let ty = self.parse_type()?;
                 let range = Range::new(start, self.ctx.ranges[ty].end, self.source_info.path);
-                Ok(self.ctx.push_node(range, Node::Type(Type::Array(ty))))
+                Ok(self.ctx.push_node(range, Node::Type(Type::Array(ty, len))))
             }
             Token::Star => {
                 let mut range = self.source_info.top.range;

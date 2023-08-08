@@ -23,18 +23,20 @@
     - [x] restrict to only pointers (?)
 - [-] slices
     - [ ] Make a distinction between arrays and slices:
-        `let a: [3]i64 = [1, 2, 3];` is basically identical memory-wise to a struct with 3 members. Can be indexed like a slice
-        `let a: [_]i64 = [1, 2, 3];` is the same thing, inferring 3 as the len
-        `let a: []i64 = _{ data: &[1, 2, 3], len: 3 };` is a slice. So an array literal expression can be type-coerced to an array or a slice
-        `let a: []i64 = [1, 2, 3] as []i64;` is the same as above
-        `let a: []i64 = [1, 2, 3] as []_;` is the same as above
-        `let a: []i64 = [1, 2, 3] as _;` is the same as above
+        - [x] `let a: [3]i64 = [1, 2, 3];` is basically identical memory-wise to a struct with 3 members. Can be indexed like a slice
+        - [x] `let a: [_]i64 = [1, 2, 3];` is the same thing, inferring 3 as the len
+        - [ ] `let a: []i64 = _{ data: &[1, 2, 3], len: 3 } as _;` is a slice. So an array literal expression can be type-coerced to an array or a slice
+        - [ ] `let a: []i64 = [1, 2, 3] as []i64;` is the same as above
+        - [ ] `let a: []i64 = [1, 2, 3] as []_;` is the same as above
+        - [ ] `let a: []i64 = [1, 2, 3] as _;` is the same as above
 - [x] for loops
 - [x] !=, <, >, <=, >= operators
 - [x] while loops
 - [x] arrays assignable to Array type
 - [x] pipe/threading/ufcs operator
     - [x] threading operator can choose where the argument gets threaded into
+- [ ] const struct members
+- [ ] arrow operator
 - [x] strings
     - [x] store in program's data segment
 - [x] short-circuit and/or operators
@@ -57,8 +59,6 @@
     - [ ] make sure extern functions works with libs/dylibs when compiling to binary
     - [ ] pass structs as arguments
 - [ ] implicit function arguments
-- [ ] closures (can this be fully done using implicit function arguments?)
-- [ ] immutability (?)
 - [ ] debugger
 - [ ] modules, imports
     - [ ] import { A, B::{C, D}, E::* } from "whatever/bar"

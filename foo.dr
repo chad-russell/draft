@@ -7,23 +7,19 @@ fn print_string(s: string) {
     return;
 }
 
-struct Foo {
-    x: i64,
-    y: i64,
-    
-    const fn new(x: i64, y: i64) -> Foo {
-        return Foo { x: x, y: y };
-    }
-
-    const fn sum(a: i32, this = &#this) -> i64 {
-        return this.x + this.y;
-    }
-}
+// fn foo(a: []i64) {
+    // a[2] = 5;
+    // print_i64(a[2]);
+    // return;
+// }
 
 fn main() i64 {
-    let f = Foo::new(1, 2);
-    f.new(3, 4);
-    f->sum(3, @); // f.sum(3, &f);
+    let a = [1, 2, 3];
+
+    // foo(a);
+    // print_i64(a[2]);
+
+    let b = a as []_;
     
     return 0;
 }

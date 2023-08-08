@@ -36,14 +36,9 @@ pub enum Type {
         name: Option<NodeId>,
         params: IdVec,
     },
-    Interface {
-        name: NodeId,
-        fns: IdVec,
-        vtable_struct: NodeId,
-    },
     EnumNoneType, // Type given to enum members with no storage. We need a distinct type to differentiate it from being unassigned
     Pointer(NodeId),
-    Array(NodeId),
+    Array(NodeId, ArrayLen),
 }
 
 impl Type {
@@ -86,6 +81,13 @@ impl Type {
     pub fn is_float(&self) -> bool {
         matches!(&self, Type::FloatLiteral | Type::F32 | Type::F64)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ArrayLen {
+    Some(usize),
+    Infer,
+    None,
 }
 
 #[derive(Debug)]
@@ -161,12 +163,16 @@ impl Context {
                 }
             }
 
+            // Coerce array with an inferred length to an array with a known length
+            (Type::Array(_, ArrayLen::Some(_)), Type::Array(_, ArrayLen::Infer)) => first,
+            (Type::Array(_, ArrayLen::Infer), Type::Array(_, ArrayLen::Some(_))) => second,
+
             // For aggregate types, the type matcher should have already detected a mismatch
             // so it doesn't really matter which is chosen
             (Type::Func { .. }, Type::Func { .. })
             | (Type::Enum { .. }, Type::Enum { .. })
             | (Type::Pointer(_) | Type::SelfPointer, Type::Pointer(_) | Type::SelfPointer)
-            | (Type::Array(_), Type::Array(_)) => first,
+            | (Type::Array(_, _), Type::Array(_, _)) => first,
 
             // Anything else
             _ => {
@@ -581,7 +587,27 @@ impl Context {
                     }
                 }
             },
-            (Type::Array(n1), Type::Array(n2)) => {
+            (Type::Array(n1, l1), Type::Array(n2, l2)) => {
+                if let (ArrayLen::Some(_), ArrayLen::None) | (ArrayLen::None, ArrayLen::Some(_)) =
+                    (l1, l2)
+                {
+                    self.errors.push(CompileError::Node2(
+                        "Could not match types: static vs dynamic length arrays".to_string(),
+                        ty1,
+                        ty2,
+                    ));
+                }
+
+                if let (ArrayLen::Some(l1), ArrayLen::Some(l2)) = (l1, l2) {
+                    if l1 != l2 {
+                        self.errors.push(CompileError::Node2(
+                            "Could not match types: array lengths differ".to_string(),
+                            ty1,
+                            ty2,
+                        ));
+                    }
+                }
+
                 self.match_types(n1, n2);
             }
             (Type::IntLiteral, bt) | (bt, Type::IntLiteral) if bt.is_basic() => {
@@ -1091,11 +1117,19 @@ impl Context {
                             ));
                         }
                     }
-                    Type::Array(array_ty) => {
+                    Type::Array(array_ty, len) => {
                         let name = self.string_interner.resolve(member_name_sym.0).unwrap();
                         match name {
                             "len" => {
-                                self.types.insert(id, Type::I64);
+                                if let ArrayLen::Some(_) | ArrayLen::Infer = len {
+                                    self.errors.push(CompileError::Node(
+                                        "'len' is not a property on a static length array. Try ::len to access the static length property"
+                                            .to_string(),
+                                        member,
+                                    ));
+                                } else {
+                                    self.types.insert(id, Type::I64);
+                                }
                             }
                             "data" => {
                                 self.types.insert(id, Type::Pointer(array_ty));
@@ -1124,26 +1158,6 @@ impl Context {
                                 self.errors.push(CompileError::Node(
                                     format!(
                                         "Array has no member {:?}: options are 'len' or 'data'",
-                                        name
-                                    ),
-                                    member,
-                                ));
-                            }
-                        }
-                    }
-                    Type::Interface { vtable_struct, .. } => {
-                        let name = self.string_interner.resolve(member_name_sym.0).unwrap();
-                        match name {
-                            "data" => {
-                                self.types.insert(id, Type::Pointer(self.ty_empty.unwrap()));
-                            }
-                            "vtable" => {
-                                self.types.insert(id, Type::Pointer(vtable_struct));
-                            }
-                            _ => {
-                                self.errors.push(CompileError::Node(
-                                    format!(
-                                        "Interface has no member {:?}: options are 'data' or 'vtable'",
                                         name
                                     ),
                                     member,
@@ -1197,63 +1211,16 @@ impl Context {
 
                 match value_ty {
                     Type::Enum { params, .. } => {
-                        let field_ids = self.id_vecs[params].clone();
-                        let mut found = false;
-
-                        for (index, &field) in field_ids.borrow().iter().enumerate() {
-                            self.assign_type(field);
-
-                            let (field_name, is_none_type) = match &self.nodes[field] {
-                                Node::EnumDeclParam { name, ty } => (*name, ty.is_none()),
-                                _ => {
-                                    self.errors.push(CompileError::Node(
-                                        format!(
-                                            "Cannot perform member access as this field's name ({:?}) could not be found",
-                                            &self.ranges[field]
-                                        ),
-                                        id,
-                                    ));
-                                    return true;
-                                }
-                            };
-
-                            let field_name_sym = self.get_symbol(field_name);
-                            let member_name_sym = self.get_symbol(member);
-
-                            if field_name_sym == member_name_sym {
-                                // If the field is a name-only enum param, then there are no input types
-                                let input_tys = if is_none_type { vec![] } else { vec![field] };
-                                let input_tys = self.push_id_vec(input_tys);
-
-                                self.types.insert(
-                                    id,
-                                    Type::Func {
-                                        input_tys,
-                                        return_ty: Some(value),
-                                    },
-                                );
-
-                                self.nodes[id] = Node::StaticMemberAccess {
-                                    value: value,
-                                    member: member,
-                                    resolved: Some(StaticMemberResolution::EnumConstructor {
-                                        base: value,
-                                        index: index as _,
-                                    }),
-                                };
-
-                                if !self.topo.contains(&id) {
-                                    self.topo.push(id);
-                                }
-
-                                found = true;
-                                break;
-                            }
-                        }
-
-                        if !found {
+                        return self
+                            .assign_type_static_member_access_enum(params, member, value, id);
+                    }
+                    Type::Array(_, _) => {
+                        let member_name = self.get_symbol_str(member);
+                        if member_name == "len" {
+                            self.types.insert(id, Type::I64);
+                        } else {
                             self.errors.push(CompileError::Node(
-                                "Could not find member".to_string(),
+                                format!("Array has no static member {:?}. The only static member is 'len'", member_name),
                                 member,
                             ));
                         }
@@ -1362,7 +1329,10 @@ impl Context {
                     self.check_not_unspecified_polymorph(member);
                 }
 
-                self.types.insert(id, Type::Array(ty));
+                self.types.insert(
+                    id,
+                    Type::Array(ty, ArrayLen::Some(self.id_vecs[members].borrow().len())),
+                );
             }
             Node::ArrayAccess { array, index } => {
                 self.assign_type(array);
@@ -1371,7 +1341,7 @@ impl Context {
                 let array_ty = self.get_type(array);
 
                 match array_ty {
-                    Type::Array(ty) => {
+                    Type::Array(ty, _) => {
                         // todo(chad): @Hack: there needs to be a way of doing `self.match_types(id, Type::I64);`
                         // for now just hardcode to i64 for testing purposes
                         self.types.insert(index, Type::I64);
@@ -1485,7 +1455,7 @@ impl Context {
                         self.deferreds.push(id);
                         return false;
                     }
-                    Type::Array(array_element_ty) => {
+                    Type::Array(array_element_ty, _) => {
                         self.match_types(label, array_element_ty);
                     }
                     Type::String => {
@@ -1520,33 +1490,6 @@ impl Context {
                         self.deferreds.push(id);
                         return false;
                     }
-                    (_impl_ty, Type::Interface { .. }) => {
-                        // todo(chad): do a real search
-                        // Searching for an `impl I for F` where `I` is `ty`, and `F` is the type of `value`
-                        // for imp in self.impls.iter() {
-                        //     let Node::Impl { interface, for_ty, .. } = self.nodes[*imp] else { unreachable!() };
-                        //     let interface_ty = self.get_type(interface);
-                        //     let for_ty_ty = self.get_type(for_ty);
-
-                        //     if let Type::Interface { .. } = interface_ty {
-                        //         if for_ty_ty == _impl_ty {
-                        //             self.nodes[id] = Node::AsCast {
-                        //                 value,
-                        //                 ty,
-                        //                 style: Some(AsCastStyle::ToInterface(*imp)),
-                        //             };
-                        //             break;
-                        //         }
-                        //     }
-                        // }
-
-                        // let found_impl = self.impls.iter().next().unwrap();
-                        // self.nodes[id] = Node::AsCast {
-                        //     value,
-                        //     ty,
-                        //     style: Some(AsCastStyle::ToInterface(*found_impl)),
-                        // };
-                    }
                     _ => todo!(),
                 }
 
@@ -1556,6 +1499,77 @@ impl Context {
 
                 self.match_types(id, ty);
             }
+        }
+
+        return true;
+    }
+
+    fn assign_type_static_member_access_enum(
+        &mut self,
+        params: IdVec,
+        member: NodeId,
+        value: NodeId,
+        id: NodeId,
+    ) -> bool {
+        let field_ids = self.id_vecs[params].clone();
+        let mut found = false;
+
+        for (index, &field) in field_ids.borrow().iter().enumerate() {
+            self.assign_type(field);
+
+            let (field_name, is_none_type) = match &self.nodes[field] {
+                Node::EnumDeclParam { name, ty } => (*name, ty.is_none()),
+                _ => {
+                    self.errors.push(CompileError::Node(
+                                        format!(
+                                            "Cannot perform member access as this field's name ({:?}) could not be found",
+                                            &self.ranges[field]
+                                        ),
+                                        id,
+                                    ));
+                    return true;
+                }
+            };
+
+            let field_name_sym = self.get_symbol(field_name);
+            let member_name_sym = self.get_symbol(member);
+
+            if field_name_sym == member_name_sym {
+                // If the field is a name-only enum param, then there are no input types
+                let input_tys = if is_none_type { vec![] } else { vec![field] };
+                let input_tys = self.push_id_vec(input_tys);
+
+                self.types.insert(
+                    id,
+                    Type::Func {
+                        input_tys,
+                        return_ty: Some(value),
+                    },
+                );
+
+                self.nodes[id] = Node::StaticMemberAccess {
+                    value: value,
+                    member: member,
+                    resolved: Some(StaticMemberResolution::EnumConstructor {
+                        base: value,
+                        index: index as _,
+                    }),
+                };
+
+                if !self.topo.contains(&id) {
+                    self.topo.push(id);
+                }
+
+                found = true;
+                break;
+            }
+        }
+
+        if !found {
+            self.errors.push(CompileError::Node(
+                "Could not find member".to_string(),
+                member,
+            ));
         }
 
         return true;
@@ -1815,13 +1829,8 @@ impl Context {
             Type::Pointer(ty) => {
                 self.assign_type(ty);
             }
-            Type::Array(ty) => {
+            Type::Array(ty, _) => {
                 self.assign_type(ty);
-            }
-            Type::Interface { fns, .. } => {
-                for &fn_id in self.id_vecs[fns].clone().borrow().iter() {
-                    self.assign_type(fn_id);
-                }
             }
             Type::Empty
             | Type::SelfPointer

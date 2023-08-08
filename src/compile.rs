@@ -20,7 +20,8 @@ use cranelift_module::{
 use tracing::instrument;
 
 use crate::{
-    CompileError, Context, DraftResult, IdVec, Node, NodeId, Op, StaticMemberResolution, Type,
+    ArrayLen, CompileError, Context, DraftResult, IdVec, Node, NodeId, Op, StaticMemberResolution,
+    Type,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -214,7 +215,7 @@ impl Context {
             | Type::Func { .. }
             | Type::Struct { .. }
             | Type::Enum { .. }
-            | Type::Array(_)
+            | Type::Array(_, _)
             | Type::String => self.get_pointer_type(),
             Type::Infer(_) => todo!(),
             _ => todo!("{:?}", &self.types[&param]),
@@ -245,6 +246,7 @@ impl Context {
             Type::I64 | Type::U64 | Type::F64 => 8,
             Type::Func { .. } => 8,
             Type::Pointer(_) => 8,
+            Type::Array(ty, ArrayLen::Some(len)) => self.id_type_size(ty) * len as StackSize,
             Type::Struct { params, .. } => {
                 // todo(chad): c struct packing rules if annotated
                 self.id_vecs[params]
@@ -264,7 +266,7 @@ impl Context {
                     .unwrap_or_default()
                     + self.enum_tag_size()
             }
-            Type::Array(_) | Type::String | Type::Interface { .. } => 16,
+            Type::Array(_, ArrayLen::None) | Type::String => 16,
             Type::EnumNoneType | Type::Empty => 0,
             _ => todo!("get_type_size for {:?}", ty),
         }
@@ -324,7 +326,7 @@ impl Context {
     pub fn is_aggregate_type(&self, ty: Type) -> bool {
         matches!(
             ty,
-            Type::Struct { .. } | Type::Enum { .. } | Type::Array(_) | Type::String
+            Type::Struct { .. } | Type::Enum { .. } | Type::Array(_, _) | Type::String
         )
     }
 }
@@ -1064,38 +1066,28 @@ impl<'a> FunctionCompileContext<'a> {
                     kind: StackSlotKind::ExplicitSlot,
                     size: member_size * members.borrow().len() as u32,
                 });
+
+                let mut offset = 0;
+                for &member in members.borrow().iter() {
+                    self.compile_id(member)?;
+                    let member_value = self.as_cranelift_value(self.ctx.values[&member]);
+                    self.builder.ins().stack_store(
+                        member_value,
+                        member_storage_slot,
+                        offset as i32,
+                    );
+                    offset += member_size;
+                }
+
                 let member_storage_slot_addr = self.builder.ins().stack_addr(
                     self.ctx.module.isa().pointer_type(),
                     member_storage_slot,
                     0,
                 );
 
-                let mut offset = 0;
-                for &member in members.borrow().iter() {
-                    self.compile_id(member)?;
-                    self.store_with_offset(member, Value::Value(member_storage_slot_addr), offset);
-                    offset += member_size;
-                }
-
-                let slot = self.builder.create_sized_stack_slot(StackSlotData {
-                    kind: StackSlotKind::ExplicitSlot,
-                    size: self.ctx.id_type_size(id),
-                });
-                let slot_addr =
-                    self.builder
-                        .ins()
-                        .stack_addr(self.ctx.module.isa().pointer_type(), slot, 0);
-
-                let len = self
-                    .builder
-                    .ins()
-                    .iconst(types::I64, members.borrow().len() as i64);
-                self.builder
-                    .ins()
-                    .store(MemFlags::new(), member_storage_slot_addr, slot_addr, 0);
-                self.builder.ins().store(MemFlags::new(), len, slot_addr, 8);
-
-                self.ctx.values.insert(id, Value::Value(slot_addr));
+                self.ctx
+                    .values
+                    .insert(id, Value::Value(member_storage_slot_addr));
 
                 Ok(())
             }
@@ -1103,15 +1095,22 @@ impl<'a> FunctionCompileContext<'a> {
                 self.compile_id(array)?;
                 self.compile_id(index)?;
 
+                let array_ty = self.ctx.get_type(array);
+
                 let member_size = self.ctx.id_type_size(id);
-
                 let array_value = self.rvalue(array);
-                let array_ptr_value = self.load(types::I64, array_value, 0);
                 let index_value = self.rvalue(index);
-                let index_value = self.builder.ins().imul_imm(index_value, member_size as i64);
-                let array_ptr_value = self.builder.ins().iadd(array_ptr_value, index_value);
 
-                self.ctx.values.insert(id, Value::Value(array_ptr_value));
+                let array_ptr_value = if let Type::Array(_, ArrayLen::Some(_)) = array_ty {
+                    array_value
+                } else {
+                    self.load(types::I64, array_value, 0)
+                };
+
+                let index_value = self.builder.ins().imul_imm(index_value, member_size as i64);
+                let element_ptr = self.builder.ins().iadd(array_ptr_value, index_value);
+
+                self.ctx.values.insert(id, Value::Value(element_ptr));
 
                 Ok(())
             }
@@ -1193,13 +1192,23 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
+            Node::StaticMemberAccess { value, .. } => {
+                let value_ty = self.ctx.get_type(value);
+                let Type::Array(_, ArrayLen::Some(len)) = value_ty else { unreachable!() };
+
+                self.ctx.values.insert(
+                    id,
+                    Value::Value(self.builder.ins().iconst(types::I64, len as i64)),
+                );
+
+                Ok(())
+            }
             Node::AsCast { .. } => {
                 todo!()
             }
             Node::FnDefinition { .. }
             | Node::StructDefinition { .. }
-            | Node::EnumDefinition { .. }
-            | Node::StaticMemberAccess { .. } => Ok(()), // This should have already been handled by the toplevel context
+            | Node::EnumDefinition { .. } => Ok(()), // This should have already been handled by the toplevel context
             _ => todo!("compile_id for {:?}", &self.ctx.nodes[id]),
         }
     }
@@ -1302,24 +1311,12 @@ impl<'a> FunctionCompileContext<'a> {
             ty = self.ctx.get_type(inner);
         }
 
-        if let Type::Array(_) | Type::String = ty {
+        if let Type::Array(_, _) | Type::String = ty {
             let data_sym = self.ctx.string_interner.get_or_intern("data");
             let len_sym = self.ctx.string_interner.get_or_intern("len");
             if member_name.0 == data_sym {
                 return Ok(0);
             } else if member_name.0 == len_sym {
-                return Ok(self.ctx.get_pointer_type().bytes());
-            } else {
-                panic!()
-            }
-        }
-
-        if let Type::Interface { .. } = ty {
-            let data_sym = self.ctx.string_interner.get_or_intern("data");
-            let vtable_sym = self.ctx.string_interner.get_or_intern("vtable");
-            if member_name.0 == data_sym {
-                return Ok(0);
-            } else if member_name.0 == vtable_sym {
                 return Ok(self.ctx.get_pointer_type().bytes());
             } else {
                 panic!()
