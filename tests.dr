@@ -202,6 +202,40 @@ fn test_static_array_len() {
     return;
 }
 
+fn schange_array(a: [_]i64) {
+    a[2] = 5;
+    print_i64(a[2]);
+    return;
+}
+
+fn change_array(a: []i64) {
+    a[2] = 5;
+    print_i64(a[2]);
+    return;
+}
+
+fn test_array_casts() i64 {
+    let a = [1i64, 2, 3];
+
+    schange_array(a);
+    print_i64(a[2]);
+
+    let b: []i64 = a as _;
+    change_array(b);
+    print_i64(b[2]);
+    print_i64(a[2]);
+
+    let c = _{ data: #cast(*_) &a, len: a::len };
+    let d = c as []_;
+    change_array(d);
+    
+    c = _{ data: b.data, len: b.len };
+    d = c as []_;
+    change_array(d);
+    
+    return 0;
+}
+
 fn main() i64 {
     {
         let te1 = 3i64;
@@ -313,6 +347,8 @@ fn main() i64 {
     4 |> sub(@, 3) |> print_i64;
     
     test_static_array_len();
+
+    test_array_casts();
 
     return 0;
 }

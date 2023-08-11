@@ -1,5 +1,9 @@
 # Bugs
 - [ ] shouldn't have to type `return` at the end of every function with no return type
+- [ ] ```
+    let a: [3]i64 = [1, 2, 3]; 
+    a::len + a[0] |> print_i64;
+    ```
 
 # Features
 - [x] test returning structs from a function
@@ -21,22 +25,26 @@
 - [x] enums
 - [x] #cast
     - [x] restrict to only pointers (?)
-- [-] slices
-    - [ ] Make a distinction between arrays and slices:
+- [x] slices
+    - [x] Make a distinction between arrays and slices:
         - [x] `let a: [3]i64 = [1, 2, 3];` is basically identical memory-wise to a struct with 3 members. Can be indexed like a slice
         - [x] `let a: [_]i64 = [1, 2, 3];` is the same thing, inferring 3 as the len
-        - [ ] `let a: []i64 = _{ data: &[1, 2, 3], len: 3 } as _;` is a slice. So an array literal expression can be type-coerced to an array or a slice
-        - [ ] `let a: []i64 = [1, 2, 3] as []i64;` is the same as above
-        - [ ] `let a: []i64 = [1, 2, 3] as []_;` is the same as above
-        - [ ] `let a: []i64 = [1, 2, 3] as _;` is the same as above
+        - [x] `let a: []i64 = _{ data: &[1, 2, 3], len: 3 } as _;` is a slice. So an array literal expression can be type-coerced to an array or a slice
+        - [x] `let a: []i64 = [1, 2, 3] as []i64;` is the same as above
+        - [x] `let a: []i64 = [1, 2, 3] as []_;` is the same as above
+        - [x] `let a: []i64 = [1, 2, 3] as _;` is the same as above
 - [x] for loops
 - [x] !=, <, >, <=, >= operators
 - [x] while loops
 - [x] arrays assignable to Array type
 - [x] pipe/threading/ufcs operator
     - [x] threading operator can choose where the argument gets threaded into
-- [ ] const struct members
+- [ ] #transparent
 - [ ] arrow operator
+- [ ] #this
+- [ ] const struct members
+    - [ ] functions
+    - [ ] other stuff??
 - [x] strings
     - [x] store in program's data segment
 - [x] short-circuit and/or operators
@@ -45,11 +53,9 @@
     - [ ] `match`
     - [ ] `if let`
     - [ ] `let else`
-- [ ] #transparent
-- [ ] #this
+- [ ] labelled blocks (use as target for resolve/continue/defer)
 - [ ] continue
 - [ ] defer
-- [ ] labelled blocks (use as target for resolve/continue/defer)
 - [ ] any / #astof(...) / type info stuff
 - [ ] question mark operator
 - [ ] string interpolation
@@ -64,6 +70,7 @@
     - [ ] import { A, B::{C, D}, E::* } from "whatever/bar"
 
 # Performance
+- [ ] investigate performance hit of using Box/Rc instead of the IdVec convention
 - [ ] use the `stack_store` cranelift ir instruction
 - [ ] use cranelift's frontend for `let` bindings - they don't need to always have stack storage by default unless something is specifically taking a reference to them later
 - [ ] when doing codegen for aggregate types, they don't always need their own slot. Usually it's going to get copied into the slot of somethign else like a let binding, so we can just directly codegen it into that slot

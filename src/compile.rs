@@ -20,8 +20,8 @@ use cranelift_module::{
 use tracing::instrument;
 
 use crate::{
-    ArrayLen, CompileError, Context, DraftResult, IdVec, Node, NodeId, Op, StaticMemberResolution,
-    Type,
+    ArrayLen, AsCastStyle, CompileError, Context, DraftResult, IdVec, Node, NodeId, Op,
+    StaticMemberResolution, Type,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -131,11 +131,11 @@ impl Context {
             params,
             return_ty,
             ..
-        } = self.nodes[id]
+        } = self.nodes[id].clone()
         {
             let mut sig = self.module.make_signature();
 
-            for &param in self.id_vecs[params].borrow().iter() {
+            for &param in params.borrow().iter() {
                 sig.params
                     .push(AbiParam::new(self.get_cranelift_type(param)));
             }
@@ -234,7 +234,7 @@ impl Context {
 
     #[instrument(skip_all)]
     fn id_type_size(&self, param: NodeId) -> StackSize {
-        self.type_size(self.types[&param])
+        self.type_size(self.types[&param].clone())
     }
 
     #[instrument(skip_all)]
@@ -249,7 +249,7 @@ impl Context {
             Type::Array(ty, ArrayLen::Some(len)) => self.id_type_size(ty) * len as StackSize,
             Type::Struct { params, .. } => {
                 // todo(chad): c struct packing rules if annotated
-                self.id_vecs[params]
+                params
                     .clone()
                     .borrow()
                     .iter()
@@ -257,7 +257,7 @@ impl Context {
                     .sum()
             }
             Type::Enum { params, .. } => {
-                self.id_vecs[params]
+                params
                     .clone()
                     .borrow()
                     .iter()
@@ -392,7 +392,7 @@ impl<'a> FunctionCompileContext<'a> {
         //     self.builder.set_srcloc(SourceLoc::default());
         // }
 
-        match self.ctx.nodes[id] {
+        match self.ctx.nodes[id].clone() {
             Node::Symbol(sym) => {
                 let resolved = self.ctx.scope_get(sym, id);
 
@@ -620,7 +620,7 @@ impl<'a> FunctionCompileContext<'a> {
                 let lhs_value = self.rvalue(lhs);
                 let rhs_value = self.rvalue(rhs);
 
-                let ty = self.ctx.types[&lhs];
+                let ty = self.ctx.types[&lhs].clone();
 
                 match ty {
                     Type::I8
@@ -706,7 +706,7 @@ impl<'a> FunctionCompileContext<'a> {
                 self.ctx.values.insert(id, Value::Value(addr));
 
                 let mut offset = 0;
-                for field in self.ctx.id_vecs[params].clone().borrow().iter() {
+                for field in params.borrow().iter() {
                     self.compile_id(*field)?;
                     self.store_with_offset(*field, Value::Value(addr), offset);
                     offset += self.ctx.id_type_size(*field);
@@ -808,7 +808,7 @@ impl<'a> FunctionCompileContext<'a> {
                     ));
                 }
 
-                for param in self.ctx.id_vecs[params].borrow().iter() {
+                for param in params.borrow().iter() {
                     sig.params
                         .push(AbiParam::new(self.ctx.get_cranelift_type(*param)));
                 }
@@ -1059,8 +1059,6 @@ impl<'a> FunctionCompileContext<'a> {
             Node::ArrayLiteral { members, ty } => {
                 let member_size = self.ctx.id_type_size(ty);
 
-                let members = self.ctx.id_vecs[members].clone();
-
                 // create stack slot big enough for all of the members
                 let member_storage_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
@@ -1203,9 +1201,42 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
-            Node::AsCast { .. } => {
-                todo!()
-            }
+            Node::AsCast { value, style, .. } => match style {
+                AsCastStyle::StaticToDynamicArray => {
+                    self.compile_id(value)?;
+                    let cranelift_value = self.rvalue(value);
+
+                    // Make a stack slot for the dynamic array
+                    let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                        kind: StackSlotKind::ExplicitSlot,
+                        size: self.ctx.id_type_size(id),
+                    });
+
+                    // Store the data pointer at offset 0
+                    self.builder.ins().stack_store(cranelift_value, slot, 0);
+
+                    // Store the length at offset 8
+                    let Type::Array(_, ArrayLen::Some(array_len)) = self.ctx.get_type(value) else { unreachable!() };
+                    let len = self.builder.ins().iconst(types::I64, array_len as i64);
+                    self.builder.ins().stack_store(len, slot, 8);
+
+                    let slot_addr = self.builder.ins().stack_addr(
+                        self.ctx.module.isa().pointer_type(),
+                        slot,
+                        0,
+                    );
+
+                    self.ctx.values.insert(id, Value::Value(slot_addr));
+
+                    Ok(())
+                }
+                AsCastStyle::StructToDynamicArray => {
+                    self.compile_id(value)?;
+                    self.ctx.values.insert(id, self.ctx.values[&value]);
+                    Ok(())
+                }
+                _ => unreachable!(),
+            },
             Node::FnDefinition { .. }
             | Node::StructDefinition { .. }
             | Node::EnumDefinition { .. } => Ok(()), // This should have already been handled by the toplevel context
@@ -1215,7 +1246,7 @@ impl<'a> FunctionCompileContext<'a> {
 
     #[instrument(skip_all)]
     fn compile_ids(&mut self, ids: IdVec) -> DraftResult<()> {
-        for id in self.ctx.id_vecs[ids].clone().borrow().iter() {
+        for id in ids.borrow().iter() {
             self.compile_id(*id)?;
         }
 
@@ -1226,7 +1257,7 @@ impl<'a> FunctionCompileContext<'a> {
     fn compile_id_for_call(&mut self, id: NodeId, func: NodeId, params: IdVec) -> DraftResult<()> {
         self.compile_id(func)?;
 
-        let param_ids = self.ctx.id_vecs[params].clone();
+        let param_ids = params.clone();
         let mut param_values = Vec::new();
         for &param in param_ids.borrow().iter() {
             self.compile_id(param)?;
@@ -1327,7 +1358,7 @@ impl<'a> FunctionCompileContext<'a> {
             panic!("Not a struct: {:?}", ty);
         };
 
-        let fields = self.ctx.id_vecs[params].clone();
+        let fields = params.clone();
 
         let mut offset = 0;
         for field in fields.borrow().iter() {
@@ -1495,7 +1526,7 @@ impl<'a> ToplevelCompileContext<'a> {
             _ => return Ok(()),
         };
 
-        match self.ctx.nodes[id] {
+        match self.ctx.nodes[id].clone() {
             Node::Symbol(_) => todo!(),
             Node::FnDefinition {
                 name,
@@ -1508,7 +1539,7 @@ impl<'a> ToplevelCompileContext<'a> {
 
                 let mut sig = self.ctx.module.make_signature();
 
-                for &param in self.ctx.id_vecs[params].borrow().iter() {
+                for &param in params.borrow().iter() {
                     sig.params
                         .push(AbiParam::new(self.ctx.get_cranelift_type(param)));
                 }
@@ -1546,7 +1577,7 @@ impl<'a> ToplevelCompileContext<'a> {
                     global_str_ptr: None,
                 };
 
-                for &stmt in builder_ctx.ctx.id_vecs[stmts].clone().borrow().iter() {
+                for &stmt in stmts.borrow().iter() {
                     builder_ctx.compile_id(stmt)?;
                 }
 
@@ -1572,8 +1603,7 @@ impl<'a> ToplevelCompileContext<'a> {
                 match resolved {
                     StaticMemberResolution::EnumConstructor { base, index } => {
                         // We need to generate a function which takes one or zero parameters, and outputs an enum of this type
-                        let Type::Enum { params, .. } = self.ctx.types[&base] else { todo!("{:?}", self.ctx.nodes[base]) };
-                        let params = self.ctx.id_vecs[params].clone();
+                        let Type::Enum { params, .. } = self.ctx.types[&base].clone() else { todo!("{:?}", self.ctx.nodes[base]) };
                         let param = params.borrow()[index as usize];
                         let Node::EnumDeclParam { name, ty } = self.ctx.nodes[param] else { todo!() };
 

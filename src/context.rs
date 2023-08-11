@@ -1,7 +1,5 @@
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::rc::Rc;
 
 use cranelift_module::DataId;
 use string_interner::StringInterner;
@@ -10,8 +8,8 @@ use cranelift_jit::JITModule;
 use tracing::instrument;
 
 use crate::{
-    AddressableMatch, Args, CompileError, DraftResult, IdVec, Location, Node, NodeId, Range,
-    RopeySource, Scope, ScopeId, Scopes, Source, SourceInfo, StaticStrSource, Sym, Type, TypeMatch,
+    AddressableMatch, Args, CompileError, DraftResult, Location, Node, NodeId, Range, RopeySource,
+    Scope, ScopeId, Scopes, Source, SourceInfo, StaticStrSource, Sym, Type, TypeMatch,
     UnificationData, Value,
 };
 
@@ -64,42 +62,6 @@ where
     }
 }
 
-#[derive(Default)]
-pub struct IdVecs(Vec<Rc<RefCell<Vec<NodeId>>>>);
-
-impl IdVecs {
-    pub fn clear(&mut self) {
-        self.0.clear();
-    }
-
-    pub fn push(&mut self, vec: Rc<RefCell<Vec<NodeId>>>) -> IdVec {
-        let id = IdVec(self.0.len());
-        self.0.push(vec);
-        id
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-}
-
-impl<T> std::ops::Index<T> for IdVecs
-where
-    T: Into<IdVec>,
-{
-    type Output = Rc<RefCell<Vec<NodeId>>>;
-
-    fn index(&self, index: T) -> &Self::Output {
-        &self.0[index.into().0]
-    }
-}
-
-impl From<&IdVec> for IdVec {
-    fn from(id_vec: &IdVec) -> Self {
-        *id_vec
-    }
-}
-
 pub type SecondaryMap<V> = HashMap<NodeId, V>;
 pub type SecondarySet = HashSet<NodeId>;
 
@@ -112,7 +74,6 @@ pub struct Context {
 
     pub nodes: DenseStorage<Node>,
     pub ranges: DenseStorage<Range>,
-    pub id_vecs: IdVecs,
     pub node_scopes: DenseStorage<ScopeId>,
     pub polymorph_target: bool,
     pub string_literals: Vec<NodeId>,
@@ -172,7 +133,6 @@ impl Context {
 
             nodes: Default::default(),
             ranges: Default::default(),
-            id_vecs: Default::default(),
             node_scopes: Default::default(),
             addressable_nodes: Default::default(),
             polymorph_target: false,
@@ -228,7 +188,6 @@ impl Context {
 
         self.nodes.clear();
         self.ranges.clear();
-        self.id_vecs.clear();
         self.node_scopes.clear();
         self.addressable_nodes.clear();
         self.polymorph_target = false;
@@ -379,7 +338,7 @@ impl Context {
                         continue;
                     }
 
-                    for &param in self.id_vecs[params].clone().borrow().iter() {
+                    for &param in params.clone().borrow().iter() {
                         // All structs passed as function args are passed by address (for now...)
                         if self.id_is_aggregate_type(param) {
                             self.addressable_nodes.insert(param);
@@ -401,8 +360,8 @@ impl Context {
                     continue;
                 }
 
-                let ty = self.types[&ty];
-                let value_ty = self.types[&value];
+                let ty = self.types[&ty].clone();
+                let value_ty = self.types[&value].clone();
 
                 let Type::Pointer(_) = ty else {
                     self.errors.push(CompileError::Node(
@@ -442,6 +401,10 @@ impl Context {
             if let Type::Infer(_) = *ty {
                 self.errors
                     .push(CompileError::Node("Type not assigned".to_string(), *id));
+                // self.errors.push(CompileError::Node(
+                //     format!("Type not assigned: {}", id.0),
+                //     *id,
+                // ));
             }
             if *ty == Type::IntLiteral {
                 self.errors.push(CompileError::Node(

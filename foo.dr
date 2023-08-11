@@ -7,19 +7,17 @@ fn print_string(s: string) {
     return;
 }
 
-// fn foo(a: []i64) {
-    // a[2] = 5;
-    // print_i64(a[2]);
-    // return;
-// }
+struct Foo {
+    x: i64,
+    y: i64,
+}
+
+struct Bar {
+    #transparent foo: Foo,
+}
 
 fn main() i64 {
-    let a = [1, 2, 3];
-
-    // foo(a);
-    // print_i64(a[2]);
-
-    let b = a as []_;
-    
+    let b = Bar { _{ 1, 2 } };
+    b.x |> print_i64;
     return 0;
 }

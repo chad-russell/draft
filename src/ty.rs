@@ -1,11 +1,11 @@
 use tracing::instrument;
 
 use crate::{
-    CompileError, Context, DraftResult, IdVec, Node, NodeElse, NodeId, NumericSpecification, Op,
-    ParseTarget, StaticMemberResolution, Sym,
+    AsCastStyle, CompileError, Context, DraftResult, IdVec, Node, NodeElse, NodeId,
+    NumericSpecification, Op, ParseTarget, StaticMemberResolution, Sym,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Empty,
     SelfPointer,
@@ -126,13 +126,13 @@ impl Context {
             }
             self.type_matches[uid].changed = false;
 
-            let most_specific_ty = self.type_matches[uid].unified;
+            let most_specific_ty = self.type_matches[uid].unified.clone();
             if matches!(most_specific_ty, Type::Infer(_)) {
                 continue;
             }
 
             for &id in self.type_matches[uid].ids.iter() {
-                self.types.insert(id, most_specific_ty);
+                self.types.insert(id, most_specific_ty.clone());
             }
         }
 
@@ -144,7 +144,7 @@ impl Context {
 
     #[instrument(skip_all)]
     pub fn unify(&mut self, first: Type, second: Type, err_ids: (NodeId, NodeId)) -> Type {
-        match (first, second) {
+        match (first.clone(), second.clone()) {
             (a, b) if a == b => a,
 
             // Types/Inferreds get coerced to anything
@@ -503,9 +503,6 @@ impl Context {
                     }
                 }
 
-                let input_tys1 = self.id_vecs[input_tys1].clone();
-                let input_tys2 = self.id_vecs[input_tys2].clone();
-
                 if input_tys1.borrow().len() != input_tys2.borrow().len() {
                     self.errors.push(CompileError::Node2(
                         "Could not match types: input types differ in length".to_string(),
@@ -551,12 +548,7 @@ impl Context {
                     }
 
                     // Same declaration site means same number of parameters, so we can just match them up
-                    for (f1, f2) in self.id_vecs[f1]
-                        .clone()
-                        .borrow()
-                        .iter()
-                        .zip(self.id_vecs[f2].clone().borrow().iter())
-                    {
+                    for (f1, f2) in f1.clone().borrow().iter().zip(f2.clone().borrow().iter()) {
                         self.match_types(*f1, *f2);
                     }
                 }
@@ -571,9 +563,6 @@ impl Context {
                     }
                 }
                 (None, None) => {
-                    let f1 = self.id_vecs[f1].clone();
-                    let f2 = self.id_vecs[f2].clone();
-
                     if f1.borrow().len() != f2.borrow().len() {
                         self.errors.push(CompileError::Node2(
                             "Could not match types: struct fields differ in length".to_string(),
@@ -611,7 +600,7 @@ impl Context {
                 self.match_types(n1, n2);
             }
             (Type::IntLiteral, bt) | (bt, Type::IntLiteral) if bt.is_basic() => {
-                if !self.check_int_literal_type(bt) {
+                if !self.check_int_literal_type(bt.clone()) {
                     self.errors.push(CompileError::Node2(
                         format!("Type mismatch - int literal with {:?}", bt),
                         ty1,
@@ -620,7 +609,7 @@ impl Context {
                 }
             }
             (Type::FloatLiteral, bt) | (bt, Type::FloatLiteral) if bt.is_basic() => {
-                if !self.check_float_literal_type(bt) {
+                if !self.check_float_literal_type(bt.clone()) {
                     self.errors.push(CompileError::Node2(
                         format!("Type mismatch - float literal with {:?}", bt),
                         ty1,
@@ -693,9 +682,10 @@ impl Context {
         if let Type::Struct {
             name: Some(_),
             params,
+            ..
         } = ty
         {
-            for &field in self.id_vecs[params].clone().borrow().iter() {
+            for &field in params.clone().borrow().iter() {
                 if !self.is_fully_concrete(field) {
                     return false;
                 }
@@ -769,7 +759,7 @@ impl Context {
                 self.type_array_reverse_map.insert(ty2, id);
                 self.type_matches[id].changed = true;
                 self.type_matches[id].unified = self.unify(
-                    self.type_matches[id].unified,
+                    self.type_matches[id].unified.clone(),
                     self.get_type(ty2),
                     (ty1, ty2),
                 );
@@ -803,7 +793,7 @@ impl Context {
                 self.type_array_reverse_map.insert(ty1, id);
                 self.type_matches[id].changed = true;
                 self.type_matches[id].unified = self.unify(
-                    self.type_matches[id].unified,
+                    self.type_matches[id].unified.clone(),
                     self.get_type(ty1),
                     (ty1, ty2),
                 );
@@ -837,8 +827,8 @@ impl Context {
                 let upper = id1.max(id2);
 
                 let unified = self.unify(
-                    self.type_matches[lower].unified,
-                    self.type_matches[upper].unified,
+                    self.type_matches[lower].unified.clone(),
+                    self.type_matches[upper].unified.clone(),
                     (ty1, ty2),
                 );
 
@@ -897,7 +887,7 @@ impl Context {
 
     #[instrument(skip_all)]
     pub fn assign_type_inner(&mut self, id: NodeId) -> bool {
-        match self.nodes[id] {
+        match self.nodes[id].clone() {
             Node::FnDefinition {
                 params,
                 return_ty,
@@ -993,10 +983,41 @@ impl Context {
                     return true;
                 }
 
-                let param_ids = self.id_vecs[params].clone();
-                for &param in param_ids.borrow().iter() {
+                for &param in params.borrow().iter() {
                     self.assign_type(param);
                 }
+
+                // let mut should_defer = false;
+                // for param in param_ids.borrow().iter() {
+                //     if !self.types.contains_key(param) {
+                //         should_defer = true;
+                //         self.deferreds.push(*param);
+                //     }
+                // }
+
+                // if should_defer {
+                //     self.deferreds.push(id);
+                //     return false;
+                // }
+
+                // for &param in param_ids.borrow().iter() {
+                //     let param_ty = self.get_type(param);
+
+                //     let Node::StructDeclParam { transparent, .. } = self.nodes[param] else { unreachable!() };
+
+                //     if !transparent {
+                //         continue;
+                //     }
+
+                //     // Only structs are eligible for being transparent for now
+                //     let Type::Struct { .. } = param_ty else {
+                //         self.errors.push(CompileError::Node(
+                //             "Only structs can be transparent".to_string(),
+                //             param,
+                //         ));
+                //         return true;
+                //     };
+                // }
 
                 self.types.insert(id, Type::Struct { name, params });
 
@@ -1010,8 +1031,7 @@ impl Context {
                     return true;
                 }
 
-                let param_ids = self.id_vecs[params].clone();
-                for &param in param_ids.borrow().iter() {
+                for &param in params.borrow().iter() {
                     if let Node::EnumDeclParam { ty: None, .. } = self.nodes[param] {
                         self.types.insert(param, Type::EnumNoneType);
                     } else {
@@ -1041,7 +1061,7 @@ impl Context {
                                 self.assign_type(copied);
                                 self.nodes[id] = Node::StructLiteral {
                                     name: Some(copied),
-                                    params,
+                                    params: params.clone(),
                                 };
 
                                 copied
@@ -1061,7 +1081,7 @@ impl Context {
                         return true;
                     }
                 } else {
-                    for &field in self.id_vecs[params].clone().borrow().iter() {
+                    for &field in params.clone().borrow().iter() {
                         self.assign_type(field);
                     }
                     self.types.insert(id, Type::Struct { name: None, params });
@@ -1080,7 +1100,7 @@ impl Context {
 
                 match value_ty {
                     Type::Struct { params, .. } => {
-                        let field_ids = self.id_vecs[params].clone();
+                        let field_ids = params.clone();
                         let mut found = false;
 
                         for &field in field_ids.borrow().iter() {
@@ -1132,7 +1152,15 @@ impl Context {
                                 }
                             }
                             "data" => {
-                                self.types.insert(id, Type::Pointer(array_ty));
+                                if let ArrayLen::Some(_) | ArrayLen::Infer = len {
+                                    self.errors.push(CompileError::Node(
+                                        "'data' is not a property on a static length array. Perhaps you meant to simply take the address of the static array?"
+                                            .to_string(),
+                                        member,
+                                    ));
+                                } else {
+                                    self.types.insert(id, Type::Pointer(array_ty));
+                                }
                             }
                             _ => {
                                 self.errors.push(CompileError::Node(
@@ -1307,11 +1335,11 @@ impl Context {
             Node::Block {
                 stmts, resolves, ..
             } => {
-                for &stmt in self.id_vecs[stmts].clone().borrow().iter() {
+                for &stmt in stmts.clone().borrow().iter() {
                     self.assign_type(stmt);
                 }
 
-                let resolves = self.id_vecs[resolves].clone();
+                let resolves = resolves.clone();
 
                 if resolves.borrow().is_empty() {
                     self.types.insert(id, Type::Empty);
@@ -1323,16 +1351,14 @@ impl Context {
                 }
             }
             Node::ArrayLiteral { members, ty } => {
-                for &member in self.id_vecs[members].clone().borrow().iter() {
+                for &member in members.clone().borrow().iter() {
                     self.assign_type(member);
                     self.match_types(member, ty);
                     self.check_not_unspecified_polymorph(member);
                 }
 
-                self.types.insert(
-                    id,
-                    Type::Array(ty, ArrayLen::Some(self.id_vecs[members].borrow().len())),
-                );
+                self.types
+                    .insert(id, Type::Array(ty, ArrayLen::Some(members.borrow().len())));
             }
             Node::ArrayAccess { array, index } => {
                 self.assign_type(array);
@@ -1397,11 +1423,9 @@ impl Context {
 
                 self.nodes[id] = Node::PolySpecialize {
                     sym,
-                    overrides,
+                    overrides: overrides.clone(),
                     copied: Some(copied),
                 };
-
-                let overrides = self.id_vecs[overrides].clone();
                 for o in overrides.borrow().iter() {
                     self.assign_type(*o);
                     let Node::PolySpecializeOverride { sym, ty } = self.nodes[o] else { panic!() };
@@ -1485,19 +1509,148 @@ impl Context {
                 self.assign_type(value);
                 self.assign_type(ty);
 
+                let mut fully_done = false;
+
                 match (self.get_type(value), self.get_type(ty)) {
-                    (Type::Infer(_), _) | (_, Type::Infer(_)) => {
-                        self.deferreds.push(id);
-                        return false;
+                    (Type::Infer(_), _) | (_, Type::Infer(_)) => {}
+                    (Type::Array(_, ArrayLen::Infer), _) => {}
+                    (Type::Array(ty1, ArrayLen::Some(_)), Type::Array(ty2, ArrayLen::None)) => {
+                        self.match_types(ty1, ty2);
+                        self.nodes[id] = Node::AsCast {
+                            value,
+                            ty,
+                            style: AsCastStyle::StaticToDynamicArray,
+                        };
+
+                        fully_done = true;
                     }
-                    _ => todo!(),
+                    (Type::Struct { params, .. }, Type::Array(ty, ArrayLen::None)) => {
+                        // Make sure params is laid out exactly like an array
+                        let param_ids = params.clone();
+                        if param_ids.borrow().len() != 2 {
+                            self.errors.push(CompileError::Node(
+                                "Struct must have exactly two parameters".to_string(),
+                                id,
+                            ));
+                            return true;
+                        }
+
+                        // Match the first param to the data pointer
+                        {
+                            let p0 = param_ids.borrow()[0];
+
+                            self.assign_type(p0);
+                            if let Type::Infer(_) = self.get_type(p0) {
+                                self.deferreds.push(p0);
+                                self.deferreds.push(id);
+                                return false;
+                            }
+
+                            let Node::ValueParam { name: Some(name), value, ..} = self.nodes[p0] else {
+                                self.errors.push(CompileError::Node(
+                                    "Expected a value param called 'data' here".to_string(),
+                                    p0,
+                                ));
+                                return true;
+                            };
+
+                            // todo(chad): directly compare symbols, it's faster
+                            let name = self.get_symbol_str(name);
+                            if name != "data" {
+                                self.errors.push(CompileError::Node(
+                                    "Expected a value param called 'data' here".to_string(),
+                                    p0,
+                                ));
+                                return true;
+                            }
+
+                            self.assign_type(value);
+                            if let Type::Infer(_) = self.get_type(value) {
+                                self.deferreds.push(value);
+                                self.deferreds.push(id);
+                                return false;
+                            }
+
+                            let Type::Pointer(array_ty) = self.get_type(value) else {
+                                self.errors.push(CompileError::Node(
+                                    "Expected a pointer here".to_string(),
+                                    value,
+                                ));
+                                return true;
+                            };
+
+                            self.match_types(array_ty, ty);
+                        }
+
+                        // Match the second param to the len field
+                        {
+                            let p1 = param_ids.borrow()[1];
+
+                            self.assign_type(p1);
+                            if let Type::Infer(_) = self.get_type(p1) {
+                                self.deferreds.push(p1);
+                                self.deferreds.push(id);
+                                return false;
+                            }
+
+                            let Node::ValueParam { name: Some(name), value, ..} = self.nodes[p1] else {
+                                self.errors.push(CompileError::Node(
+                                    "Expected a value param called 'len' here".to_string(),
+                                    p1,
+                                ));
+                                return true;
+                            };
+
+                            // todo(chad): directly compare symbols, it's faster
+                            let name = self.get_symbol_str(name);
+                            if name != "len" {
+                                self.errors.push(CompileError::Node(
+                                    "Expected a value param called 'len' here".to_string(),
+                                    p1,
+                                ));
+                                return true;
+                            }
+
+                            self.assign_type(value);
+                            if let Type::Infer(_) = self.get_type(value) {
+                                self.deferreds.push(value);
+                                self.deferreds.push(id);
+                                return false;
+                            }
+
+                            let Type::I64 = self.get_type(value) else {
+                                self.errors.push(CompileError::Node(
+                                    "Expected an i64 here".to_string(),
+                                    value,
+                                ));
+                                return true;
+                            };
+                        }
+
+                        self.nodes[id] = Node::AsCast {
+                            value,
+                            ty,
+                            style: AsCastStyle::StructToDynamicArray,
+                        };
+
+                        fully_done = true;
+                    }
+                    (ty1, ty2) => {
+                        self.errors.push(CompileError::Node2(
+                            format!("Invalid cast from {:?} to {:?}", ty1, ty2),
+                            value,
+                            ty,
+                        ));
+                    }
                 }
 
                 self.match_addressable(id, value);
-
-                // self.match_types(value, ty);
-
                 self.match_types(id, ty);
+
+                if !fully_done {
+                    self.deferreds.push(id);
+                    return false;
+                }
             }
         }
 
@@ -1511,7 +1664,7 @@ impl Context {
         value: NodeId,
         id: NodeId,
     ) -> bool {
-        let field_ids = self.id_vecs[params].clone();
+        let field_ids = params.clone();
         let mut found = false;
 
         for (index, &field) in field_ids.borrow().iter().enumerate() {
@@ -1792,7 +1945,7 @@ impl Context {
 
     #[instrument(skip_all)]
     fn assign_type_type(&mut self, id: NodeId, ty: Type) {
-        self.types.insert(id, ty);
+        self.types.insert(id, ty.clone());
 
         match ty {
             Type::Func {
@@ -1804,7 +1957,7 @@ impl Context {
                     self.assign_type(return_ty);
                 }
 
-                for &input_ty in self.id_vecs[input_tys].clone().borrow().iter() {
+                for &input_ty in input_tys.borrow().iter() {
                     self.assign_type(input_ty);
                 }
             }
@@ -1813,7 +1966,7 @@ impl Context {
                     self.assign_type(name);
                 }
 
-                for &field in self.id_vecs[params].clone().borrow().iter() {
+                for &field in params.borrow().iter() {
                     self.assign_type(field);
                 }
             }
@@ -1822,7 +1975,7 @@ impl Context {
                     self.assign_type(name);
                 }
 
-                for &field in self.id_vecs[params].clone().borrow().iter() {
+                for &field in params.borrow().iter() {
                     self.assign_type(field);
                 }
             }
@@ -1859,7 +2012,7 @@ impl Context {
             self.assign_type(return_ty);
         }
 
-        for &param in self.id_vecs[params].clone().borrow().iter() {
+        for &param in params.borrow().iter() {
             self.assign_type(param);
         }
 
@@ -1888,7 +2041,7 @@ impl Context {
         if let Some(return_ty) = return_ty {
             self.assign_type(return_ty);
         }
-        for &param in self.id_vecs[params].clone().borrow().iter() {
+        for &param in params.borrow().iter() {
             self.assign_type(param);
         }
         self.types.insert(
@@ -1898,11 +2051,11 @@ impl Context {
                 input_tys: params,
             },
         );
-        for &stmt in self.id_vecs[stmts].clone().borrow().iter() {
+        for &stmt in stmts.borrow().iter() {
             self.assign_type(stmt);
         }
-        for &ret_id in self.id_vecs[returns].clone().borrow().iter() {
-            let ret_id = match self.nodes[ret_id] {
+        for &ret_id in returns.borrow().iter() {
+            let ret_id = match self.nodes[ret_id].clone() {
                 Node::Return(Some(id)) => Ok(id),
                 Node::Return(None) if return_ty.is_some() => Err(CompileError::Node(
                     "Empty return not allowed".to_string(),
@@ -1946,7 +2099,10 @@ impl Context {
                 Ok(func_id) => {
                     func = func_id;
                     self.assign_type(func);
-                    self.nodes[id] = Node::Call { func, params };
+                    self.nodes[id] = Node::Call {
+                        func,
+                        params: params.clone(),
+                    };
                 }
                 Err(err) => {
                     self.errors.push(err);
@@ -1955,7 +2111,7 @@ impl Context {
             }
         }
 
-        let param_ids = self.id_vecs[params].clone();
+        let param_ids = params.clone();
         for &param in param_ids.borrow().iter() {
             self.assign_type(param);
         }
@@ -1966,7 +2122,7 @@ impl Context {
                 return_ty,
             } => {
                 let given = param_ids;
-                let decl = self.id_vecs[input_tys].clone();
+                let decl = input_tys.clone();
 
                 let rearranged_given =
                     match self.rearrange_params(&given.borrow(), &decl.borrow(), id) {
@@ -1977,9 +2133,9 @@ impl Context {
                         }
                     };
 
-                *self.id_vecs[params].borrow_mut() = rearranged_given.clone();
+                *params.borrow_mut() = rearranged_given.clone();
 
-                let input_ty_ids = self.id_vecs[input_tys].clone();
+                let input_ty_ids = input_tys.clone();
 
                 if input_ty_ids.borrow().len() != rearranged_given.len() {
                     self.errors.push(CompileError::Node(
@@ -2021,8 +2177,8 @@ impl Context {
     ) -> DraftResult<()> {
         let Some(Type::Struct { params: decl, .. }) = self.types.get(&name) else { return Ok(()); };
 
-        let given = self.id_vecs[params].clone();
-        let decl = self.id_vecs[*decl].clone();
+        let given = params.clone();
+        let decl = decl.clone();
 
         let rearranged =
             match self.rearrange_params(&given.borrow(), &decl.borrow(), struct_literal_id) {
@@ -2031,7 +2187,7 @@ impl Context {
             };
 
         if let Some(rearranged) = rearranged {
-            *self.id_vecs[params].borrow_mut() = rearranged.clone();
+            *params.borrow_mut() = rearranged.clone();
 
             if rearranged.len() != decl.borrow().len() {
                 self.errors.push(CompileError::Node(
@@ -2052,7 +2208,7 @@ impl Context {
     #[instrument(skip_all)]
     pub fn copy_polymorph_if_needed(&mut self, ty: NodeId) -> DraftResult<NodeId> {
         if let Some(&ty) = self.polymorph_sources.get(&ty) {
-            let parse_target = match self.nodes[ty] {
+            let parse_target = match self.nodes[ty].clone() {
                 Node::StructDefinition { .. } => ParseTarget::StructDefinition,
                 Node::EnumDefinition { .. } => ParseTarget::EnumDefinition,
                 Node::FnDefinition { .. } => ParseTarget::FnDefinition,

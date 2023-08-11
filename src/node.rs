@@ -1,3 +1,5 @@
+use std::{cell::RefCell, rc::Rc};
+
 use crate::{NumericSpecification, Op, ScopeId, Sym, Type};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash, PartialOrd, Ord)]
@@ -8,9 +10,6 @@ impl From<&NodeId> for NodeId {
         *id
     }
 }
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash, PartialOrd, Ord)]
-pub struct IdVec(pub usize);
 
 #[derive(Debug, Clone, Copy)]
 pub enum StaticMemberResolution {
@@ -26,9 +25,15 @@ pub enum NodeElse {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum AsCastStyle {}
+pub enum AsCastStyle {
+    None,
+    StaticToDynamicArray,
+    StructToDynamicArray,
+}
 
-#[derive(Debug, Clone, Copy)]
+pub type IdVec = Rc<RefCell<Vec<NodeId>>>;
+
+#[derive(Debug, Clone)]
 pub enum Node {
     Symbol(Sym),
     PolySpecialize {
@@ -80,6 +85,7 @@ pub enum Node {
         ty: Option<NodeId>,
         default: Option<NodeId>,
         index: u16,
+        transparent: bool,
     },
     EnumDeclParam {
         name: NodeId,
@@ -90,6 +96,7 @@ pub enum Node {
         ty: Option<NodeId>,
         default: Option<NodeId>,
         index: u16,
+        transparent: bool,
     },
     ValueParam {
         name: Option<NodeId>,
@@ -164,7 +171,7 @@ pub enum Node {
     AsCast {
         value: NodeId,
         ty: NodeId,
-        style: Option<AsCastStyle>,
+        style: AsCastStyle,
     },
 }
 

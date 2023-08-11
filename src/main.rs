@@ -24,7 +24,7 @@ fn run(context: &mut Context) -> DraftResult<()> {
 
     context.call_fn("main")?;
 
-    Ok(())
+    Ok(( ))
 }
 
 fn main() {

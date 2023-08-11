@@ -4,7 +4,7 @@ use string_interner::symbol::SymbolU32;
 use tracing::instrument;
 
 use crate::{
-    CompileError, DraftResult, Context, IdVec, Node, NodeElse, NodeId, Source, SourceInfo, StaticStrSource, Type, ArrayLen,
+    CompileError, DraftResult, Context, Node, NodeElse, NodeId, Source, SourceInfo, StaticStrSource, Type, ArrayLen, AsCastStyle, IdVec,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
@@ -179,6 +179,8 @@ pub enum Token {
     UnderscoreLCurly,
     Cast,
     SizeOf,
+    Transparent,
+    Hash,
     Eof,
 }
 
@@ -447,6 +449,12 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
         if self.source_info.prefix_keyword("#size_of", Token::SizeOf) {
+            return;
+        }
+        if self.source_info.prefix_keyword("#transparent", Token::Transparent) {
+            return;
+        }
+        if self.source_info.prefix("#", Token::Hash) {
             return;
         }
         if self.source_info.prefix("(", Token::LParen) {
@@ -847,6 +855,14 @@ impl<'a, W: Source> Parser<'a, W> {
         {
             let input_start = self.source_info.top.range.start;
 
+            // transparent?
+            let transparent = if self.source_info.top.tok == Token::Transparent {
+                self.pop(); // `#transparent`
+                true
+            } else {
+                false
+            };
+
             let name = self.parse_symbol()?;
             let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
 
@@ -862,7 +878,10 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 (Some(ty), default)
             } else if self.source_info.top.tok == Token::Eq {
-                todo!("parse default parameters")
+                self.pop(); // `=`
+                let default = self.parse_expression(true)?;
+
+                (None, Some(default))
             } else {
                 (None, None)
             };
@@ -882,12 +901,14 @@ impl<'a, W: Source> Parser<'a, W> {
                     ty,
                     default,
                     index: params.len() as u16,
+                    transparent,
                 },
                 DeclParamParseType::Struct => Node::StructDeclParam {
                     name,
                     ty,
                     default,
                     index: params.len() as u16,
+                    transparent,
                 },
                 DeclParamParseType::Enum => {
                     if default.is_some() {
@@ -909,8 +930,8 @@ impl<'a, W: Source> Parser<'a, W> {
 
             params.push(param);
 
-            if self.source_info.top.tok == Token::Comma {
-                self.pop(); // `,`
+            if self.source_info.top.tok != Token::RCurly && self.source_info.top.tok != Token::RParen {
+                self.expect(Token::Comma)?;
             }
         }
 
@@ -1107,14 +1128,15 @@ impl<'a, W: Source> Parser<'a, W> {
             name: self_symbol_node, 
             ty: Some(self_ptr_ty), 
             default: None, 
-            index: 0 
+            index: 0,
+            transparent: false,
         });
         self.ctx.scope_insert(self_symbol, self_param);
         
         self.expect(Token::LParen)?;
         let params = self.parse_decl_params(DeclParamParseType::Fn)?;
 
-        let params_vec = self.ctx.id_vecs[params].clone();
+        let params_vec = params.clone();
         params_vec.borrow_mut().insert(0, self_param);
 
         for (i, param) in params_vec.borrow().iter().enumerate() {
@@ -1379,9 +1401,9 @@ impl<'a, W: Source> Parser<'a, W> {
 
         let value_param_id = self.ctx.push_node(self.ctx.ranges[param], Node::ValueParam { name: None, value: param, index: 0 });
 
-        let (inner_func_id, params) = match self.ctx.nodes[inner_func_id] {
+        let (inner_func_id, params) = match self.ctx.nodes[inner_func_id].clone() {
             Node::Call { func, params } | Node::ThreadingCall { func, params} => {
-                let params_vec = &self.ctx.id_vecs[params];
+                let params_vec = params.clone();
 
                 // If one of the params is a threading target, replace it with the param in question
                 // If more than one of the params is a threading target, that's an error
@@ -1704,7 +1726,7 @@ impl<'a, W: Source> Parser<'a, W> {
                     Node::AsCast {
                         value,
                         ty,
-                        style: None,
+                        style: AsCastStyle::None,
                     },
                 );
             }
@@ -2294,8 +2316,7 @@ impl Context {
 
     #[instrument(skip_all)]
     pub fn push_id_vec(&mut self, vec: Vec<NodeId>) -> IdVec {
-        self.id_vecs.push(Rc::new(RefCell::new(vec)));
-        IdVec(self.id_vecs.len() - 1)
+        Rc::new(RefCell::new(vec))
     }
 
     pub fn debug_tokens<W: Source>(
@@ -2339,14 +2360,13 @@ impl Context {
                 let parsed = parser.parse_struct_definition()?;
 
                 // if the struct has generic params, we need to copy those too
-                let Node::StructDefinition { params, .. } = self.nodes[parsed] else { panic!() };
-                let params = self.id_vecs[params].clone();
+                let Node::StructDefinition { params, .. } = self.nodes[parsed].clone() else { panic!() };
                 for param in params.borrow().iter() {
                     let Node::StructDeclParam { ty, .. } = self.nodes[param] else { panic!() };
                     if let Some(ty) = ty {
                         if let Node::Symbol(_) = self.nodes[ty] {
                             let copied = self.copy_polymorph_if_needed(ty)?;
-                            self.nodes[ty] = self.nodes[copied];
+                            self.nodes[ty] = self.nodes[copied].clone();
                         }
                     }
                 }
