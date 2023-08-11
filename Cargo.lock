@@ -325,7 +325,6 @@ dependencies = [
 name = "draft"
 version = "0.1.0"
 dependencies = [
- "bumpalo",
  "clap",
  "cranelift-codegen",
  "cranelift-frontend",

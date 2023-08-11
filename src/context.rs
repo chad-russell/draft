@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use bumpalo::{collections::Vec as BumpVec, Bump};
 use cranelift_module::DataId;
 use string_interner::StringInterner;
 
@@ -73,7 +72,7 @@ pub struct Context {
     pub file_sources: HashMap<PathBuf, &'static str>,
     pub line_offsets: HashMap<&'static str, Vec<usize>>, // file -> (line -> char_offset)
 
-    pub nodes: BumpVec<'static, Node>,
+    pub nodes: Vec<Node>,
     pub ranges: DenseStorage<Range>,
     pub node_scopes: DenseStorage<ScopeId>,
     pub polymorph_target: bool,
@@ -95,7 +94,7 @@ pub struct Context {
 
     pub errors: Vec<CompileError>,
 
-    pub top_level: BumpVec<'static, NodeId>,
+    pub top_level: Vec<NodeId>,
     pub funcs: Vec<NodeId>,
 
     pub types: SecondaryMap<Type>,
@@ -124,7 +123,7 @@ unsafe impl Send for Context {}
 
 impl Context {
     #[instrument(skip_all)]
-    pub fn new(args: Args, bump: &'static Bump) -> Self {
+    pub fn new(args: Args) -> Self {
         let mut ctx = Self {
             args,
 
@@ -132,7 +131,7 @@ impl Context {
             file_sources: Default::default(),
             line_offsets: Default::default(),
 
-            nodes: BumpVec::new_in(bump),
+            nodes: Default::default(),
             ranges: Default::default(),
             node_scopes: Default::default(),
             addressable_nodes: Default::default(),
@@ -152,7 +151,7 @@ impl Context {
 
             errors: Default::default(),
 
-            top_level: BumpVec::new_in(&bump),
+            top_level: Default::default(),
             funcs: Default::default(),
 
             types: Default::default(),
