@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+use bumpalo::{collections::Vec as BumpVec, Bump};
 use cranelift_module::DataId;
 use string_interner::StringInterner;
 
@@ -72,7 +73,7 @@ pub struct Context {
     pub file_sources: HashMap<PathBuf, &'static str>,
     pub line_offsets: HashMap<&'static str, Vec<usize>>, // file -> (line -> char_offset)
 
-    pub nodes: DenseStorage<Node>,
+    pub nodes: BumpVec<'static, Node>,
     pub ranges: DenseStorage<Range>,
     pub node_scopes: DenseStorage<ScopeId>,
     pub polymorph_target: bool,
@@ -94,7 +95,7 @@ pub struct Context {
 
     pub errors: Vec<CompileError>,
 
-    pub top_level: Vec<NodeId>,
+    pub top_level: BumpVec<'static, NodeId>,
     pub funcs: Vec<NodeId>,
 
     pub types: SecondaryMap<Type>,
@@ -123,7 +124,7 @@ unsafe impl Send for Context {}
 
 impl Context {
     #[instrument(skip_all)]
-    pub fn new(args: Args) -> Self {
+    pub fn new(args: Args, bump: &'static Bump) -> Self {
         let mut ctx = Self {
             args,
 
@@ -131,7 +132,7 @@ impl Context {
             file_sources: Default::default(),
             line_offsets: Default::default(),
 
-            nodes: Default::default(),
+            nodes: BumpVec::new_in(bump),
             ranges: Default::default(),
             node_scopes: Default::default(),
             addressable_nodes: Default::default(),
@@ -151,7 +152,7 @@ impl Context {
 
             errors: Default::default(),
 
-            top_level: Default::default(),
+            top_level: BumpVec::new_in(&bump),
             funcs: Default::default(),
 
             types: Default::default(),
@@ -331,7 +332,7 @@ impl Context {
         }
 
         for id in self.funcs.clone() {
-            match &self.nodes[id] {
+            match &self.nodes[id.0] {
                 Node::FnDefinition { params, .. } => {
                     // don't attempt to directly codegen a polymorph, wait until it's copied first
                     if self.polymorph_sources.contains_key(&id) {
@@ -351,7 +352,7 @@ impl Context {
         }
 
         for id in 0..self.nodes.len() {
-            if let Node::Cast { ty, value } = self.nodes[NodeId(id)] {
+            if let Node::Cast { ty, value } = self.nodes[id] {
                 // todo(chad): find a more robust way of doing this.
                 // Basically looping through all nodes isn't great because we will also loop through
                 // nodes in polymorph sources. So for now if the node hasn't been typechecked, then we just skip it.
@@ -389,7 +390,7 @@ impl Context {
                     .map(|tm| {
                         tm.ids
                             .iter()
-                            .map(|id| (self.nodes[*id].ty(), self.ranges[*id]))
+                            .map(|id| (self.nodes[id.0].ty(), self.ranges[*id]))
                             .collect::<Vec<_>>()
                     })
                     .collect::<Vec<_>>()
@@ -433,7 +434,7 @@ impl Context {
 
     #[instrument(skip_all)]
     pub fn get_symbol(&self, sym_id: NodeId) -> Sym {
-        self.nodes[sym_id].as_symbol().unwrap()
+        self.nodes[sym_id.0].as_symbol().unwrap()
     }
 
     #[instrument(skip_all)]

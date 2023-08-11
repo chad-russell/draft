@@ -213,7 +213,7 @@ impl Context {
             let mut given_idx = 0;
             while given_idx < given_len
                 && matches!(
-                    self.nodes[given[given_idx]],
+                    self.nodes[given[given_idx].0],
                     Node::ValueParam { name: None, .. }
                 )
             {
@@ -223,15 +223,18 @@ impl Context {
                     value: existing_value,
                     index: existing_index,
                     ..
-                } = self.nodes[id_to_push] else { panic!() };
+                } = self.nodes[id_to_push.0]
+                else {
+                    panic!()
+                };
 
                 // Add the name
                 let name = decl[given_idx];
-                match self.nodes[name] {
+                match self.nodes[name.0] {
                     Node::StructDeclParam { name, .. }
                     | Node::FnDeclParam { name, .. }
                     | Node::EnumDeclParam { name, .. } => {
-                        self.nodes[id_to_push] = Node::ValueParam {
+                        self.nodes[id_to_push.0] = Node::ValueParam {
                             name: Some(name),
                             value: existing_value,
                             index: existing_index,
@@ -247,7 +250,7 @@ impl Context {
             let mut cgiven_idx = given_idx;
             while cgiven_idx < given_len {
                 if matches!(
-                    self.nodes[given[cgiven_idx]],
+                    self.nodes[given[cgiven_idx].0],
                     Node::ValueParam { name: None, .. }
                 ) {
                     return Err(CompileError::Node(
@@ -264,14 +267,14 @@ impl Context {
         for &d in decl.iter().skip(starting_rearranged_len) {
             let mut found = false;
 
-            let decl_name = match &self.nodes[d] {
+            let decl_name = match &self.nodes[d.0] {
                 Node::FnDeclParam { name, .. } | Node::StructDeclParam { name, .. } => *name,
                 _ => unreachable!(),
             };
             let decl_name_sym = self.get_symbol(decl_name);
 
             for &g in given.iter().skip(starting_rearranged_len) {
-                let given_name = match &self.nodes[g] {
+                let given_name = match &self.nodes[g.0] {
                     Node::ValueParam {
                         name: Some(name), ..
                     }
@@ -293,7 +296,7 @@ impl Context {
             }
 
             if !found {
-                match self.nodes[d] {
+                match self.nodes[d.0] {
                     Node::FnDeclParam {
                         default: Some(def), ..
                     } => rearranged_given.push(def),
@@ -623,10 +626,10 @@ impl Context {
                 self.errors.push(CompileError::Node2(
                     format!(
                         "Could not match types: {} ({:?}) was {:?}, {} ({:?}) was {:?}",
-                        self.nodes[ty1].ty(),
+                        self.nodes[ty1.0].ty(),
                         self.ranges[ty1],
                         self.types[&ty1],
-                        self.nodes[ty2].ty(),
+                        self.nodes[ty2.0].ty(),
                         self.ranges[ty2],
                         self.types[&ty2]
                     ),
@@ -887,7 +890,7 @@ impl Context {
 
     #[instrument(skip_all)]
     pub fn assign_type_inner(&mut self, id: NodeId) -> bool {
-        match self.nodes[id].clone() {
+        match self.nodes[id.0].clone() {
             Node::FnDefinition {
                 params,
                 return_ty,
@@ -1032,7 +1035,7 @@ impl Context {
                 }
 
                 for &param in params.borrow().iter() {
-                    if let Node::EnumDeclParam { ty: None, .. } = self.nodes[param] {
+                    if let Node::EnumDeclParam { ty: None, .. } = self.nodes[param.0] {
                         self.types.insert(param, Type::EnumNoneType);
                     } else {
                         self.assign_type(param);
@@ -1059,7 +1062,7 @@ impl Context {
                         match self.polymorph_copy(key, ParseTarget::StructDefinition) {
                             Ok(copied) => {
                                 self.assign_type(copied);
-                                self.nodes[id] = Node::StructLiteral {
+                                self.nodes[id.0] = Node::StructLiteral {
                                     name: Some(copied),
                                     params: params.clone(),
                                 };
@@ -1104,7 +1107,7 @@ impl Context {
                         let mut found = false;
 
                         for &field in field_ids.borrow().iter() {
-                            let field_name = match &self.nodes[field] {
+                            let field_name = match &self.nodes[field.0] {
                                 Node::ValueParam {
                                     name: Some(name), ..
                                 }
@@ -1214,7 +1217,7 @@ impl Context {
                     match self.polymorph_copy(key, ParseTarget::EnumDefinition) {
                         Ok(copied) => {
                             self.assign_type(copied);
-                            self.nodes[id] = Node::StaticMemberAccess {
+                            self.nodes[id.0] = Node::StaticMemberAccess {
                                 value: copied,
                                 member,
                                 resolved: None,
@@ -1421,19 +1424,24 @@ impl Context {
                 self.assign_type(copied);
                 self.match_types(id, copied);
 
-                self.nodes[id] = Node::PolySpecialize {
+                self.nodes[id.0] = Node::PolySpecialize {
                     sym,
                     overrides: overrides.clone(),
                     copied: Some(copied),
                 };
                 for o in overrides.borrow().iter() {
                     self.assign_type(*o);
-                    let Node::PolySpecializeOverride { sym, ty } = self.nodes[o] else { panic!() };
+                    let Node::PolySpecializeOverride { sym, ty } = self.nodes[o.0] else {
+                        panic!()
+                    };
                     let sym = self.get_symbol(sym);
 
                     let Node::StructDefinition {
                         scope: scope_id, ..
-                    } = self.nodes[copied] else { panic!() };
+                    } = self.nodes[copied.0]
+                    else {
+                        panic!()
+                    };
 
                     let resolved = self.scope_get_with_scope_id(sym, scope_id);
 
@@ -1516,7 +1524,7 @@ impl Context {
                     (Type::Array(_, ArrayLen::Infer), _) => {}
                     (Type::Array(ty1, ArrayLen::Some(_)), Type::Array(ty2, ArrayLen::None)) => {
                         self.match_types(ty1, ty2);
-                        self.nodes[id] = Node::AsCast {
+                        self.nodes[id.0] = Node::AsCast {
                             value,
                             ty,
                             style: AsCastStyle::StaticToDynamicArray,
@@ -1546,7 +1554,12 @@ impl Context {
                                 return false;
                             }
 
-                            let Node::ValueParam { name: Some(name), value, ..} = self.nodes[p0] else {
+                            let Node::ValueParam {
+                                name: Some(name),
+                                value,
+                                ..
+                            } = self.nodes[p0.0]
+                            else {
                                 self.errors.push(CompileError::Node(
                                     "Expected a value param called 'data' here".to_string(),
                                     p0,
@@ -1593,7 +1606,12 @@ impl Context {
                                 return false;
                             }
 
-                            let Node::ValueParam { name: Some(name), value, ..} = self.nodes[p1] else {
+                            let Node::ValueParam {
+                                name: Some(name),
+                                value,
+                                ..
+                            } = self.nodes[p1.0]
+                            else {
                                 self.errors.push(CompileError::Node(
                                     "Expected a value param called 'len' here".to_string(),
                                     p1,
@@ -1627,7 +1645,7 @@ impl Context {
                             };
                         }
 
-                        self.nodes[id] = Node::AsCast {
+                        self.nodes[id.0] = Node::AsCast {
                             value,
                             ty,
                             style: AsCastStyle::StructToDynamicArray,
@@ -1670,7 +1688,7 @@ impl Context {
         for (index, &field) in field_ids.borrow().iter().enumerate() {
             self.assign_type(field);
 
-            let (field_name, is_none_type) = match &self.nodes[field] {
+            let (field_name, is_none_type) = match &self.nodes[field.0] {
                 Node::EnumDeclParam { name, ty } => (*name, ty.is_none()),
                 _ => {
                     self.errors.push(CompileError::Node(
@@ -1700,7 +1718,7 @@ impl Context {
                     },
                 );
 
-                self.nodes[id] = Node::StaticMemberAccess {
+                self.nodes[id.0] = Node::StaticMemberAccess {
                     value: value,
                     member: member,
                     resolved: Some(StaticMemberResolution::EnumConstructor {
@@ -1773,7 +1791,7 @@ impl Context {
                 self.errors.push(CompileError::Node(
                     format!(
                         "Generic arguments needed: {} is not a concrete type",
-                        self.nodes[ty].ty()
+                        self.nodes[ty.0].ty()
                     ),
                     ty,
                 ));
@@ -1844,7 +1862,7 @@ impl Context {
                 self.errors.push(CompileError::Node(
                     format!(
                         "Generic arguments needed: {} is not a concrete type",
-                        self.nodes[ty].ty()
+                        self.nodes[ty.0].ty()
                     ),
                     ty,
                 ));
@@ -2055,7 +2073,7 @@ impl Context {
             self.assign_type(stmt);
         }
         for &ret_id in returns.borrow().iter() {
-            let ret_id = match self.nodes[ret_id].clone() {
+            let ret_id = match self.nodes[ret_id.0].clone() {
                 Node::Return(Some(id)) => Ok(id),
                 Node::Return(None) if return_ty.is_some() => Err(CompileError::Node(
                     "Empty return not allowed".to_string(),
@@ -2071,7 +2089,7 @@ impl Context {
                     self.match_types(return_ty, ret_id);
                 }
                 (Ok(ret_id), None) => {
-                    if let Node::Return(Some(_)) = self.nodes[ret_id] {
+                    if let Node::Return(Some(_)) = self.nodes[ret_id.0] {
                         self.errors.push(CompileError::Node(
                             "Return type not specified".to_string(),
                             ret_id,
@@ -2099,7 +2117,7 @@ impl Context {
                 Ok(func_id) => {
                     func = func_id;
                     self.assign_type(func);
-                    self.nodes[id] = Node::Call {
+                    self.nodes[id.0] = Node::Call {
                         func,
                         params: params.clone(),
                     };
@@ -2175,7 +2193,9 @@ impl Context {
         name: NodeId,
         struct_literal_id: NodeId,
     ) -> DraftResult<()> {
-        let Some(Type::Struct { params: decl, .. }) = self.types.get(&name) else { return Ok(()); };
+        let Some(Type::Struct { params: decl, .. }) = self.types.get(&name) else {
+            return Ok(());
+        };
 
         let given = params.clone();
         let decl = decl.clone();
@@ -2208,7 +2228,7 @@ impl Context {
     #[instrument(skip_all)]
     pub fn copy_polymorph_if_needed(&mut self, ty: NodeId) -> DraftResult<NodeId> {
         if let Some(&ty) = self.polymorph_sources.get(&ty) {
-            let parse_target = match self.nodes[ty].clone() {
+            let parse_target = match self.nodes[ty.0].clone() {
                 Node::StructDefinition { .. } => ParseTarget::StructDefinition,
                 Node::EnumDefinition { .. } => ParseTarget::EnumDefinition,
                 Node::FnDefinition { .. } => ParseTarget::FnDefinition,
@@ -2227,7 +2247,7 @@ impl Context {
             self.errors.push(CompileError::Node(
                 format!(
                     "Generic arguments needed: {} is not a concrete type",
-                    self.nodes[value].ty()
+                    self.nodes[value.0].ty()
                 ),
                 value,
             ));

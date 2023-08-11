@@ -1,3 +1,5 @@
+#![feature(allocator_api)]
+
 pub mod args;
 pub mod compile;
 pub mod context;
