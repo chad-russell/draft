@@ -2158,9 +2158,14 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 self.ctx.pop_scope(pushed_scope);
 
-                Ok(self
-                    .ctx
-                    .push_node(range, Node::Type(Type::Struct { name: None, params })))
+                Ok(self.ctx.push_node(
+                    range,
+                    Node::Type(Type::Struct {
+                        name: None,
+                        params,
+                        members: None,
+                    }),
+                ))
             }
             Token::Enum => {
                 let range = self.source_info.top.range;

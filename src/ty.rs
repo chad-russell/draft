@@ -1,9 +1,17 @@
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
+
 use tracing::instrument;
 
 use crate::{
     AsCastStyle, CompileError, Context, DraftResult, IdVec, Node, NodeElse, NodeId,
     NumericSpecification, Op, ParseTarget, StaticMemberResolution, Sym,
 };
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StructMember {
+    Member(NodeId),
+    TransparentMember(Vec<NodeId>),
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
@@ -31,6 +39,7 @@ pub enum Type {
     Struct {
         name: Option<NodeId>,
         params: IdVec,
+        members: Option<Rc<RefCell<HashMap<Sym, StructMember>>>>,
     },
     Enum {
         name: Option<NodeId>,
@@ -522,10 +531,12 @@ impl Context {
                 Type::Struct {
                     name: n1,
                     params: f1,
+                    ..
                 },
                 Type::Struct {
                     name: n2,
                     params: f2,
+                    ..
                 },
             )
             | (
@@ -990,18 +1001,13 @@ impl Context {
                     self.assign_type(param);
                 }
 
-                // let mut should_defer = false;
-                // for param in param_ids.borrow().iter() {
-                //     if !self.types.contains_key(param) {
-                //         should_defer = true;
-                //         self.deferreds.push(*param);
-                //     }
-                // }
-
-                // if should_defer {
-                //     self.deferreds.push(id);
-                //     return false;
-                // }
+                let mut should_defer = false;
+                for param in params.borrow().iter() {
+                    if !self.types.contains_key(param) {
+                        should_defer = true;
+                        self.deferreds.push(*param);
+                    }
+                }
 
                 // for &param in param_ids.borrow().iter() {
                 //     let param_ty = self.get_type(param);
@@ -1022,10 +1028,22 @@ impl Context {
                 //     };
                 // }
 
-                self.types.insert(id, Type::Struct { name, params });
+                self.types.insert(
+                    id,
+                    Type::Struct {
+                        name,
+                        params,
+                        members: None,
+                    },
+                );
 
                 if let Some(name) = name {
                     self.match_types(id, name);
+                }
+
+                if should_defer {
+                    self.deferreds.push(id);
+                    return false;
                 }
             }
             Node::EnumDefinition { name, params } => {
@@ -1087,7 +1105,14 @@ impl Context {
                     for &field in params.clone().borrow().iter() {
                         self.assign_type(field);
                     }
-                    self.types.insert(id, Type::Struct { name: None, params });
+                    self.types.insert(
+                        id,
+                        Type::Struct {
+                            name: None,
+                            params,
+                            members: None,
+                        },
+                    );
                 }
             }
             Node::MemberAccess { value, member } => {
@@ -1979,7 +2004,7 @@ impl Context {
                     self.assign_type(input_ty);
                 }
             }
-            Type::Struct { name, params } => {
+            Type::Struct { name, params, .. } => {
                 if let Some(name) = name {
                     self.assign_type(name);
                 }

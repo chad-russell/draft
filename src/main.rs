@@ -1,6 +1,3 @@
-#![feature(allocator_api)]
-
-use bumpalo::Bump;
 use clap::Parser;
 use draft::*;
 
@@ -32,8 +29,7 @@ fn run(context: &mut Context) -> DraftResult<()> {
 
 fn main() {
     let args = args::Args::parse();
-    let bump = Box::leak(Box::new(Bump::new()));
-    let mut context = Context::new(args, bump);
+    let mut context = Context::new(args);
 
     if context.args.tracing {
         tracing::subscriber::set_global_default(
