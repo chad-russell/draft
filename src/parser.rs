@@ -867,7 +867,7 @@ impl<'a, W: Source> Parser<'a, W> {
             };
 
             let name = self.parse_symbol()?;
-            let name_sym = self.ctx.nodes[name.0].as_symbol().unwrap();
+            let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
 
             let (ty, default) = if self.source_info.top.tok == Token::Colon {
                 self.pop(); // `:`
@@ -955,7 +955,7 @@ impl<'a, W: Source> Parser<'a, W> {
         self.ctx.polymorph_target = false;
 
         let name = self.parse_symbol()?;
-        let name_sym = self.ctx.nodes[name.0].as_symbol().unwrap();
+        let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
 
         let pushed_scope = self.ctx.push_scope();
         let struct_scope = self.ctx.top_scope;
@@ -1001,7 +1001,7 @@ impl<'a, W: Source> Parser<'a, W> {
         self.ctx.polymorph_target = false;
 
         let name = self.parse_symbol()?;
-        let name_sym = self.ctx.nodes[name.0].as_symbol().unwrap();
+        let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
 
         let pushed_scope = self.ctx.push_scope();
 
@@ -1047,7 +1047,7 @@ impl<'a, W: Source> Parser<'a, W> {
         } else {
             Some(self.parse_symbol()?)
         };
-        let name_sym = name.map(|n| self.ctx.nodes[n.0].as_symbol().unwrap());
+        let name_sym = name.map(|n| self.ctx.nodes[n].as_symbol().unwrap());
 
         // open a new scope
         let pushed_scope = self.ctx.push_scope();
@@ -1118,7 +1118,7 @@ impl<'a, W: Source> Parser<'a, W> {
         self.pop(); // `fn`
 
         let name = self.parse_symbol()?;
-        let name_sym = self.ctx.nodes[name.0].as_symbol().unwrap();
+        let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
 
         // open a new scope
         let pushed_scope = self.ctx.push_scope();
@@ -1152,7 +1152,7 @@ impl<'a, W: Source> Parser<'a, W> {
         params_vec.borrow_mut().insert(0, self_param);
 
         for (i, param) in params_vec.borrow().iter().enumerate() {
-            let Node::FnDeclParam { index, .. } = &mut self.ctx.nodes[param.0] else {
+            let Node::FnDeclParam { index, .. } = &mut self.ctx.nodes[param] else {
                 unreachable!()
             };
             *index = i as u16;
@@ -1213,7 +1213,7 @@ impl<'a, W: Source> Parser<'a, W> {
         self.pop(); // `extern`
 
         let name = self.parse_symbol()?;
-        let name_sym = self.ctx.nodes[name.0].as_symbol().unwrap();
+        let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
 
         let pushed_scope = self.ctx.push_scope();
 
@@ -1430,7 +1430,7 @@ impl<'a, W: Source> Parser<'a, W> {
             },
         );
 
-        let (inner_func_id, params) = match self.ctx.nodes[inner_func_id.0].clone() {
+        let (inner_func_id, params) = match self.ctx.nodes[inner_func_id].clone() {
             Node::Call { func, params } | Node::ThreadingCall { func, params } => {
                 let params_vec = params.clone();
 
@@ -1440,7 +1440,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 let mut threading_target = None;
                 for (pid, param) in params_vec.borrow().iter().enumerate() {
-                    match &mut self.ctx.nodes[param.0] {
+                    match &mut self.ctx.nodes[param] {
                         Node::ThreadingParamTarget => {
                             if threading_target.is_some() {
                                 self.ctx.errors.push(CompileError::Node("Multiple threading param targets specified - can have at most one in a threading call".to_string(), *param));
@@ -1457,7 +1457,7 @@ impl<'a, W: Source> Parser<'a, W> {
                     params_vec.borrow_mut().insert(0, value_param_id);
 
                     for (pid, param) in params_vec.borrow().iter().enumerate() {
-                        match &mut self.ctx.nodes[param.0] {
+                        match &mut self.ctx.nodes[param] {
                             Node::ValueParam { index, .. } => {
                                 *index = pid as u16;
                             }
@@ -1822,8 +1822,14 @@ impl<'a, W: Source> Parser<'a, W> {
         let start = self.source_info.top.range.start;
 
         self.pop(); // `let`
+
+        let transparent = self.source_info.top.tok == Token::Transparent;
+        if transparent {
+            self.pop(); // `#transparent`
+        }
+
         let name = self.parse_symbol()?;
-        let name_sym = self.ctx.nodes[name.0].as_symbol().unwrap();
+        let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
 
         let ty = if self.source_info.top.tok == Token::Colon {
             self.pop(); // `:`
@@ -1846,7 +1852,15 @@ impl<'a, W: Source> Parser<'a, W> {
             }
         };
         let range = self.expect_range(start, Token::Semicolon)?;
-        let let_id = self.ctx.push_node(range, Node::Let { name, ty, expr });
+        let let_id = self.ctx.push_node(
+            range,
+            Node::Let {
+                name,
+                ty,
+                expr,
+                transparent,
+            },
+        );
 
         self.ctx.addressable_nodes.insert(let_id);
         self.ctx.scope_insert(name_sym, let_id);
@@ -2158,14 +2172,16 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 self.ctx.pop_scope(pushed_scope);
 
-                Ok(self.ctx.push_node(
+                let id = self.ctx.push_node(
                     range,
                     Node::Type(Type::Struct {
                         name: None,
                         params,
-                        members: None,
+                        decl: None,
                     }),
-                ))
+                );
+
+                Ok(id)
             }
             Token::Enum => {
                 let range = self.source_info.top.range;
@@ -2392,17 +2408,17 @@ impl Context {
                 let parsed = parser.parse_struct_definition()?;
 
                 // if the struct has generic params, we need to copy those too
-                let Node::StructDefinition { params, .. } = self.nodes[parsed.0].clone() else {
+                let Node::StructDefinition { params, .. } = self.nodes[parsed].clone() else {
                     panic!()
                 };
                 for param in params.borrow().iter() {
-                    let Node::StructDeclParam { ty, .. } = self.nodes[param.0] else {
+                    let Node::StructDeclParam { ty, .. } = self.nodes[param] else {
                         panic!()
                     };
                     if let Some(ty) = ty {
-                        if let Node::Symbol(_) = self.nodes[ty.0] {
+                        if let Node::Symbol(_) = self.nodes[ty] {
                             let copied = self.copy_polymorph_if_needed(ty)?;
-                            self.nodes[ty.0] = self.nodes[copied.0].clone();
+                            self.nodes[ty] = self.nodes[copied].clone();
                         }
                     }
                 }

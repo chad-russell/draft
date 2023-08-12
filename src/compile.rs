@@ -73,7 +73,7 @@ impl Context {
 
         let mut bytes = Vec::new();
         for id in self.string_literals.iter() {
-            let Node::StringLiteral(sym) = self.nodes[id.0] else {
+            let Node::StringLiteral(sym) = self.nodes[id] else {
                 unreachable!()
             };
             let s = self.string_interner.resolve(sym.0).unwrap();
@@ -133,7 +133,7 @@ impl Context {
             params,
             return_ty,
             ..
-        } = self.nodes[id.0].clone()
+        } = self.nodes[id].clone()
         {
             let mut sig = self.module.make_signature();
 
@@ -165,7 +165,7 @@ impl Context {
     #[instrument(skip_all)]
     fn mangled_func_name(&self, name: Option<NodeId>, anonymous_id: NodeId) -> String {
         name.map(|n| {
-            let sym = self.nodes[n.0].as_symbol().unwrap();
+            let sym = self.nodes[n].as_symbol().unwrap();
             if self.polymorph_copies.contains(&anonymous_id) {
                 format!(
                     "{}_polycopy{}",
@@ -186,7 +186,7 @@ impl Context {
         let node_id = self
             .top_level
             .iter()
-            .filter(|tl| match self.nodes[tl.0] {
+            .filter(|tl| match self.nodes[**tl] {
                 Node::FnDefinition {
                     name: Some(name), ..
                 } => self.get_symbol(name).0 == fn_name_interned,
@@ -394,7 +394,7 @@ impl<'a> FunctionCompileContext<'a> {
         //     self.builder.set_srcloc(SourceLoc::default());
         // }
 
-        match self.ctx.nodes[id.0].clone() {
+        match self.ctx.nodes[id].clone() {
             Node::Symbol(sym) => {
                 let resolved = self.ctx.scope_get(sym, id);
 
@@ -492,7 +492,7 @@ impl<'a> FunctionCompileContext<'a> {
                 Ok(())
             }
             Node::Assign { name, expr, .. } => {
-                match self.ctx.nodes[name.0] {
+                match self.ctx.nodes[name] {
                     Node::Deref(_value) => {
                         self.ctx.in_assign_lhs = true;
                         self.compile_id(name)?;
@@ -718,6 +718,10 @@ impl<'a> FunctionCompileContext<'a> {
             }
             Node::MemberAccess { value, member } => {
                 self.compile_id(value)?;
+
+                let Node::Symbol(_) = &self.ctx.nodes[member] else {
+                    todo!("Member access for {:?}", &self.ctx.nodes[member])
+                };
 
                 let offset = self.get_member_offset(value, member)?;
 
@@ -1246,7 +1250,7 @@ impl<'a> FunctionCompileContext<'a> {
             Node::FnDefinition { .. }
             | Node::StructDefinition { .. }
             | Node::EnumDefinition { .. } => Ok(()), // This should have already been handled by the toplevel context
-            _ => todo!("compile_id for {:?}", &self.ctx.nodes[id.0]),
+            _ => todo!("compile_id for {:?}", &self.ctx.nodes[id]),
         }
     }
 
@@ -1341,7 +1345,7 @@ impl<'a> FunctionCompileContext<'a> {
 
     #[instrument(skip_all)]
     fn get_member_offset(&mut self, value: NodeId, member: NodeId) -> DraftResult<u32> {
-        let member_name = self.ctx.nodes[member.0].as_symbol().unwrap();
+        let member_name = self.ctx.nodes[member].as_symbol().unwrap();
 
         let mut ty = self.ctx.get_type(value);
         while let Type::Pointer(inner) = ty {
@@ -1368,14 +1372,14 @@ impl<'a> FunctionCompileContext<'a> {
 
         let mut offset = 0;
         for field in fields.borrow().iter() {
-            let field_name = match &self.ctx.nodes[field.0] {
+            let field_name = match &self.ctx.nodes[field] {
                 Node::StructDeclParam { name, .. } => *name,
                 Node::ValueParam {
                     name: Some(name), ..
                 } => *name,
-                _ => panic!("Not a param: {:?}", &self.ctx.nodes[field.0]),
+                _ => panic!("Not a param: {:?}", &self.ctx.nodes[field]),
             };
-            let field_name = self.ctx.nodes[field_name.0].as_symbol().unwrap();
+            let field_name = self.ctx.nodes[field_name].as_symbol().unwrap();
 
             if field_name == member_name {
                 return Ok(offset);
@@ -1534,7 +1538,7 @@ impl<'a> ToplevelCompileContext<'a> {
             _ => return Ok(()),
         };
 
-        match self.ctx.nodes[id.0].clone() {
+        match self.ctx.nodes[id].clone() {
             Node::Symbol(_) => todo!(),
             Node::FnDefinition {
                 name,
@@ -1612,10 +1616,10 @@ impl<'a> ToplevelCompileContext<'a> {
                     StaticMemberResolution::EnumConstructor { base, index } => {
                         // We need to generate a function which takes one or zero parameters, and outputs an enum of this type
                         let Type::Enum { params, .. } = self.ctx.types[&base].clone() else {
-                            todo!("{:?}", self.ctx.nodes[base.0])
+                            todo!("{:?}", self.ctx.nodes[base])
                         };
                         let param = params.borrow()[index as usize];
-                        let Node::EnumDeclParam { name, ty } = self.ctx.nodes[param.0] else {
+                        let Node::EnumDeclParam { name, ty } = self.ctx.nodes[param] else {
                             todo!()
                         };
 

@@ -72,7 +72,7 @@ pub struct Context {
     pub file_sources: HashMap<PathBuf, &'static str>,
     pub line_offsets: HashMap<&'static str, Vec<usize>>, // file -> (line -> char_offset)
 
-    pub nodes: Vec<Node>,
+    pub nodes: DenseStorage<Node>,
     pub ranges: DenseStorage<Range>,
     pub node_scopes: DenseStorage<ScopeId>,
     pub polymorph_target: bool,
@@ -331,7 +331,7 @@ impl Context {
         }
 
         for id in self.funcs.clone() {
-            match &self.nodes[id.0] {
+            match &self.nodes[id] {
                 Node::FnDefinition { params, .. } => {
                     // don't attempt to directly codegen a polymorph, wait until it's copied first
                     if self.polymorph_sources.contains_key(&id) {
@@ -351,7 +351,7 @@ impl Context {
         }
 
         for id in 0..self.nodes.len() {
-            if let Node::Cast { ty, value } = self.nodes[id] {
+            if let Node::Cast { ty, value } = self.nodes[NodeId(id)] {
                 // todo(chad): find a more robust way of doing this.
                 // Basically looping through all nodes isn't great because we will also loop through
                 // nodes in polymorph sources. So for now if the node hasn't been typechecked, then we just skip it.
@@ -389,7 +389,7 @@ impl Context {
                     .map(|tm| {
                         tm.ids
                             .iter()
-                            .map(|id| (self.nodes[id.0].ty(), self.ranges[*id]))
+                            .map(|id| (self.nodes[id].ty(), self.ranges[*id]))
                             .collect::<Vec<_>>()
                     })
                     .collect::<Vec<_>>()
@@ -433,7 +433,7 @@ impl Context {
 
     #[instrument(skip_all)]
     pub fn get_symbol(&self, sym_id: NodeId) -> Sym {
-        self.nodes[sym_id.0].as_symbol().unwrap()
+        self.nodes[sym_id].as_symbol().unwrap()
     }
 
     #[instrument(skip_all)]

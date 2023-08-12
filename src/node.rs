@@ -56,6 +56,7 @@ pub enum Node {
         name: NodeId,
         ty: Option<NodeId>,
         expr: Option<NodeId>,
+        transparent: bool,
     },
     Assign {
         name: NodeId,

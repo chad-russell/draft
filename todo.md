@@ -70,7 +70,7 @@
     - [ ] import { A, B::{C, D}, E::* } from "whatever/bar"
 
 # Performance
-- [ ] investigate performance hit of using Box/Rc instead of the IdVec convention
+- [x] investigate performance hit of using Box/Rc instead of the IdVec convention (it was about 10-15%)
 - [ ] use the `stack_store` cranelift ir instruction
 - [ ] use cranelift's frontend for `let` bindings - they don't need to always have stack storage by default unless something is specifically taking a reference to them later
 - [ ] when doing codegen for aggregate types, they don't always need their own slot. Usually it's going to get copied into the slot of somethign else like a let binding, so we can just directly codegen it into that slot
