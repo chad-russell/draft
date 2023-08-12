@@ -46,7 +46,8 @@ fn main() i64 {
     let g = Bar { 3, 8 };
     let pg = &g;
     let dpg = *pg;
-    add_bar(dpg) |> print_i64;
+    dbg.x |> print_i64;
+    // add_bar(dpg) |> print_i64;
 
     return 0;
 }
