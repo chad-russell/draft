@@ -43,10 +43,10 @@ fn main() i64 {
     // let b = Bar { make_foo(3, 0) };
     // b.f |> add_foo |> print_i64;
     
-    let g = Bar { 3, 8 };
+    let g = Bar { 333, 444 };
     let pg = &g;
     let dpg = *pg;
-    dbg.x |> print_i64;
+    // dpg.x |> print_i64;
     // add_bar(dpg) |> print_i64;
 
     return 0;
