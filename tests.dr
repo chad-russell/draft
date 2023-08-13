@@ -262,20 +262,20 @@ fn main() i64 {
     let pg = &&&&&&g;
     print_i64(foo5(&f, *pg) - ****&&&&7); // 9
 
-    // let ten = &&&999;
-    // **ten = &10;
-    // print_i64(***ten); // 10
+    let ten = &&&999;
+    **ten = &10;
+    print_i64(***ten); // 10
     
-    // ***ten = 11;
-    // print_i64(***ten); // 11
+    ***ten = 11;
+    print_i64(***ten); // 11
 
-    // let f6 = foo6();
-    // print_i64(f6.x + f6.y); // 12
+    let f6 = foo6();
+    print_i64(f6.x + f6.y); // 12
     
-    // let fa = Baz::A();
-    // let make_b = Baz::B;
-    // let fb = make_b(6);
-    // let fc = Baz::C(_{ 888, 999 });
+    let fa = Baz::A();
+    let make_b = Baz::B;
+    let fb = make_b(6);
+    let fc = Baz::C(_{ 888, 999 });
 
     // print_enum_tag(&fa);
     // print_enum_tag(&fb);
