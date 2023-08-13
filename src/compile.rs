@@ -231,7 +231,7 @@ impl Context {
             | Type::Enum { .. }
             | Type::Array(_, _)
             | Type::String => self.get_pointer_type(),
-            Type::Infer(_) => todo!(),
+            Type::Infer(_) => panic!(),
             _ => todo!("{:?}", &self.types[&param]),
         }
     }
@@ -483,11 +483,21 @@ impl<'a> FunctionCompileContext<'a> {
                 if let Some(expr) = expr {
                     self.compile_id(expr)?;
                     self.store_copy(expr, value);
-                }
 
-                self.ctx
-                    .values
-                    .insert(id, Value::Reference(BackendReference::StackSlot(slot)));
+                    if self.ctx.id_is_aggregate_type(expr) {
+                        self.ctx
+                            .values
+                            .insert(id, Value::Value(BackendValue::Aggregate(slot)));
+                    } else {
+                        self.ctx
+                            .values
+                            .insert(id, Value::Reference(BackendReference::StackSlot(slot)));
+                    }
+                } else {
+                    self.ctx
+                        .values
+                        .insert(id, Value::Reference(BackendReference::StackSlot(slot)));
+                }
 
                 Ok(())
             }
@@ -594,8 +604,8 @@ impl<'a> FunctionCompileContext<'a> {
                 self.compile_id(lhs)?;
                 self.compile_id(rhs)?;
 
-                let lhs_value = self.register_value(lhs);
-                let rhs_value = self.register_value(rhs);
+                let lhs_value = self.get_register_value(lhs);
+                let rhs_value = self.get_register_value(rhs);
 
                 let ty = self.ctx.types[&lhs].clone();
 
@@ -704,20 +714,20 @@ impl<'a> FunctionCompileContext<'a> {
 
                 let offset = self.get_member_offset(value, member)?;
 
-                // let mut pointiness = 0;
-                // let mut ty = self.ctx.get_type(value);
-                // while let Type::Pointer(inner) = ty {
-                //     pointiness += 1;
-                //     ty = self.ctx.get_type(inner);
-                // }
+                let mut pointiness = 0;
+                let mut ty = self.ctx.get_type(value);
+                while let Type::Pointer(inner) = ty {
+                    pointiness += 1;
+                    ty = self.ctx.get_type(inner);
+                }
 
                 let value = self.ctx.values[&value];
                 let mut value = self.as_cranelift_value(value);
 
-                // while pointiness > 0 {
-                //     value = self.load(types::I64, value, 0);
-                //     pointiness -= 1;
-                // }
+                while pointiness > 0 {
+                    value = self.load(types::I64, value, 0);
+                    pointiness -= 1;
+                }
 
                 if offset != 0 {
                     value = self.builder.ins().iadd_imm(value, offset as i64);
@@ -735,41 +745,112 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
-            Node::AddressOf(value) => {
-                self.compile_id(value)?;
+            Node::AddressOf(a) => {
+                self.compile_id(a)?;
 
-                let cranelift_value = self.ctx.values.get(&value).unwrap();
-                self.ctx.values.insert(id, *cranelift_value);
+                let value = self.ctx.values.get(&a).unwrap();
+
+                match value {
+                    Value::Value(v) => match v {
+                        BackendValue::Func(_) | BackendValue::Register(_) => {
+                            let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                                kind: StackSlotKind::ExplicitSlot,
+                                size: self.ctx.id_type_size(a),
+                            });
+
+                            let value = self.as_cranelift_value(*value);
+                            self.builder.ins().stack_store(value, slot, 0);
+
+                            let slot_addr =
+                                self.builder
+                                    .ins()
+                                    .stack_addr(self.ctx.get_pointer_type(), slot, 0);
+
+                            self.ctx
+                                .values
+                                .insert(id, Value::Value(BackendValue::Register(slot_addr)));
+                        }
+                        BackendValue::Aggregate(slot) => {
+                            let slot_addr = self.builder.ins().stack_addr(
+                                self.ctx.get_pointer_type(),
+                                *slot,
+                                0,
+                            );
+
+                            self.ctx
+                                .values
+                                .insert(id, Value::Value(BackendValue::Register(slot_addr)));
+                        }
+                        BackendValue::AggregatePointer(ptr) => {
+                            self.ctx
+                                .values
+                                .insert(id, Value::Value(BackendValue::Register(*ptr)));
+                        }
+                    },
+                    Value::Reference(reference) => match reference {
+                        BackendReference::StackSlot(slot) => {
+                            let slot_addr = self.builder.ins().stack_addr(
+                                self.ctx.get_pointer_type(),
+                                *slot,
+                                0,
+                            );
+
+                            self.ctx
+                                .values
+                                .insert(id, Value::Value(BackendValue::Register(slot_addr)));
+                        }
+                        BackendReference::Pointer(ptr) => {
+                            self.ctx
+                                .values
+                                .insert(id, Value::Value(BackendValue::Register(*ptr)));
+                        }
+                    },
+                }
+                // self.ctx.values.insert(id, *cranelift_value);
 
                 Ok(())
             }
-            Node::Deref(_value) => {
-                todo!();
+            Node::Deref(value) => {
+                self.compile_id(value)?;
 
-                // self.compile_id(value)?;
+                if self.ctx.in_assign_lhs {
+                    let value = self.get_register_value(value);
 
-                // let cranelift_value = if self.ctx.in_assign_lhs {
-                //     self.ctx.in_assign_lhs = false;
+                    self.ctx
+                        .values
+                        .insert(id, Value::Reference(BackendReference::Pointer(value)));
+                } else {
+                    if self.ctx.id_is_aggregate_type(id) {
+                        // If we're dereferencing to an aggregate type, then we are going to need a stack slot and will become an Aggregate value ourselves
+                        let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                            kind: StackSlotKind::ExplicitSlot,
+                            size: self.ctx.id_type_size(id),
+                        });
 
-                //     match self.ctx.values.get(&value).unwrap() {
-                //         Value::Register(value) => *value,
-                //         cv => todo!("Deref for {:?}", cv),
-                //     }
-                // } else {
-                //     self.id_value(value)
-                // };
+                        let size = self.ctx.id_type_size(id);
 
-                // let ty = &self.ctx.get_type(id);
-                // let ty = match ty {
-                //     Type::Struct { .. } => self.ctx.module.isa().pointer_type(),
-                //     _ => self.ctx.get_cranelift_type(id),
-                // };
+                        let value = self.get_register_value(value);
+                        let slot_addr =
+                            self.builder
+                                .ins()
+                                .stack_addr(self.ctx.get_pointer_type(), slot, 0);
 
-                // let loaded = self.load(ty, cranelift_value, 0);
+                        self.emit_small_memory_copy(slot_addr, value, size as _);
 
-                // self.ctx.values.insert(id, Value::Register(loaded));
+                        self.ctx
+                            .values
+                            .insert(id, Value::Value(BackendValue::Aggregate(slot)));
+                    } else {
+                        let rvalue = self.get_register_value(value);
+                        let ty = self.ctx.get_cranelift_type(value);
+                        let value = self.load(ty, rvalue, 0);
+                        self.ctx
+                            .values
+                            .insert(id, Value::Value(BackendValue::Register(value)));
+                    }
+                }
 
-                // Ok(())
+                Ok(())
             }
             Node::Extern {
                 name,
@@ -1237,7 +1318,7 @@ impl<'a> FunctionCompileContext<'a> {
         let mut param_values = Vec::new();
         for &param in param_ids.borrow().iter() {
             self.compile_id(param)?;
-            param_values.push(self.register_value(param));
+            param_values.push(self.get_register_value(param));
         }
 
         // direct call?
@@ -1501,7 +1582,7 @@ impl<'a> FunctionCompileContext<'a> {
     }
 
     #[instrument(skip_all)]
-    fn register_value(&mut self, id: NodeId) -> CraneliftValue {
+    fn get_register_value(&mut self, id: NodeId) -> CraneliftValue {
         let value = self.ctx.values[&id];
         match value {
             Value::Value(v) => match v {
@@ -1515,11 +1596,10 @@ impl<'a> FunctionCompileContext<'a> {
             },
             Value::Reference(reference) => {
                 let ty = match self.ctx.get_type(id) {
-                    Type::Pointer(_)
-                    | Type::Array(_, _)
-                    | Type::Struct { .. }
-                    | Type::String
-                    | Type::Enum { .. } => todo!(),
+                    Type::Array(_, _) | Type::Struct { .. } | Type::String | Type::Enum { .. } => {
+                        todo!()
+                    }
+                    Type::Pointer(_) => self.ctx.get_pointer_type(),
                     Type::F32 => types::F32,
                     Type::F64 => types::F64,
                     Type::I8 | Type::Bool => types::I8,

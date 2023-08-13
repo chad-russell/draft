@@ -9,11 +9,16 @@ struct Bar {
     f: Foo,
 }
 
-fn main() i64 {
-    let foo = Foo { x: 1, y: 2 };
-    let bar = Bar { foo };
+fn sum_foo(f: Foo) i64 {
+    return f.x + f.y;
+}
 
-    print_i64(bar.f.x + foo.y);
+fn main() i64 {
+    let a = Foo { 3, 4 };
+    let b = a;
+    // *b = Foo { 5, 6 };
+    b.y = 88;
+    print_i64(a.y);
     
     return 0;
 }
