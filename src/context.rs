@@ -111,7 +111,6 @@ pub struct Context {
     pub values: SecondaryMap<Value>,
     pub polymorph_sources: SecondaryMap<NodeId>,
 
-    pub nodes_needing_stack_storage: SecondarySet,
     pub polymorph_copies: SecondarySet,
     pub completes: SecondarySet,
     pub circular_dependency_nodes: SecondarySet,
@@ -134,7 +133,6 @@ impl Context {
             nodes: Default::default(),
             ranges: Default::default(),
             node_scopes: Default::default(),
-            nodes_needing_stack_storage: Default::default(),
             polymorph_target: false,
             polymorph_sources: Default::default(),
             polymorph_copies: Default::default(),
@@ -189,7 +187,6 @@ impl Context {
         self.nodes.clear();
         self.ranges.clear();
         self.node_scopes.clear();
-        self.nodes_needing_stack_storage.clear();
         self.polymorph_target = false;
         self.string_literals.clear();
         self.string_literal_offsets.clear();
@@ -330,56 +327,36 @@ impl Context {
             hardstop += 1;
         }
 
-        for id in self.funcs.clone() {
-            match &self.nodes[id] {
-                Node::FnDefinition { params, .. } => {
-                    // don't attempt to directly codegen a polymorph, wait until it's copied first
-                    if self.polymorph_sources.contains_key(&id) {
-                        continue;
-                    }
+        // for id in 0..self.nodes.len() {
+        //     if let Node::Cast { ty, value } = self.nodes[NodeId(id)] {
+        //         // todo(chad): find a more robust way of doing this.
+        //         // Basically looping through all nodes isn't great because we will also loop through
+        //         // nodes in polymorph sources. So for now if the node hasn't been typechecked, then we just skip it.
 
-                    for &param in params.clone().borrow().iter() {
-                        // All structs passed as function args are passed by address (for now...)
-                        if self.id_base_is_aggregate_type(param) {
-                            self.nodes_needing_stack_storage.insert(param);
-                            self.match_addressable(param, param); // todo(chad): @hack?
-                        }
-                    }
-                }
-                _ => (),
-            }
-        }
+        //         if !self.types.contains_key(&ty) || !self.types.contains_key(&value) {
+        //             continue;
+        //         }
 
-        for id in 0..self.nodes.len() {
-            if let Node::Cast { ty, value } = self.nodes[NodeId(id)] {
-                // todo(chad): find a more robust way of doing this.
-                // Basically looping through all nodes isn't great because we will also loop through
-                // nodes in polymorph sources. So for now if the node hasn't been typechecked, then we just skip it.
+        //         let ty = self.types[&ty].clone();
+        //         let value_ty = self.types[&value].clone();
 
-                if !self.types.contains_key(&ty) || !self.types.contains_key(&value) {
-                    continue;
-                }
+        //         let Type::Pointer(_) = ty else {
+        //             self.errors.push(CompileError::Node(
+        //                 format!("Can only cast to pointer types (casting to {:?})", ty),
+        //                 NodeId(id),
+        //             ));
+        //             break;
+        //         };
 
-                let ty = self.types[&ty].clone();
-                let value_ty = self.types[&value].clone();
-
-                let Type::Pointer(_) = ty else {
-                    self.errors.push(CompileError::Node(
-                        format!("Can only cast to pointer types (casting to {:?})", ty),
-                        NodeId(id),
-                    ));
-                    break;
-                };
-
-                let Type::Pointer(_) = value_ty else {
-                    self.errors.push(CompileError::Node(
-                        format!("Can only cast from pointer types (found {:?})", value_ty),
-                        NodeId(id),
-                    ));
-                    break;
-                };
-            }
-        }
+        //         let Type::Pointer(_) = value_ty else {
+        //             self.errors.push(CompileError::Node(
+        //                 format!("Can only cast from pointer types (found {:?})", value_ty),
+        //                 NodeId(id),
+        //             ));
+        //             break;
+        //         };
+        //     }
+        // }
 
         if self.args.print_type_matches {
             println!(

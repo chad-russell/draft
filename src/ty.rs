@@ -352,139 +352,6 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn match_addressable(&mut self, n1: NodeId, n2: NodeId) {
-        let id1 = self.find_addressable_array_index(n1);
-        let id2 = self.find_addressable_array_index(n2);
-
-        match (id1, id2) {
-            (None, None) => {
-                if self.nodes_needing_stack_storage.contains(&n1) {
-                    self.nodes_needing_stack_storage.insert(n2);
-                    return;
-                }
-
-                if self.nodes_needing_stack_storage.contains(&n2) {
-                    self.nodes_needing_stack_storage.insert(n1);
-                    return;
-                }
-
-                let unified = self.nodes_needing_stack_storage.contains(&n1)
-                    || self.nodes_needing_stack_storage.contains(&n2);
-                self.addressable_matches.push(AddressableMatch {
-                    changed: true,
-                    unified,
-                    ids: vec![n1, n2],
-                });
-
-                self.addressable_array_reverse_map
-                    .insert(n1, self.addressable_matches.len() - 1);
-                self.addressable_array_reverse_map
-                    .insert(n2, self.addressable_matches.len() - 1);
-            }
-            (Some(id), None) => {
-                self.addressable_matches[id].ids.push(n2);
-                self.addressable_array_reverse_map.insert(n2, id);
-                self.addressable_matches[id].changed = true;
-                self.addressable_matches[id].unified = self.addressable_matches[id].unified
-                    || self.nodes_needing_stack_storage.contains(&n2);
-
-                if self.nodes_needing_stack_storage.contains(&n1) {
-                    for t in self.addressable_matches[id].ids.clone() {
-                        self.nodes_needing_stack_storage.insert(t);
-                        self.addressable_array_reverse_map.remove(&t);
-                    }
-                    self.addressable_matches.swap_remove(id);
-                    if self.addressable_matches.len() > id {
-                        for t in self.addressable_matches[id].ids.clone() {
-                            self.addressable_array_reverse_map.insert(t, id);
-                        }
-                    }
-                } else if self.nodes_needing_stack_storage.contains(&n2) {
-                    for t in self.addressable_matches[id].ids.clone() {
-                        self.nodes_needing_stack_storage.insert(t);
-                        self.addressable_array_reverse_map.remove(&t);
-                    }
-                    self.addressable_matches.swap_remove(id);
-                    if self.addressable_matches.len() > id {
-                        for t in self.addressable_matches[id].ids.clone() {
-                            self.addressable_array_reverse_map.insert(t, id);
-                        }
-                    }
-                }
-            }
-            (None, Some(id)) => {
-                self.addressable_matches[id].ids.push(n1);
-                self.addressable_array_reverse_map.insert(n1, id);
-                self.addressable_matches[id].changed = true;
-                self.addressable_matches[id].unified = self.addressable_matches[id].unified
-                    || self.nodes_needing_stack_storage.contains(&n1);
-
-                if self.nodes_needing_stack_storage.contains(&n2) {
-                    for t in self.addressable_matches[id].ids.clone() {
-                        self.nodes_needing_stack_storage.insert(t);
-                        self.addressable_array_reverse_map.remove(&t);
-                    }
-                    self.addressable_matches.swap_remove(id);
-                    if self.addressable_matches.len() > id {
-                        for t in self.addressable_matches[id].ids.clone() {
-                            self.addressable_array_reverse_map.insert(t, id);
-                        }
-                    }
-                } else if self.nodes_needing_stack_storage.contains(&n1) {
-                    for t in self.addressable_matches[id].ids.clone() {
-                        self.nodes_needing_stack_storage.insert(t);
-                        self.addressable_array_reverse_map.remove(&t);
-                    }
-                    self.addressable_matches.swap_remove(id);
-                    if self.addressable_matches.len() > id {
-                        for t in self.addressable_matches[id].ids.clone() {
-                            self.addressable_array_reverse_map.insert(t, id);
-                        }
-                    }
-                }
-            }
-            (Some(id1), Some(id2)) if id1 != id2 => {
-                let lower = id1.min(id2);
-                let upper = id1.max(id2);
-
-                let unified = self.addressable_matches[lower].unified
-                    || self.addressable_matches[upper].unified;
-
-                let (lower_matches, upper_matches) =
-                    self.addressable_matches.split_at_mut(lower + 1);
-                lower_matches[lower]
-                    .ids
-                    .extend(upper_matches[upper - lower - 1].ids.iter());
-                for t in self.addressable_matches[lower].ids.clone() {
-                    self.addressable_array_reverse_map.insert(t, lower);
-                }
-
-                self.addressable_matches[lower].changed = true;
-                self.addressable_matches[lower].unified = unified;
-
-                self.addressable_matches.swap_remove(upper);
-
-                if self.addressable_matches.len() > upper {
-                    for t in self.addressable_matches[upper].ids.clone() {
-                        self.addressable_array_reverse_map.insert(t, upper);
-                    }
-                }
-
-                if self.nodes_needing_stack_storage.contains(&n1) {
-                    for t in self.addressable_matches[lower].ids.clone() {
-                        self.nodes_needing_stack_storage.insert(t);
-                    }
-                } else if self.nodes_needing_stack_storage.contains(&n2) {
-                    for t in self.addressable_matches[lower].ids.clone() {
-                        self.nodes_needing_stack_storage.insert(t);
-                    }
-                }
-            }
-            (_, _) => (),
-        }
-    }
-
-    #[instrument(skip_all)]
     pub fn handle_match_types(&mut self, ty1: NodeId, ty2: NodeId) {
         if ty1 == ty2 {
             return;
@@ -1415,7 +1282,6 @@ impl Context {
                 // However, only a needs to be addressable. So for example in a more complicate case
                 // like `**a = 12`, only the `*a` needs to be made addressable, not necessarily `a` itself
                 if self.in_assign_lhs {
-                    self.nodes_needing_stack_storage.insert(value);
                     self.in_assign_lhs = false;
                 }
 
@@ -1461,8 +1327,6 @@ impl Context {
                         self.types.insert(id, Type::Empty);
                     }
                 }
-
-                self.nodes_needing_stack_storage.insert(id);
             }
             Node::Resolve(r) => match r {
                 Some(r) => {
@@ -1605,7 +1469,6 @@ impl Context {
             Node::Cast { ty, value } => {
                 self.assign_type(ty);
                 self.match_types(id, ty);
-                self.match_addressable(id, value);
 
                 self.assign_type(value);
             }
@@ -1800,7 +1663,6 @@ impl Context {
                     }
                 }
 
-                self.match_addressable(id, value);
                 self.match_types(id, ty);
 
                 if !fully_done {
@@ -1988,8 +1850,6 @@ impl Context {
                 },
             );
             self.assign_type(transparent_member_access);
-            self.nodes_needing_stack_storage
-                .insert(transparent_member_access);
 
             self.scope_insert_into_scope_id(sym, transparent_member_access, scope);
         }
@@ -2003,8 +1863,6 @@ impl Context {
         if let Some(name) = name {
             self.match_types(name, value);
         }
-
-        self.match_addressable(id, value);
     }
 
     #[instrument(skip_all)]
@@ -2062,9 +1920,6 @@ impl Context {
                 return Some(true);
             }
         }
-        if self.id_base_is_aggregate_type(id) {
-            self.nodes_needing_stack_storage.insert(id);
-        }
         if let Some(default) = default {
             self.assign_type(default);
             self.match_types(id, default);
@@ -2094,7 +1949,6 @@ impl Context {
             Some(resolved) => {
                 self.assign_type(resolved);
                 self.match_types(id, resolved);
-                self.match_addressable(id, resolved);
 
                 if let Some(&resolved) = self.polymorph_sources.get(&resolved) {
                     self.polymorph_sources.insert(id, resolved);
@@ -2373,10 +2227,6 @@ impl Context {
 
                     if let Some(return_ty) = return_ty {
                         self.match_types(id, return_ty);
-
-                        if self.id_is_aggregate_type(return_ty) {
-                            self.nodes_needing_stack_storage.insert(id);
-                        }
                     }
                 }
             }

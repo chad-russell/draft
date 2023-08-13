@@ -927,10 +927,6 @@ impl<'a, W: Source> Parser<'a, W> {
             let param = self.ctx.push_node(range, node);
             self.ctx.scope_insert(name_sym, param);
 
-            if parse_type == DeclParamParseType::Struct {
-                self.ctx.nodes_needing_stack_storage.insert(param);
-            }
-
             params.push(param);
 
             if self.source_info.top.tok != Token::RCurly
@@ -1514,7 +1510,6 @@ impl<'a, W: Source> Parser<'a, W> {
                 let id = self
                     .ctx
                     .push_node(self.source_info.top.range, Node::StringLiteral(sym));
-                self.ctx.nodes_needing_stack_storage.insert(id);
                 self.ctx.string_literals.push(id);
                 Ok(id)
             }
@@ -1534,7 +1529,6 @@ impl<'a, W: Source> Parser<'a, W> {
                 self.pop(); // `&`
 
                 let expr = self.parse_expression_piece(true, false)?;
-                self.ctx.nodes_needing_stack_storage.insert(expr);
 
                 let end = self.ctx.ranges[expr].end;
                 let id = self.ctx.push_node(
@@ -1576,8 +1570,6 @@ impl<'a, W: Source> Parser<'a, W> {
                 let id = self
                     .ctx
                     .push_node(range, Node::ArrayLiteral { members, ty });
-
-                self.ctx.nodes_needing_stack_storage.insert(id);
 
                 Ok(id)
             }
@@ -1719,8 +1711,6 @@ impl<'a, W: Source> Parser<'a, W> {
                         index,
                     },
                 );
-
-                self.ctx.nodes_needing_stack_storage.insert(value);
             }
 
             // member access?
@@ -1734,8 +1724,6 @@ impl<'a, W: Source> Parser<'a, W> {
                     Range::new(start, end, self.source_info.path),
                     Node::MemberAccess { value, member },
                 );
-
-                self.ctx.nodes_needing_stack_storage.insert(value);
             }
 
             // static member access?
@@ -1791,8 +1779,6 @@ impl<'a, W: Source> Parser<'a, W> {
         let struct_node = self
             .ctx
             .push_node(range, Node::StructLiteral { name, params });
-
-        self.ctx.nodes_needing_stack_storage.insert(struct_node);
 
         Ok(struct_node)
     }
@@ -1862,7 +1848,6 @@ impl<'a, W: Source> Parser<'a, W> {
             },
         );
 
-        self.ctx.nodes_needing_stack_storage.insert(let_id);
         self.ctx.scope_insert(name_sym, let_id);
 
         Ok(let_id)
@@ -1900,10 +1885,6 @@ impl<'a, W: Source> Parser<'a, W> {
                 is_standalone,
             },
         );
-
-        if is_standalone {
-            self.ctx.nodes_needing_stack_storage.insert(block_id);
-        }
 
         Ok(block_id)
     }
@@ -1956,7 +1937,6 @@ impl<'a, W: Source> Parser<'a, W> {
         let pushed_label_scope = self.ctx.push_scope();
 
         let label = self.parse_symbol()?;
-        self.ctx.nodes_needing_stack_storage.insert(label);
         let name_sym = self.ctx.get_symbol(label);
         self.ctx.scope_insert(name_sym, label);
 

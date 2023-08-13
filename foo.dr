@@ -1,47 +1,19 @@
-extern put_char(ch: u8);
-extern print_str(ch: *u8, len: i64);
 extern print_i64(n: i64);
-extern malloc(n: i64) *struct{};
 
-// fn print_string(s: string) {
-    // print_str(s.data, s.len);
-    // return;
-// }
-
-fn heapify(v: _T!) *T {
-    let a = #cast(*T) malloc(#size_of(T));
-    *a = v;
-    return a;
-}
-
-struct Bar {
-    x: i64, 
+struct Foo {
+    x: i64,
     y: i64,
 }
 
-fn make_bar(x, y) _ {
-    return Bar { x, y };
-}
-
-fn add_bar(b: Bar) _ {
-    return b.x + b.y;
+struct Bar {
+    f: Foo,
 }
 
 fn main() i64 {
-    // (&Bar { 3, 4 }).y |> print_i64;
+    let foo = Foo { x: 1, y: 2 };
+    let bar = Bar { foo };
 
-    // make_bar(3, 5) |> add_bar |> print_i64;
+    print_i64(bar.f.x + foo.y);
     
-    // (&make_bar(3, 5)).y |> print_i64;
-
-    // let mb = &make_bar(3, 5);
-    // mb.y |> print_i64;
-    
-    // let g = Bar { 333, 444 };
-    // let pg = &g;
-    // let dpg = *pg;
-    // dpg.x |> print_i64;
-    // add_bar(dpg) |> print_i64;
-
     return 0;
 }
