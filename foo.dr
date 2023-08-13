@@ -19,33 +19,27 @@ struct Bar {
     y: i64,
 }
 
+fn make_bar(x, y) _ {
+    return Bar { x, y };
+}
+
 fn add_bar(b: Bar) _ {
     return b.x + b.y;
 }
 
 fn main() i64 {
-    // let #transparent f = make_foo(3, 4);
-    // make_foo(3, 4).x |> print_i64;
-    
-    // make_foo(3, 4).y |> print_i64;
-    
-    // (&Foo { 3, 4 }).y |> print_i64;
+    // (&Bar { 3, 4 }).y |> print_i64;
 
-    // let a = make_foo(3, 4);
-    // let b = a.x;
+    // make_bar(3, 5) |> add_bar |> print_i64;
     
-    // let a;
-    // a = make_foo(3, 4);
-    // let b = a.x;
+    // (&make_bar(3, 5)).y |> print_i64;
 
-    // make_foo(3, 5) |> add_foo |> print_i64;
-
-    // let b = Bar { make_foo(3, 0) };
-    // b.f |> add_foo |> print_i64;
+    // let mb = &make_bar(3, 5);
+    // mb.y |> print_i64;
     
-    let g = Bar { 333, 444 };
-    let pg = &g;
-    let dpg = *pg;
+    // let g = Bar { 333, 444 };
+    // let pg = &g;
+    // let dpg = *pg;
     // dpg.x |> print_i64;
     // add_bar(dpg) |> print_i64;
 

@@ -247,7 +247,7 @@ impl Context {
             Type::I32 | Type::U32 | Type::F32 => 4,
             Type::I64 | Type::U64 | Type::F64 => 8,
             Type::Func { .. } => 8,
-            Type::Pointer(_) => 8,
+            Type::Pointer(_) => self.get_pointer_type().bytes(),
             Type::Array(ty, ArrayLen::Some(len)) => self.id_type_size(ty) * len as StackSize,
             Type::Struct { params, .. } => {
                 // todo(chad): c struct packing rules if annotated
@@ -310,12 +310,12 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn should_pass_id_by_ref(&self, id: NodeId) -> bool {
+    pub fn id_is_aggregate_type(&self, id: NodeId) -> bool {
         self.is_aggregate_type(self.get_type(id))
     }
 
     #[instrument(skip_all)]
-    pub fn id_is_aggregate_type(&self, id: NodeId) -> bool {
+    pub fn id_base_is_aggregate_type(&self, id: NodeId) -> bool {
         let mut base_ty = self.get_type(id);
         while let Type::Pointer(inner) = base_ty {
             base_ty = self.get_type(inner);
@@ -400,8 +400,8 @@ impl<'a> FunctionCompileContext<'a> {
 
                 match resolved {
                     Some(res) => {
-                        if self.ctx.addressable_nodes.contains(&res) {
-                            self.ctx.addressable_nodes.insert(id);
+                        if self.ctx.nodes_needing_stack_storage.contains(&res) {
+                            self.ctx.nodes_needing_stack_storage.insert(id);
                         }
 
                         self.compile_id(res)?;
@@ -429,7 +429,7 @@ impl<'a> FunctionCompileContext<'a> {
                     _ => todo!(),
                 };
 
-                self.store_in_slot_if_addressable(id);
+                self.store_in_slot_if_needed(id);
 
                 Ok(())
             }
@@ -446,14 +446,14 @@ impl<'a> FunctionCompileContext<'a> {
                     _ => todo!(),
                 };
 
-                self.store_in_slot_if_addressable(id);
+                self.store_in_slot_if_needed(id);
 
                 Ok(())
             }
             Node::BoolLiteral(b) => {
                 let value = self.builder.ins().iconst(types::I8, if b { 1 } else { 0 });
                 self.ctx.values.insert(id, Value::Value(value));
-                self.store_in_slot_if_addressable(id);
+                self.store_in_slot_if_needed(id);
                 Ok(())
             }
             Node::Return(rv) => {
@@ -513,9 +513,9 @@ impl<'a> FunctionCompileContext<'a> {
                 let params = self.builder.block_params(self.current_block);
                 let param_value = params[index as usize];
 
-                let pass_base_by_ref = self.ctx.id_is_aggregate_type(id);
+                let pass_base_by_ref = self.ctx.id_base_is_aggregate_type(id);
 
-                if self.ctx.addressable_nodes.contains(&id) || pass_base_by_ref {
+                if self.ctx.nodes_needing_stack_storage.contains(&id) || pass_base_by_ref {
                     // we need our own storage
                     let size = self.ctx.id_type_size(id);
                     let slot = self.builder.create_sized_stack_slot(StackSlotData {
@@ -553,8 +553,8 @@ impl<'a> FunctionCompileContext<'a> {
             Node::ValueParam { value, .. } => {
                 self.compile_id(value)?;
 
-                if self.ctx.addressable_nodes.contains(&value) {
-                    self.ctx.addressable_nodes.insert(id);
+                if self.ctx.nodes_needing_stack_storage.contains(&value) {
+                    self.ctx.nodes_needing_stack_storage.insert(id);
                 }
 
                 self.ctx.values.insert(id, self.ctx.values[&value]);
@@ -733,7 +733,7 @@ impl<'a> FunctionCompileContext<'a> {
                 }
 
                 // If this is member access on an aggregate type, then decrease the pointiness if it's above 0
-                if self.ctx.id_is_aggregate_type(value) && pointiness > 1 {
+                if self.ctx.id_base_is_aggregate_type(value) && pointiness > 1 {
                     pointiness -= 1;
                 }
 
@@ -758,10 +758,7 @@ impl<'a> FunctionCompileContext<'a> {
                 let cranelift_value = self.ctx.values.get(&value).unwrap();
                 self.ctx.values.insert(id, *cranelift_value);
 
-                // If directly taking the address of a struct, it's just the same as the struct itself
-                if !matches!(self.ctx.get_type(value), Type::Struct { .. }) {
-                    self.store_in_slot_if_addressable(id);
-                }
+                self.store_in_slot_if_needed(id);
 
                 Ok(())
             }
@@ -785,7 +782,7 @@ impl<'a> FunctionCompileContext<'a> {
                     _ => self.ctx.get_cranelift_type(id),
                 };
 
-                let loaded = if self.ctx.addressable_nodes.contains(&value) {
+                let loaded = if self.ctx.nodes_needing_stack_storage.contains(&value) {
                     self.load(types::I64, cranelift_value, 0)
                 } else {
                     self.load(ty, cranelift_value, 0)
@@ -796,7 +793,7 @@ impl<'a> FunctionCompileContext<'a> {
                 // If we are meant to be addressable, then we need to store our actual value into something which has an address
                 // If however we are in the lhs of an assignment, don't store ourselves in a new slot,
                 // as this would overwrite the value we are trying to assign to
-                self.store_in_slot_if_addressable(id);
+                self.store_in_slot_if_needed(id);
 
                 Ok(())
             }
@@ -1163,8 +1160,8 @@ impl<'a> FunctionCompileContext<'a> {
             Node::Cast { value, .. } => {
                 self.compile_id(value)?;
 
-                if self.ctx.addressable_nodes.contains(&value) {
-                    self.ctx.addressable_nodes.insert(id);
+                if self.ctx.nodes_needing_stack_storage.contains(&value) {
+                    self.ctx.nodes_needing_stack_storage.insert(id);
                 }
 
                 self.ctx.values.insert(id, self.ctx.values[&value]);
@@ -1183,8 +1180,8 @@ impl<'a> FunctionCompileContext<'a> {
                 copied: Some(copied),
                 ..
             } => {
-                if self.ctx.addressable_nodes.contains(&copied) {
-                    self.ctx.addressable_nodes.insert(id);
+                if self.ctx.nodes_needing_stack_storage.contains(&copied) {
+                    self.ctx.nodes_needing_stack_storage.insert(id);
                 }
 
                 self.compile_id(copied)?;
@@ -1319,8 +1316,8 @@ impl<'a> FunctionCompileContext<'a> {
     }
 
     #[instrument(skip_all)]
-    fn store_in_slot_if_addressable(&mut self, id: NodeId) {
-        if !self.ctx.addressable_nodes.contains(&id) {
+    fn store_in_slot_if_needed(&mut self, id: NodeId) {
+        if !self.ctx.nodes_needing_stack_storage.contains(&id) {
             return;
         }
 
@@ -1425,7 +1422,8 @@ impl<'a> FunctionCompileContext<'a> {
     fn rvalue(&mut self, id: NodeId) -> CraneliftValue {
         let value = self.as_cranelift_value(self.ctx.values[&id]);
 
-        if self.ctx.addressable_nodes.contains(&id) && !self.ctx.should_pass_id_by_ref(id) {
+        if self.ctx.nodes_needing_stack_storage.contains(&id) && !self.ctx.id_is_aggregate_type(id)
+        {
             let ty = self.ctx.get_cranelift_type(id);
             self.builder.ins().load(ty, MemFlags::new(), value, 0)
         } else {
@@ -1435,7 +1433,11 @@ impl<'a> FunctionCompileContext<'a> {
 
     #[instrument(skip_all)]
     fn store(&mut self, id: NodeId, dest: Value) {
-        if self.ctx.addressable_nodes.contains(&id) {
+        // If the node is addressable, then it was stored as a pointer to a stack slot.
+        // So, we need to load the value from the stack slot and store it into the destination
+        let should_copy = self.ctx.nodes_needing_stack_storage.contains(&id);
+
+        if should_copy {
             self.store_copy(id, dest);
         } else {
             self.store_value(id, dest, None);
@@ -1444,7 +1446,7 @@ impl<'a> FunctionCompileContext<'a> {
 
     #[instrument(skip_all)]
     fn store_with_offset(&mut self, id: NodeId, dest: Value, offset: u32) {
-        if self.ctx.addressable_nodes.contains(&id) {
+        if self.ctx.nodes_needing_stack_storage.contains(&id) {
             let dest = if offset == 0 {
                 dest
             } else {
@@ -1681,7 +1683,7 @@ impl<'a> ToplevelCompileContext<'a> {
                             let params = builder.block_params(ebb);
                             let param_value = params[0];
 
-                            if self.ctx.should_pass_id_by_ref(param) {
+                            if self.ctx.id_is_aggregate_type(param) {
                                 let size = self.ctx.id_type_size(param);
 
                                 let source_value = param_value;

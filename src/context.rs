@@ -111,7 +111,7 @@ pub struct Context {
     pub values: SecondaryMap<Value>,
     pub polymorph_sources: SecondaryMap<NodeId>,
 
-    pub addressable_nodes: SecondarySet,
+    pub nodes_needing_stack_storage: SecondarySet,
     pub polymorph_copies: SecondarySet,
     pub completes: SecondarySet,
     pub circular_dependency_nodes: SecondarySet,
@@ -134,7 +134,7 @@ impl Context {
             nodes: Default::default(),
             ranges: Default::default(),
             node_scopes: Default::default(),
-            addressable_nodes: Default::default(),
+            nodes_needing_stack_storage: Default::default(),
             polymorph_target: false,
             polymorph_sources: Default::default(),
             polymorph_copies: Default::default(),
@@ -189,7 +189,7 @@ impl Context {
         self.nodes.clear();
         self.ranges.clear();
         self.node_scopes.clear();
-        self.addressable_nodes.clear();
+        self.nodes_needing_stack_storage.clear();
         self.polymorph_target = false;
         self.string_literals.clear();
         self.string_literal_offsets.clear();
@@ -340,8 +340,8 @@ impl Context {
 
                     for &param in params.clone().borrow().iter() {
                         // All structs passed as function args are passed by address (for now...)
-                        if self.id_is_aggregate_type(param) {
-                            self.addressable_nodes.insert(param);
+                        if self.id_base_is_aggregate_type(param) {
+                            self.nodes_needing_stack_storage.insert(param);
                             self.match_addressable(param, param); // todo(chad): @hack?
                         }
                     }

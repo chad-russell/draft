@@ -358,18 +358,18 @@ impl Context {
 
         match (id1, id2) {
             (None, None) => {
-                if self.addressable_nodes.contains(&n1) {
-                    self.addressable_nodes.insert(n2);
+                if self.nodes_needing_stack_storage.contains(&n1) {
+                    self.nodes_needing_stack_storage.insert(n2);
                     return;
                 }
 
-                if self.addressable_nodes.contains(&n2) {
-                    self.addressable_nodes.insert(n1);
+                if self.nodes_needing_stack_storage.contains(&n2) {
+                    self.nodes_needing_stack_storage.insert(n1);
                     return;
                 }
 
-                let unified =
-                    self.addressable_nodes.contains(&n1) || self.addressable_nodes.contains(&n2);
+                let unified = self.nodes_needing_stack_storage.contains(&n1)
+                    || self.nodes_needing_stack_storage.contains(&n2);
                 self.addressable_matches.push(AddressableMatch {
                     changed: true,
                     unified,
@@ -385,12 +385,12 @@ impl Context {
                 self.addressable_matches[id].ids.push(n2);
                 self.addressable_array_reverse_map.insert(n2, id);
                 self.addressable_matches[id].changed = true;
-                self.addressable_matches[id].unified =
-                    self.addressable_matches[id].unified || self.addressable_nodes.contains(&n2);
+                self.addressable_matches[id].unified = self.addressable_matches[id].unified
+                    || self.nodes_needing_stack_storage.contains(&n2);
 
-                if self.addressable_nodes.contains(&n1) {
+                if self.nodes_needing_stack_storage.contains(&n1) {
                     for t in self.addressable_matches[id].ids.clone() {
-                        self.addressable_nodes.insert(t);
+                        self.nodes_needing_stack_storage.insert(t);
                         self.addressable_array_reverse_map.remove(&t);
                     }
                     self.addressable_matches.swap_remove(id);
@@ -399,9 +399,9 @@ impl Context {
                             self.addressable_array_reverse_map.insert(t, id);
                         }
                     }
-                } else if self.addressable_nodes.contains(&n2) {
+                } else if self.nodes_needing_stack_storage.contains(&n2) {
                     for t in self.addressable_matches[id].ids.clone() {
-                        self.addressable_nodes.insert(t);
+                        self.nodes_needing_stack_storage.insert(t);
                         self.addressable_array_reverse_map.remove(&t);
                     }
                     self.addressable_matches.swap_remove(id);
@@ -416,12 +416,12 @@ impl Context {
                 self.addressable_matches[id].ids.push(n1);
                 self.addressable_array_reverse_map.insert(n1, id);
                 self.addressable_matches[id].changed = true;
-                self.addressable_matches[id].unified =
-                    self.addressable_matches[id].unified || self.addressable_nodes.contains(&n1);
+                self.addressable_matches[id].unified = self.addressable_matches[id].unified
+                    || self.nodes_needing_stack_storage.contains(&n1);
 
-                if self.addressable_nodes.contains(&n2) {
+                if self.nodes_needing_stack_storage.contains(&n2) {
                     for t in self.addressable_matches[id].ids.clone() {
-                        self.addressable_nodes.insert(t);
+                        self.nodes_needing_stack_storage.insert(t);
                         self.addressable_array_reverse_map.remove(&t);
                     }
                     self.addressable_matches.swap_remove(id);
@@ -430,9 +430,9 @@ impl Context {
                             self.addressable_array_reverse_map.insert(t, id);
                         }
                     }
-                } else if self.addressable_nodes.contains(&n1) {
+                } else if self.nodes_needing_stack_storage.contains(&n1) {
                     for t in self.addressable_matches[id].ids.clone() {
-                        self.addressable_nodes.insert(t);
+                        self.nodes_needing_stack_storage.insert(t);
                         self.addressable_array_reverse_map.remove(&t);
                     }
                     self.addressable_matches.swap_remove(id);
@@ -470,13 +470,13 @@ impl Context {
                     }
                 }
 
-                if self.addressable_nodes.contains(&n1) {
+                if self.nodes_needing_stack_storage.contains(&n1) {
                     for t in self.addressable_matches[lower].ids.clone() {
-                        self.addressable_nodes.insert(t);
+                        self.nodes_needing_stack_storage.insert(t);
                     }
-                } else if self.addressable_nodes.contains(&n2) {
+                } else if self.nodes_needing_stack_storage.contains(&n2) {
                     for t in self.addressable_matches[lower].ids.clone() {
-                        self.addressable_nodes.insert(t);
+                        self.nodes_needing_stack_storage.insert(t);
                     }
                 }
             }
@@ -1415,7 +1415,7 @@ impl Context {
                 // However, only a needs to be addressable. So for example in a more complicate case
                 // like `**a = 12`, only the `*a` needs to be made addressable, not necessarily `a` itself
                 if self.in_assign_lhs {
-                    self.addressable_nodes.insert(value);
+                    self.nodes_needing_stack_storage.insert(value);
                     self.in_assign_lhs = false;
                 }
 
@@ -1462,7 +1462,7 @@ impl Context {
                     }
                 }
 
-                self.addressable_nodes.insert(id);
+                self.nodes_needing_stack_storage.insert(id);
             }
             Node::Resolve(r) => match r {
                 Some(r) => {
@@ -1988,7 +1988,8 @@ impl Context {
                 },
             );
             self.assign_type(transparent_member_access);
-            self.addressable_nodes.insert(transparent_member_access);
+            self.nodes_needing_stack_storage
+                .insert(transparent_member_access);
 
             self.scope_insert_into_scope_id(sym, transparent_member_access, scope);
         }
@@ -2061,8 +2062,8 @@ impl Context {
                 return Some(true);
             }
         }
-        if self.id_is_aggregate_type(id) {
-            self.addressable_nodes.insert(id);
+        if self.id_base_is_aggregate_type(id) {
+            self.nodes_needing_stack_storage.insert(id);
         }
         if let Some(default) = default {
             self.assign_type(default);
@@ -2373,8 +2374,8 @@ impl Context {
                     if let Some(return_ty) = return_ty {
                         self.match_types(id, return_ty);
 
-                        if self.should_pass_id_by_ref(return_ty) {
-                            self.addressable_nodes.insert(id);
+                        if self.id_is_aggregate_type(return_ty) {
+                            self.nodes_needing_stack_storage.insert(id);
                         }
                     }
                 }
