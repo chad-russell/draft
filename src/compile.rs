@@ -327,6 +327,18 @@ impl Context {
     }
 
     #[instrument(skip_all)]
+    pub fn id_base_is_aggregate_type(&self, id: NodeId) -> bool {
+        let ty = self.get_type(id);
+        if self.is_aggregate_type(ty.clone()) {
+            return true;
+        }
+        if let Type::Pointer(base) = ty {
+            return self.id_base_is_aggregate_type(base);
+        }
+        return false;
+    }
+
+    #[instrument(skip_all)]
     pub fn is_aggregate_type(&self, ty: Type) -> bool {
         matches!(
             ty,
@@ -529,6 +541,10 @@ impl<'a> FunctionCompileContext<'a> {
                         id,
                         Value::Value(BackendValue::AggregatePointer(param_value)),
                     );
+                } else if self.ctx.id_base_is_aggregate_type(id) {
+                    self.ctx
+                        .values
+                        .insert(id, Value::Value(BackendValue::Register(param_value)));
                 } else {
                     self.ctx
                         .values

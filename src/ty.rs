@@ -2247,7 +2247,10 @@ impl Context {
         struct_literal_id: NodeId,
     ) -> DraftResult<()> {
         let Some(Type::Struct { params: decl, .. }) = self.types.get(&name) else {
-            unreachable!()
+            return Err(CompileError::Node(
+                "Not a struct".to_string(),
+                struct_literal_id,
+            ));
         };
 
         let given = params.clone();

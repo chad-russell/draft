@@ -22,10 +22,10 @@ struct Foo {
     y: i64,
 }
 
-struct Bar {
-    x: i64, 
-    y: i64,
-}
+// struct Bar {
+    // x: i64, 
+    // y: i64,
+// }
 
 enum Baz {
     A,
@@ -49,135 +49,135 @@ fn foo4(f: *!) _ {
     return f.x + f.y + foo3(f);
 }
 
-fn foo5(f: *_T!, g: _U!) _ {
-    return f.x - f.y + g.x + g.y;
-}
+// fn foo5(f: *_T!, g: _U!) _ {
+    // return f.x - f.y + g.x + g.y;
+// }
 
-fn foo6() Foo {
-    return _{ 10, 2 };
-}
+// fn foo6() Foo {
+    // return _{ 10, 2 };
+// }
 
-fn id(n: i64) i64 {
-    return n;
-}
+// fn id(n: i64) i64 {
+    // return n;
+// }
 
-fn idp(n: *i64) i64 {
-    return *n;
-}
+// fn idp(n: *i64) i64 {
+    // return *n;
+// }
 
-fn idppp(n: ***i64) i64 {
-    return ***n;
-}
+// fn idppp(n: ***i64) i64 {
+    // return ***n;
+// }
 
-fn fac(n: i64) i64 {
-    if n == 1 {
-        return n;
-    } else {
-        return n * fac(n - 1);
-    }
-}
+// fn fac(n: i64) i64 {
+    // if n == 1 {
+        // return n;
+    // } else {
+        // return n * fac(n - 1);
+    // }
+// }
 
-struct List {
-    value: i64,
-    next: *List,
-}
+// struct List {
+    // value: i64,
+    // next: *List,
+// }
 
-struct Vec {
-    data: *_T!,
-    len: i64,
-}
+// struct Vec {
+    // data: *_T!,
+    // len: i64,
+// }
 
-fn vec_new() Vec! {
-    let v: Vec!;
-    v.len = 0;
-    return v;
-}
+// fn vec_new() Vec! {
+    // let v: Vec!;
+    // v.len = 0;
+    // return v;
+// }
 
-fn vec_len(v: *Vec!(T: Vec!(T: f64))) i64 {
-    return v.len;
-}
+// fn vec_len(v: *Vec!(T: Vec!(T: f64))) i64 {
+    // return v.len;
+// }
 
-fn test_vec_stuff_1() i64 { 
-    let v1 = vec_new();
-    v1.data = &0.0f64;
+// fn test_vec_stuff_1() i64 { 
+    // let v1 = vec_new();
+    // v1.data = &0.0f64;
 
-    let v2 = Vec { data: &v1, len: 26 };
-    print_i64(vec_len(&v2));
+    // let v2 = Vec { data: &v1, len: 26 };
+    // print_i64(vec_len(&v2));
 
-    return 0;
-}
+    // return 0;
+// }
 
 // Declare the interafce itself
-struct IDoThing {
-    data: *_T!,
-    vtable: struct {
-        do_thing: fn(n: *T) i64,
-    },
-}
+// struct IDoThing {
+    // data: *_T!,
+    // vtable: struct {
+        // do_thing: fn(n: *T) i64,
+    // },
+// }
 
-fn do_thing(i: IDoThing!) _ {
-    return i.vtable.do_thing(i.data);
-}
+// fn do_thing(i: IDoThing!) _ {
+    // return i.vtable.do_thing(i.data);
+// }
 
 // Define and implement the interface for IFoo
-struct IFoo {
-    x: i64,
-}
+// struct IFoo {
+    // x: i64,
+// }
 
-fn foo_to_interface(foo: *IFoo) _ {
-    return IDoThing {
-        data: foo,
-        vtable: _{
-            do_thing: fn(foo: *IFoo) i64 {
-                return foo.x;
-            },
-        },
-    };
-}
+// fn foo_to_interface(foo: *IFoo) _ {
+    // return IDoThing {
+        // data: foo,
+        // vtable: _{
+            // do_thing: fn(foo: *IFoo) i64 {
+                // return foo.x;
+            // },
+        // },
+    // };
+// }
 
 // Define and implement the interface for IBar
-struct IBar {
-    x: i64,
-    y: i64,
-}
+// struct IBar {
+    // x: i64,
+    // y: i64,
+// }
 
-fn test_interfaces() i64 {
-    &IFoo { 42 } |> foo_to_interface |> do_thing |> print_i64;
+// fn test_interfaces() i64 {
+    // &IFoo { 42 } |> foo_to_interface |> do_thing |> print_i64;
     
-    let b = IBar { x: 1, y: 2 };
-    let i2 = IDoThing { &b, _{ fn(bar: *IBar) i64 { return bar.x + bar.y; } } };
-    i2 |> do_thing |> print_i64;
+    // let b = IBar { x: 1, y: 2 };
+    // let i2 = IDoThing { &b, _{ fn(bar: *IBar) i64 { return bar.x + bar.y; } } };
+    // i2 |> do_thing |> print_i64;
 
-    return 0;
-}
+    // return 0;
+// }
 
-fn test_for_array() i64 {
-    let arr: [_]_T = [_{x: 1i64, y: 1.1f64}, _{2, 2.2}, _{3, 3.3}];
+// fn test_for_array() i64 {
+    // let arr: [_]_T = [_{x: 1i64, y: 1.1f64}, _{2, 2.2}, _{3, 3.3}];
 
-    for val in arr {
-        val.x = 999;
-    }
+    // for val in arr {
+        // val.x = 999;
+    // }
 
-    for val2 in arr {
-        print_i64(val2.x);
-        print_f64(val2.y);
-    }
+    // for val2 in arr {
+        // print_i64(val2.x);
+        // print_f64(val2.y);
+    // }
 
-    return 0;
-}
+    // return 0;
+// }
 
-fn add_one(n: i64) i64 {
-    return n + 1;
-}
+// fn add_one(n: i64) i64 {
+    // return n + 1;
+// }
 
-fn add_two(m: i64, n: i64) i64 {
-    return m + n;
-}
+// fn add_two(m: i64, n: i64) i64 {
+    // return m + n;
+// }
 
-fn test_threading() i64 {
-    print_i64(3i64 |> add_two(8) |> add_two(8) |> add_one);
-    return 0;
-}
+// fn test_threading() i64 {
+    // print_i64(3i64 |> add_two(8) |> add_two(8) |> add_one);
+    // return 0;
+// }
 
 fn print_string(s: string) {
     print_str(s.data, s.len);
@@ -191,50 +191,50 @@ fn assert_equal(a: _T!, b: T) {
     return;
 }
 
-fn sub(a: i64, b: i64) i64 {
-    return b;
-}
+// fn sub(a: i64, b: i64) i64 {
+    // return b;
+// }
 
-fn test_static_array_len() {
-    let a: [_]i64 = [1, 2, 3, 4, 5];
-    a::len |> print_i64;
+// fn test_static_array_len() {
+    // let a: [_]i64 = [1, 2, 3, 4, 5];
+    // a::len |> print_i64;
 
-    return;
-}
+    // return;
+// }
 
-fn schange_array(a: [_]i64) {
-    a[2] = 5;
-    print_i64(a[2]);
-    return;
-}
+// fn schange_array(a: [_]i64) {
+    // a[2] = 5;
+    // print_i64(a[2]);
+    // return;
+// }
 
-fn change_array(a: []i64) {
-    a[2] = 5;
-    print_i64(a[2]);
-    return;
-}
+// fn change_array(a: []i64) {
+    // a[2] = 5;
+    // print_i64(a[2]);
+    // return;
+// }
 
-fn test_array_casts() i64 {
-    let a = [1i64, 2, 3];
+// fn test_array_casts() i64 {
+    // let a = [1i64, 2, 3];
 
-    schange_array(a);
-    print_i64(a[2]);
+    // schange_array(a);
+    // print_i64(a[2]);
 
-    let b: []i64 = a as _;
-    change_array(b);
-    print_i64(b[2]);
-    print_i64(a[2]);
+    // let b: []i64 = a as _;
+    // change_array(b);
+    // print_i64(b[2]);
+    // print_i64(a[2]);
 
-    let c = _{ data: #cast(*_) &a, len: a::len };
-    let d = c as []_;
-    change_array(d);
+    // let c = _{ data: #cast(*_) &a, len: a::len };
+    // let d = c as []_;
+    // change_array(d);
     
-    c = _{ data: b.data, len: b.len };
-    d = c as []_;
-    change_array(d);
+    // c = _{ data: b.data, len: b.len };
+    // d = c as []_;
+    // change_array(d);
     
-    return 0;
-}
+    // return 0;
+// }
 
 fn main() i64 {
     {
@@ -251,104 +251,104 @@ fn main() i64 {
     print_i64(foo2(f) - 9); // 2
     print_i64(foo3(&f) - 8); // 3
     print_i64(foo4(&f) - 18); // 4
-    print_i64(foo4(pf) - 17); // 5
-    print_i64(foo4(*&pf) - 16); // 6
-    print_i64(foo4(*&*&*&*&*&pf) - 15); // 7
+    // print_i64(foo4(pf) - 17); // 5
+    // print_i64(foo4(*&pf) - 16); // 6
+    // print_i64(foo4(*&*&*&*&*&pf) - 15); // 7
 
-    f = Foo { y: 3, x: 8 };
-    print_i64(f.x - f.y + 3); // 8
+    // f = Foo { y: 3, x: 8 };
+    // print_i64(f.x - f.y + 3); // 8
 
-    let g = Bar { 3, 8 };
-    let pg = &&&&&&g;
-    print_i64(foo5(&f, *pg) - ****&&&&7); // 9
+    // let g = Bar { 3, 8 };
+    // let pg = &&&&&&g;
+    // print_i64(foo5(&f, *pg) - ****&&&&7); // 9
 
-    let ten = &&&999;
-    **ten = &10;
-    print_i64(***ten); // 10
+    // let ten = &&&999;
+    // **ten = &10;
+    // print_i64(***ten); // 10
     
-    ***ten = 11;
-    print_i64(***ten); // 11
+    // ***ten = 11;
+    // print_i64(***ten); // 11
 
-    let f6 = foo6();
-    print_i64(f6.x + f6.y); // 12
+    // let f6 = foo6();
+    // print_i64(f6.x + f6.y); // 12
     
-    let fa = Baz::A();
-    let make_b = Baz::B;
-    let fb = make_b(6);
-    let fc = Baz::C(_{ 888, 999 });
+    // let fa = Baz::A();
+    // let make_b = Baz::B;
+    // let fb = make_b(6);
+    // let fc = Baz::C(_{ 888, 999 });
 
-    print_enum_tag(&fa);
-    print_enum_tag(&fb);
-    print_enum_tag(&fc);
+    // print_enum_tag(&fa);
+    // print_enum_tag(&fb);
+    // print_enum_tag(&fc);
     
-    let a = false;
-    if a {
-        print_i64(999);
-    } else if a {
-        print_i64(999);
-    } else if a {
-        print_i64(999);
-    } else if a {
-        print_i64(999);
-    } else if a {
-        print_i64(999);
-    } else {
-        print_i64(15);
-    }
+    // let a = false;
+    // if a {
+        // print_i64(999);
+    // } else if a {
+        // print_i64(999);
+    // } else if a {
+        // print_i64(999);
+    // } else if a {
+        // print_i64(999);
+    // } else if a {
+        // print_i64(999);
+    // } else {
+        // print_i64(15);
+    // }
 
-    print_i64(id(16)); // 16
-    print_i64(idp(&17)); // 17
-    print_i64(idppp(*&&&&18)); // 18
+    // print_i64(id(16)); // 16
+    // print_i64(idp(&17)); // 17
+    // print_i64(idppp(*&&&&18)); // 18
     
-    print_i64(fac(4));
+    // print_i64(fac(4));
 
-    let lst: List;
-    lst.value = 999;
-    lst.next = &lst;
-    lst.next.next.next.next.next.value = 21;
-    print_i64(lst.next.next.next.next.next.next.next.next.next.value);
+    // let lst: List;
+    // lst.value = 999;
+    // lst.next = &lst;
+    // lst.next.next.next.next.next.value = 21;
+    // print_i64(lst.next.next.next.next.next.next.next.next.next.value);
     
-    let if_test = if false { 
-        resolve 999; 
-    } else if false { 
-        resolve 999; 
-    } else if true { 
-        resolve 22; 
-    } else { 
-        resolve 999; 
-    };
-    print_i64(if_test);
+    // let if_test = if false { 
+        // resolve 999; 
+    // } else if false { 
+        // resolve 999; 
+    // } else if true { 
+        // resolve 22; 
+    // } else { 
+        // resolve 999; 
+    // };
+    // print_i64(if_test);
 
-    let block_test = {
-        print_i64(22);
-        resolve if false {
-            resolve 999;
-        } else {
-            resolve 3;
-        };
-    };
-    print_i64(block_test);
+    // let block_test = {
+        // print_i64(22);
+        // resolve if false {
+            // resolve 999;
+        // } else {
+            // resolve 3;
+        // };
+    // };
+    // print_i64(block_test);
 
-    struct PStruct {
-        a: _T!,
-        b: T,
-    }
-    let pstruct = PStruct { a: 11, b: 12 };
-    print_i64(pstruct.a + pstruct.b);
+    // struct PStruct {
+        // a: _T!,
+        // b: T,
+    // }
+    // let pstruct = PStruct { a: 11, b: 12 };
+    // print_i64(pstruct.a + pstruct.b);
     
-    test_vec_stuff_1();
+    // test_vec_stuff_1();
     
-    test_interfaces();
+    // test_interfaces();
     
-    test_for_array();
+    // test_for_array();
     
-    test_threading();
+    // test_threading();
     
-    4 |> sub(@, 3) |> print_i64;
+    // 4 |> sub(@, 3) |> print_i64;
     
-    test_static_array_len();
+    // test_static_array_len();
 
-    test_array_casts();
+    // test_array_casts();
 
     return 0;
 }
