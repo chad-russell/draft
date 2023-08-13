@@ -14,8 +14,8 @@ fn sum_foo(f: *Foo) i64 {
 }
 
 fn main() i64 {
-    let f = Foo { 3, 4 };
-    sum_foo(&f);
+    let b = Bar { Foo { x: 1, y: 2 } };
+    b.f.y |> print_i64;
     
     return 0;
 }

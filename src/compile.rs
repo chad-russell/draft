@@ -23,23 +23,11 @@ use crate::{
 };
 
 #[derive(Clone, Copy, Debug)]
-pub enum BackendValue {
-    Func(FuncId),             // A function id, can use this to get to a function pointer
-    Register(CraneliftValue), // A value type which can fit in a register
-    Aggregate(StackSlot), // A value type which cannot fit into a register, in this case held in a stack slot
-    AggregatePointer(CraneliftValue), // A value type which cannot fit into a register, in this case held in a pointer
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum BackendReference {
-    StackSlot(StackSlot),    // The stack slot directly holds the value
-    Pointer(CraneliftValue), // The value is behind a pointer. For example, a struct field
-}
-
-#[derive(Clone, Copy, Debug)]
 pub enum Value {
-    Value(BackendValue),
-    Reference(BackendReference),
+    Func(FuncId),              // A function id, can use this to get to a function pointer
+    Register(CraneliftValue),  // A value type which can fit in a register
+    StackSlot(StackSlot), // A value type which may or may not fit into a register, held in a stack slot
+    Reference(CraneliftValue), // The value is behind a pointer. For example, a struct field, array element or aggregate value
 }
 
 impl Context {
@@ -167,8 +155,7 @@ impl Context {
                 .declare_function(&func_name, Linkage::Local, &sig)
                 .unwrap();
 
-            self.values
-                .insert(id, Value::Value(BackendValue::Func(func)));
+            self.values.insert(id, Value::Func(func));
         }
 
         Ok(())
@@ -289,7 +276,7 @@ impl Context {
     #[instrument(skip_all)]
     pub fn get_func_id(&self, id: NodeId) -> FuncId {
         match self.values[&id] {
-            Value::Value(BackendValue::Func(f)) => f,
+            Value::Func(f) => f,
             _ => panic!("Not a function"),
         }
     }
@@ -429,15 +416,11 @@ impl<'a> FunctionCompileContext<'a> {
                 match self.ctx.types[&id] {
                     Type::I64 | Type::U64 => {
                         let value = self.builder.ins().iconst(types::I64, n);
-                        self.ctx
-                            .values
-                            .insert(id, Value::Value(BackendValue::Register(value)));
+                        self.ctx.values.insert(id, Value::Register(value));
                     }
                     Type::I32 | Type::U32 => {
                         let value = self.builder.ins().iconst(types::I32, n);
-                        self.ctx
-                            .values
-                            .insert(id, Value::Value(BackendValue::Register(value)));
+                        self.ctx.values.insert(id, Value::Register(value));
                     }
                     _ => todo!(),
                 };
@@ -448,15 +431,11 @@ impl<'a> FunctionCompileContext<'a> {
                 match self.ctx.types[&id] {
                     Type::F64 => {
                         let value = self.builder.ins().f64const(n);
-                        self.ctx
-                            .values
-                            .insert(id, Value::Value(BackendValue::Register(value)));
+                        self.ctx.values.insert(id, Value::Register(value));
                     }
                     Type::F32 => {
                         let value = self.builder.ins().f32const(n as f32);
-                        self.ctx
-                            .values
-                            .insert(id, Value::Value(BackendValue::Register(value)));
+                        self.ctx.values.insert(id, Value::Register(value));
                     }
                     _ => todo!(),
                 };
@@ -465,9 +444,7 @@ impl<'a> FunctionCompileContext<'a> {
             }
             Node::BoolLiteral(b) => {
                 let value = self.builder.ins().iconst(types::I8, if b { 1 } else { 0 });
-                self.ctx
-                    .values
-                    .insert(id, Value::Value(BackendValue::Register(value)));
+                self.ctx.values.insert(id, Value::Register(value));
                 Ok(())
             }
             Node::Return(rv) => {
@@ -484,31 +461,34 @@ impl<'a> FunctionCompileContext<'a> {
                 Ok(())
             }
             Node::Let { expr, .. } => {
-                let size: u32 = self.ctx.id_type_size(id);
-                let slot = self.builder.create_sized_stack_slot(StackSlotData {
-                    kind: StackSlotKind::ExplicitSlot,
-                    size,
-                });
-
-                let value = Value::Reference(BackendReference::StackSlot(slot));
-
                 if let Some(expr) = expr {
                     self.compile_id(expr)?;
-                    self.store_copy(expr, value);
 
-                    if self.ctx.id_is_aggregate_type(expr) {
-                        self.ctx
-                            .values
-                            .insert(id, Value::Value(BackendValue::Aggregate(slot)));
+                    if let Node::StructLiteral { .. }
+                    | Node::ArrayLiteral { .. }
+                    | Node::StringLiteral { .. } = self.ctx.nodes[expr]
+                    {
+                        // If we're assigning from an aggregate literal, then nothing else can access it so we can just cheat and use the slot it already made.
+                        self.ctx.values.insert(id, self.ctx.values[&expr]);
+                    } else if self.ctx.id_is_aggregate_type(expr) {
+                        let size: u32 = self.ctx.id_type_size(id);
+                        let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                            kind: StackSlotKind::ExplicitSlot,
+                            size,
+                        });
+                        self.store_copy(expr, Value::StackSlot(slot));
+                        self.ctx.values.insert(id, Value::StackSlot(slot));
                     } else {
-                        self.ctx
-                            .values
-                            .insert(id, Value::Reference(BackendReference::StackSlot(slot)));
+                        let value = self.id_value(expr);
+                        self.ctx.values.insert(id, Value::Register(value));
                     }
                 } else {
-                    self.ctx
-                        .values
-                        .insert(id, Value::Reference(BackendReference::StackSlot(slot)));
+                    let size: u32 = self.ctx.id_type_size(id);
+                    let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                        kind: StackSlotKind::ExplicitSlot,
+                        size,
+                    });
+                    self.ctx.values.insert(id, Value::StackSlot(slot));
                 }
 
                 Ok(())
@@ -537,18 +517,9 @@ impl<'a> FunctionCompileContext<'a> {
                 let param_value = params[index as usize];
 
                 if self.ctx.id_is_aggregate_type(id) {
-                    self.ctx.values.insert(
-                        id,
-                        Value::Value(BackendValue::AggregatePointer(param_value)),
-                    );
-                } else if self.ctx.id_base_is_aggregate_type(id) {
-                    self.ctx
-                        .values
-                        .insert(id, Value::Value(BackendValue::Register(param_value)));
+                    self.ctx.values.insert(id, Value::Reference(param_value));
                 } else {
-                    self.ctx
-                        .values
-                        .insert(id, Value::Value(BackendValue::Register(param_value)));
+                    self.ctx.values.insert(id, Value::Register(param_value));
                 }
 
                 Ok(())
@@ -581,9 +552,7 @@ impl<'a> FunctionCompileContext<'a> {
                 self.switch_to_block(cont_block);
 
                 let variable_value = self.builder.use_var(variable);
-                self.ctx
-                    .values
-                    .insert(id, Value::Value(BackendValue::Register(variable_value)));
+                self.ctx.values.insert(id, Value::Register(variable_value));
 
                 Ok(())
             }
@@ -610,9 +579,7 @@ impl<'a> FunctionCompileContext<'a> {
                 self.switch_to_block(cont_block);
 
                 let variable_value = self.builder.use_var(variable);
-                self.ctx
-                    .values
-                    .insert(id, Value::Value(BackendValue::Register(variable_value)));
+                self.ctx.values.insert(id, Value::Register(variable_value));
 
                 Ok(())
             }
@@ -620,8 +587,8 @@ impl<'a> FunctionCompileContext<'a> {
                 self.compile_id(lhs)?;
                 self.compile_id(rhs)?;
 
-                let lhs_value = self.get_register_value(lhs);
-                let rhs_value = self.get_register_value(rhs);
+                let lhs_value = self.id_value(lhs);
+                let rhs_value = self.id_value(rhs);
 
                 let ty = self.ctx.types[&lhs].clone();
 
@@ -685,9 +652,7 @@ impl<'a> FunctionCompileContext<'a> {
                             ),
                             Op::And | Op::Or => unreachable!(),
                         };
-                        self.ctx
-                            .values
-                            .insert(id, Value::Value(BackendValue::Register(value)));
+                        self.ctx.values.insert(id, Value::Register(value));
                     }
                     a => todo!("BinOp for {:?}", a),
                 }
@@ -704,18 +669,14 @@ impl<'a> FunctionCompileContext<'a> {
                     size,
                 });
 
-                let value = Value::Value(BackendValue::Aggregate(slot));
+                let value = Value::StackSlot(slot);
 
                 self.ctx.values.insert(id, value);
 
                 let mut offset = 0;
                 for field in params.borrow().iter() {
                     self.compile_id(*field)?;
-                    self.store_with_offset(
-                        *field,
-                        Value::Reference(BackendReference::StackSlot(slot)),
-                        offset,
-                    );
+                    self.store_with_offset(*field, Value::StackSlot(slot), offset);
                     offset += self.ctx.id_type_size(*field);
                 }
 
@@ -737,10 +698,12 @@ impl<'a> FunctionCompileContext<'a> {
                     ty = self.ctx.get_type(inner);
                 }
 
-                let value = self.ctx.values[&value];
-                let mut value = self.as_cranelift_value(value);
+                let mut value = self.id_value(value);
 
-                while pointiness > 0 {
+                // Dereference the pointer until we get to the actual value
+                // Stopping at 1 because structs are always reference types anyway, so member access on a pointer to a struct
+                // is effectively the same as member access on a struct
+                while pointiness > 1 {
                     value = self.load(types::I64, value, 0);
                     pointiness -= 1;
                 }
@@ -750,13 +713,9 @@ impl<'a> FunctionCompileContext<'a> {
                 }
 
                 if self.ctx.id_is_aggregate_type(id) {
-                    self.ctx
-                        .values
-                        .insert(id, Value::Value(BackendValue::AggregatePointer(value)));
+                    self.ctx.values.insert(id, Value::Reference(value));
                 } else {
-                    self.ctx
-                        .values
-                        .insert(id, Value::Reference(BackendReference::Pointer(value)));
+                    self.ctx.values.insert(id, Value::Reference(value));
                 }
 
                 Ok(())
@@ -767,60 +726,33 @@ impl<'a> FunctionCompileContext<'a> {
                 let value = self.ctx.values.get(&a).unwrap();
 
                 match value {
-                    Value::Value(v) => match v {
-                        BackendValue::Func(_) | BackendValue::Register(_) => {
-                            let slot = self.builder.create_sized_stack_slot(StackSlotData {
-                                kind: StackSlotKind::ExplicitSlot,
-                                size: self.ctx.id_type_size(a),
-                            });
+                    Value::Func(_) | Value::Register(_) => {
+                        let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                            kind: StackSlotKind::ExplicitSlot,
+                            size: self.ctx.id_type_size(a),
+                        });
 
-                            let value = self.as_cranelift_value(*value);
-                            self.builder.ins().stack_store(value, slot, 0);
+                        let value = self.id_value(a);
+                        self.builder.ins().stack_store(value, slot, 0);
 
-                            let slot_addr =
-                                self.builder
-                                    .ins()
-                                    .stack_addr(self.ctx.get_pointer_type(), slot, 0);
+                        let slot_addr =
+                            self.builder
+                                .ins()
+                                .stack_addr(self.ctx.get_pointer_type(), slot, 0);
 
-                            self.ctx
-                                .values
-                                .insert(id, Value::Value(BackendValue::Register(slot_addr)));
-                        }
-                        BackendValue::Aggregate(slot) => {
-                            let slot_addr = self.builder.ins().stack_addr(
-                                self.ctx.get_pointer_type(),
-                                *slot,
-                                0,
-                            );
+                        self.ctx.values.insert(id, Value::Register(slot_addr));
+                    }
+                    Value::StackSlot(slot) => {
+                        let slot_addr =
+                            self.builder
+                                .ins()
+                                .stack_addr(self.ctx.get_pointer_type(), *slot, 0);
 
-                            self.ctx
-                                .values
-                                .insert(id, Value::Value(BackendValue::Register(slot_addr)));
-                        }
-                        BackendValue::AggregatePointer(ptr) => {
-                            self.ctx
-                                .values
-                                .insert(id, Value::Value(BackendValue::Register(*ptr)));
-                        }
-                    },
-                    Value::Reference(reference) => match reference {
-                        BackendReference::StackSlot(slot) => {
-                            let slot_addr = self.builder.ins().stack_addr(
-                                self.ctx.get_pointer_type(),
-                                *slot,
-                                0,
-                            );
-
-                            self.ctx
-                                .values
-                                .insert(id, Value::Value(BackendValue::Register(slot_addr)));
-                        }
-                        BackendReference::Pointer(ptr) => {
-                            self.ctx
-                                .values
-                                .insert(id, Value::Value(BackendValue::Register(*ptr)));
-                        }
-                    },
+                        self.ctx.values.insert(id, Value::Register(slot_addr));
+                    }
+                    Value::Reference(ptr) => {
+                        self.ctx.values.insert(id, Value::Register(*ptr));
+                    }
                 }
                 // self.ctx.values.insert(id, *cranelift_value);
 
@@ -830,11 +762,9 @@ impl<'a> FunctionCompileContext<'a> {
                 self.compile_id(value)?;
 
                 if self.ctx.in_assign_lhs {
-                    let value = self.get_register_value(value);
+                    let value = self.id_value(value);
 
-                    self.ctx
-                        .values
-                        .insert(id, Value::Reference(BackendReference::Pointer(value)));
+                    self.ctx.values.insert(id, Value::Reference(value));
                 } else {
                     if self.ctx.id_is_aggregate_type(id) {
                         // If we're dereferencing to an aggregate type, then we are going to need a stack slot and will become an Aggregate value ourselves
@@ -845,7 +775,7 @@ impl<'a> FunctionCompileContext<'a> {
 
                         let size = self.ctx.id_type_size(id);
 
-                        let value = self.get_register_value(value);
+                        let value = self.id_value(value);
                         let slot_addr =
                             self.builder
                                 .ins()
@@ -853,16 +783,12 @@ impl<'a> FunctionCompileContext<'a> {
 
                         self.emit_small_memory_copy(slot_addr, value, size as _);
 
-                        self.ctx
-                            .values
-                            .insert(id, Value::Value(BackendValue::Aggregate(slot)));
+                        self.ctx.values.insert(id, Value::StackSlot(slot));
                     } else {
-                        let rvalue = self.get_register_value(value);
+                        let rvalue = self.id_value(value);
                         let ty = self.ctx.get_cranelift_type(value);
                         let value = self.load(ty, rvalue, 0);
-                        self.ctx
-                            .values
-                            .insert(id, Value::Value(BackendValue::Register(value)));
+                        self.ctx.values.insert(id, Value::Register(value));
                     }
                 }
 
@@ -901,9 +827,7 @@ impl<'a> FunctionCompileContext<'a> {
                     .declare_function(&name, Linkage::Import, &sig)
                     .unwrap();
 
-                self.ctx
-                    .values
-                    .insert(id, Value::Value(BackendValue::Func(func_id)));
+                self.ctx.values.insert(id, Value::Func(func_id));
 
                 Ok(())
             }
@@ -922,9 +846,9 @@ impl<'a> FunctionCompileContext<'a> {
                 });
 
                 let value = if self.ctx.id_is_aggregate_type(id) {
-                    Value::Value(BackendValue::Aggregate(slot))
+                    Value::StackSlot(slot)
                 } else {
-                    Value::Reference(BackendReference::StackSlot(slot))
+                    Value::StackSlot(slot)
                 };
 
                 let saved_resolve_addr = self.resolve_addr;
@@ -998,7 +922,7 @@ impl<'a> FunctionCompileContext<'a> {
                 );
                 self.ctx
                     .values
-                    .insert(label, Value::Value(BackendValue::Register(label_slot_addr)));
+                    .insert(label, Value::Register(label_slot_addr));
 
                 // Index starts at 0
                 let index = Variable::new(id.0);
@@ -1094,9 +1018,9 @@ impl<'a> FunctionCompileContext<'a> {
                     });
 
                     let value = if self.ctx.id_is_aggregate_type(id) {
-                        Value::Value(BackendValue::Aggregate(slot))
+                        Value::StackSlot(slot)
                     } else {
-                        Value::Reference(BackendReference::StackSlot(slot))
+                        Value::StackSlot(slot)
                     };
                     self.ctx.values.insert(id, value);
 
@@ -1148,7 +1072,7 @@ impl<'a> FunctionCompileContext<'a> {
                 let mut offset = 0;
                 for &member in members.borrow().iter() {
                     self.compile_id(member)?;
-                    let member_value = self.as_cranelift_value(self.ctx.values[&member]);
+                    let member_value = self.id_value(member);
                     self.builder.ins().stack_store(
                         member_value,
                         member_storage_slot,
@@ -1157,10 +1081,9 @@ impl<'a> FunctionCompileContext<'a> {
                     offset += member_size;
                 }
 
-                self.ctx.values.insert(
-                    id,
-                    Value::Value(BackendValue::Aggregate(member_storage_slot)),
-                );
+                self.ctx
+                    .values
+                    .insert(id, Value::StackSlot(member_storage_slot));
 
                 Ok(())
             }
@@ -1184,14 +1107,9 @@ impl<'a> FunctionCompileContext<'a> {
                 let element_ptr = self.builder.ins().iadd(array_ptr_value, index_value);
 
                 if self.ctx.id_is_aggregate_type(id) {
-                    self.ctx.values.insert(
-                        id,
-                        Value::Value(BackendValue::AggregatePointer(element_ptr)),
-                    );
+                    self.ctx.values.insert(id, Value::Reference(element_ptr));
                 } else {
-                    self.ctx
-                        .values
-                        .insert(id, Value::Value(BackendValue::Register(element_ptr)));
+                    self.ctx.values.insert(id, Value::Register(element_ptr));
                 }
 
                 Ok(())
@@ -1228,9 +1146,7 @@ impl<'a> FunctionCompileContext<'a> {
                 self.builder.ins().stack_store(offset_str_ptr, slot, 0);
                 self.builder.ins().stack_store(len, slot, 8);
 
-                self.ctx
-                    .values
-                    .insert(id, Value::Value(BackendValue::Aggregate(slot)));
+                self.ctx.values.insert(id, Value::StackSlot(slot));
 
                 Ok(())
             }
@@ -1243,9 +1159,7 @@ impl<'a> FunctionCompileContext<'a> {
                 let ty_size = self.ctx.id_type_size(ty);
                 let value = self.builder.ins().iconst(types::I64, ty_size as i64);
 
-                self.ctx
-                    .values
-                    .insert(id, Value::Value(BackendValue::Register(value)));
+                self.ctx.values.insert(id, Value::Register(value));
 
                 Ok(())
             }
@@ -1270,9 +1184,7 @@ impl<'a> FunctionCompileContext<'a> {
 
                 let value = self.builder.ins().iconst(types::I64, len as i64);
 
-                self.ctx
-                    .values
-                    .insert(id, Value::Value(BackendValue::Register(value)));
+                self.ctx.values.insert(id, Value::Register(value));
 
                 Ok(())
             }
@@ -1297,9 +1209,7 @@ impl<'a> FunctionCompileContext<'a> {
                     let array_len = self.builder.ins().iconst(types::I64, array_len as i64);
                     self.builder.ins().stack_store(array_len, slot, 8);
 
-                    self.ctx
-                        .values
-                        .insert(id, Value::Value(BackendValue::Aggregate(slot)));
+                    self.ctx.values.insert(id, Value::StackSlot(slot));
 
                     Ok(())
                 }
@@ -1334,28 +1244,27 @@ impl<'a> FunctionCompileContext<'a> {
         let mut param_values = Vec::new();
         for &param in param_ids.borrow().iter() {
             self.compile_id(param)?;
-            param_values.push(self.get_register_value(param));
+            param_values.push(self.id_value(param));
         }
 
         // direct call?
-        let call_inst =
-            if let Some(Value::Value(BackendValue::Func(func_id))) = self.ctx.values.get(&func) {
-                let func_ref = *self.declared_func_ids.entry(*func_id).or_insert_with(|| {
-                    self.ctx
-                        .module
-                        .declare_func_in_func(*func_id, self.builder.func)
-                });
-                self.builder.ins().call(func_ref, &param_values)
-            } else {
-                let sig_ref = self
-                    .ctx
-                    .get_func_signature(func, param_ids.borrow().as_ref());
-                let sig = self.builder.import_signature(sig_ref);
+        let call_inst = if let Some(Value::Func(func_id)) = self.ctx.values.get(&func) {
+            let func_ref = *self.declared_func_ids.entry(*func_id).or_insert_with(|| {
+                self.ctx
+                    .module
+                    .declare_func_in_func(*func_id, self.builder.func)
+            });
+            self.builder.ins().call(func_ref, &param_values)
+        } else {
+            let sig_ref = self
+                .ctx
+                .get_func_signature(func, param_ids.borrow().as_ref());
+            let sig = self.builder.import_signature(sig_ref);
 
-                let callee = self.id_value(func);
+            let callee = self.id_value(func);
 
-                self.builder.ins().call_indirect(sig, callee, &param_values)
-            };
+            self.builder.ins().call_indirect(sig, callee, &param_values)
+        };
 
         if self
             .ctx
@@ -1367,13 +1276,9 @@ impl<'a> FunctionCompileContext<'a> {
             let value = self.builder.func.dfg.first_result(call_inst);
 
             if self.ctx.id_is_aggregate_type(id) {
-                self.ctx
-                    .values
-                    .insert(id, Value::Value(BackendValue::AggregatePointer(value)));
+                self.ctx.values.insert(id, Value::Reference(value));
             } else {
-                self.ctx
-                    .values
-                    .insert(id, Value::Value(BackendValue::Register(value)));
+                self.ctx.values.insert(id, Value::Register(value));
             }
         }
 
@@ -1450,8 +1355,8 @@ impl<'a> FunctionCompileContext<'a> {
     #[instrument(skip_all)]
     fn as_cranelift_value(&mut self, value: Value) -> CraneliftValue {
         match value {
-            Value::Value(BackendValue::Register(val) | BackendValue::AggregatePointer(val)) => val,
-            Value::Value(BackendValue::Func(func_id)) => {
+            Value::Register(val) | Value::Reference(val) => val,
+            Value::Func(func_id) => {
                 let func_ref = *self.declared_func_ids.entry(func_id).or_insert_with(|| {
                     self.ctx
                         .module
@@ -1462,19 +1367,11 @@ impl<'a> FunctionCompileContext<'a> {
                     .ins()
                     .func_addr(self.ctx.get_pointer_type(), func_ref)
             }
-            Value::Value(BackendValue::Aggregate(slot)) => {
+            Value::StackSlot(slot) => {
                 self.builder
                     .ins()
                     .stack_addr(self.ctx.get_pointer_type(), slot, 0)
             }
-            Value::Reference(reference) => match reference {
-                BackendReference::StackSlot(slot) => {
-                    self.builder
-                        .ins()
-                        .stack_addr(self.ctx.get_pointer_type(), slot, 0)
-                }
-                BackendReference::Pointer(ptr) => ptr,
-            },
         }
     }
 
@@ -1485,86 +1382,39 @@ impl<'a> FunctionCompileContext<'a> {
         let source = self.ctx.values[&id];
 
         match (source, dest) {
-            (Value::Value(value), Value::Reference(reference)) => match (value, reference) {
-                (
-                    BackendValue::Func(_) | BackendValue::Register(_),
-                    BackendReference::StackSlot(ss),
-                ) => {
-                    let source_value = self.as_cranelift_value(source);
-                    self.builder
-                        .ins()
-                        .stack_store(source_value, ss, offset as i32);
-                }
-                (BackendValue::Aggregate(source_slot), BackendReference::StackSlot(dest_slot)) => {
-                    let source_ptr = self.builder.ins().stack_addr(
-                        self.ctx.module.isa().pointer_type(),
-                        source_slot,
-                        offset as i32,
-                    );
-                    let dest_ptr = self.builder.ins().stack_addr(
-                        self.ctx.module.isa().pointer_type(),
-                        dest_slot,
-                        offset as i32,
-                    );
-                    self.emit_small_memory_copy(dest_ptr, source_ptr, size);
-                }
-                (
-                    BackendValue::AggregatePointer(source_ptr),
-                    BackendReference::StackSlot(dest_slot),
-                ) => {
-                    let dest_ptr = self.builder.ins().stack_addr(
-                        self.ctx.module.isa().pointer_type(),
-                        dest_slot,
-                        offset as i32,
-                    );
-                    self.emit_small_memory_copy(dest_ptr, source_ptr, size);
-                }
-                (
-                    BackendValue::Func(_) | BackendValue::Register(_),
-                    BackendReference::Pointer(dest_ptr),
-                ) => {
-                    let source_value = self.as_cranelift_value(source);
-                    self.builder.ins().store(
-                        MemFlags::new(),
-                        source_value,
-                        dest_ptr,
-                        offset as i32,
-                    );
-                }
-                (BackendValue::Aggregate(source_slot), BackendReference::Pointer(dest_ptr)) => {
-                    let source_ptr = self.builder.ins().stack_addr(
-                        self.ctx.module.isa().pointer_type(),
-                        source_slot,
-                        offset as i32,
-                    );
-                    self.emit_small_memory_copy(dest_ptr, source_ptr, size);
-                }
-                (BackendValue::AggregatePointer(src_ptr), BackendReference::Pointer(dest_ptr)) => {
-                    self.emit_small_memory_copy(dest_ptr, src_ptr, size);
-                }
-            },
-            (Value::Reference(source_reference), Value::Reference(dest_reference)) => {
-                let source_ptr = match source_reference {
-                    BackendReference::Pointer(p) => p,
-                    BackendReference::StackSlot(slot) => self.builder.ins().stack_addr(
-                        self.ctx.module.isa().pointer_type(),
-                        slot,
-                        offset as i32,
-                    ),
-                };
-
-                let dest_ptr = match dest_reference {
-                    BackendReference::Pointer(p) => p,
-                    BackendReference::StackSlot(slot) => self.builder.ins().stack_addr(
-                        self.ctx.module.isa().pointer_type(),
-                        slot,
-                        offset as i32,
-                    ),
-                };
+            (_, Value::Func(_)) => {
+                panic!("Attempt to store into a function pointer");
+            }
+            (_, Value::Register(_)) => {
+                panic!("Attempt to store into a register");
+            }
+            (a @ (Value::Func(_) | Value::Register(_)), Value::StackSlot(dest_ss)) => {
+                let source_value = self.as_cranelift_value(a);
+                self.builder
+                    .ins()
+                    .stack_store(source_value, dest_ss, offset as i32);
+            }
+            (a @ (Value::StackSlot(_) | Value::Reference(_)), Value::StackSlot(dest_ss)) => {
+                let source_ptr = self.as_cranelift_value(a);
+                let dest_ptr = self.builder.ins().stack_addr(
+                    self.ctx.module.isa().pointer_type(),
+                    dest_ss,
+                    offset as i32,
+                );
 
                 self.emit_small_memory_copy(dest_ptr, source_ptr, size);
             }
-            (_, Value::Value(_)) => panic!("Cannot store into a value"),
+            (a @ (Value::Func(_) | Value::Register(_)), Value::Reference(dest_ptr)) => {
+                let source_value = self.as_cranelift_value(a);
+                self.builder
+                    .ins()
+                    .store(MemFlags::new(), source_value, dest_ptr, offset as i32);
+            }
+            (a @ (Value::StackSlot(_) | Value::Reference(_)), Value::Reference(dest_ptr)) => {
+                let source_ptr = self.as_cranelift_value(a);
+                let dest_ptr = self.builder.ins().iadd_imm(dest_ptr, offset as i64);
+                self.emit_small_memory_copy(dest_ptr, source_ptr, size);
+            }
         }
     }
 
@@ -1594,41 +1444,41 @@ impl<'a> FunctionCompileContext<'a> {
 
     #[instrument(skip_all)]
     fn id_value(&mut self, id: NodeId) -> CraneliftValue {
-        self.as_cranelift_value(self.ctx.values[&id])
-    }
-
-    #[instrument(skip_all)]
-    fn get_register_value(&mut self, id: NodeId) -> CraneliftValue {
         let value = self.ctx.values[&id];
+
         match value {
-            Value::Value(v) => match v {
-                BackendValue::Func(_) => self.as_cranelift_value(value),
-                BackendValue::Aggregate(ss) => {
+            Value::Func(func_id) => {
+                let func_ref = *self.declared_func_ids.entry(func_id).or_insert_with(|| {
+                    self.ctx
+                        .module
+                        .declare_func_in_func(func_id, self.builder.func)
+                });
+
+                self.builder
+                    .ins()
+                    .func_addr(self.ctx.get_pointer_type(), func_ref)
+            }
+            Value::Register(val) => val,
+            Value::Reference(r) => {
+                // aggregate types don't fit into a register. Anything else can be eagerly "promoted"
+                if self.ctx.id_is_aggregate_type(id) {
+                    r
+                } else {
                     self.builder
                         .ins()
-                        .stack_addr(self.ctx.get_pointer_type(), ss, 0)
+                        .load(self.ctx.get_cranelift_type(id), MemFlags::new(), r, 0)
                 }
-                BackendValue::AggregatePointer(r) | BackendValue::Register(r) => r,
-            },
-            Value::Reference(reference) => {
-                let ty = match self.ctx.get_type(id) {
-                    Type::Array(_, _) | Type::Struct { .. } | Type::String | Type::Enum { .. } => {
-                        todo!()
-                    }
-                    Type::Pointer(_) => self.ctx.get_pointer_type(),
-                    Type::F32 => types::F32,
-                    Type::F64 => types::F64,
-                    Type::I8 | Type::Bool => types::I8,
-                    Type::I16 => types::I16,
-                    Type::I32 => types::I32,
-                    Type::I64 => types::I64,
-                    ty => todo!("Unexpected type for register value: {:?}", ty),
-                };
-                match reference {
-                    BackendReference::StackSlot(ss) => self.builder.ins().stack_load(ty, ss, 0),
-                    BackendReference::Pointer(p) => {
-                        self.builder.ins().load(ty, MemFlags::new(), p, 0)
-                    }
+            }
+            Value::StackSlot(slot) => {
+                // aggregate types don't fit into a register. Anything else can be eagerly "promoted"
+                if self.ctx.id_is_aggregate_type(id) {
+                    self.builder
+                        .ins()
+                        .stack_addr(self.ctx.get_pointer_type(), slot, 0)
+                } else {
+                    self.builder
+                        .ins()
+                        .stack_load(self.ctx.get_cranelift_type(id), slot, 0)
                 }
             }
         }
@@ -1639,7 +1489,7 @@ impl<'a> ToplevelCompileContext<'a> {
     pub fn compile_toplevel_id(&mut self, id: NodeId) -> DraftResult<()> {
         // idempotency
         match self.ctx.values.get(&id) {
-            None | Some(Value::Value(BackendValue::Func(_))) => {}
+            None | Some(Value::Func(_)) => {}
             _ => return Ok(()),
         };
 
@@ -1676,9 +1526,7 @@ impl<'a> ToplevelCompileContext<'a> {
                 builder.func.signature = sig;
                 builder.func.collect_debug_info();
 
-                self.ctx
-                    .values
-                    .insert(id, Value::Value(BackendValue::Func(func_id)));
+                self.ctx.values.insert(id, Value::Func(func_id));
 
                 let ebb = builder.create_block();
                 builder.append_block_params_for_function_params(ebb);
@@ -1759,9 +1607,7 @@ impl<'a> ToplevelCompileContext<'a> {
                             FunctionBuilder::new(&mut self.codegen_ctx.func, self.func_ctx);
                         builder.func.signature = sig;
 
-                        self.ctx
-                            .values
-                            .insert(id, Value::Value(BackendValue::Func(func_id)));
+                        self.ctx.values.insert(id, Value::Func(func_id));
 
                         let ebb = builder.create_block();
                         builder.append_block_params_for_function_params(ebb);

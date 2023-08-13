@@ -22,10 +22,10 @@ struct Foo {
     y: i64,
 }
 
-// struct Bar {
-    // x: i64, 
-    // y: i64,
-// }
+struct Bar {
+    x: i64, 
+    y: i64,
+}
 
 enum Baz {
     A,
@@ -49,13 +49,13 @@ fn foo4(f: *!) _ {
     return f.x + f.y + foo3(f);
 }
 
-// fn foo5(f: *_T!, g: _U!) _ {
-    // return f.x - f.y + g.x + g.y;
-// }
+fn foo5(f: *_T!, g: _U!) _ {
+    return f.x - f.y + g.x + g.y;
+}
 
-// fn foo6() Foo {
-    // return _{ 10, 2 };
-// }
+fn foo6() Foo {
+    return _{ 10, 2 };
+}
 
 // fn id(n: i64) i64 {
     // return n;
@@ -251,16 +251,16 @@ fn main() i64 {
     print_i64(foo2(f) - 9); // 2
     print_i64(foo3(&f) - 8); // 3
     print_i64(foo4(&f) - 18); // 4
-    // print_i64(foo4(pf) - 17); // 5
-    // print_i64(foo4(*&pf) - 16); // 6
-    // print_i64(foo4(*&*&*&*&*&pf) - 15); // 7
+    print_i64(foo4(pf) - 17); // 5
+    print_i64(foo4(*&pf) - 16); // 6
+    print_i64(foo4(*&*&*&*&*&pf) - 15); // 7
 
-    // f = Foo { y: 3, x: 8 };
-    // print_i64(f.x - f.y + 3); // 8
+    f = Foo { y: 3, x: 8 };
+    print_i64(f.x - f.y + 3); // 8
 
-    // let g = Bar { 3, 8 };
-    // let pg = &&&&&&g;
-    // print_i64(foo5(&f, *pg) - ****&&&&7); // 9
+    let g = Bar { 3, 8 };
+    let pg = &&&&&&g;
+    print_i64(foo5(&f, *pg) - ****&&&&7); // 9
 
     // let ten = &&&999;
     // **ten = &10;
