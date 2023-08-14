@@ -7,7 +7,7 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'draft' (foo.dr)",
+            "name": "Run foo.dr",
             "cargo": {
                 "args": [
                     "build",
@@ -21,6 +21,27 @@
             },
             "args": [
                 "foo.dr",
+                "--run"
+            ],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Run tests.dr",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=draft",
+                    "--package=draft"
+                ],
+                "filter": {
+                    "name": "draft",
+                    "kind": "bin"
+                }
+            },
+            "args": [
+                "tests.dr",
                 "--run"
             ],
             "cwd": "${workspaceFolder}"

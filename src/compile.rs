@@ -839,20 +839,21 @@ impl<'a> FunctionCompileContext<'a> {
                 self.compile_id(cond)?;
                 let cond_value = self.id_value(cond);
 
-                // Make a stack slot for the result of the if statement
-                let slot = self.builder.create_sized_stack_slot(StackSlotData {
-                    kind: StackSlotKind::ExplicitSlot,
-                    size: self.ctx.id_type_size(id),
-                });
-
-                let value = if self.ctx.id_is_aggregate_type(id) {
-                    Value::StackSlot(slot)
-                } else {
-                    Value::StackSlot(slot)
-                };
-
                 let saved_resolve_addr = self.resolve_addr;
-                self.resolve_addr = Some(value);
+
+                // Make a stack slot for the result of the if statement
+                let slot_size = self.ctx.id_type_size(id);
+                if slot_size > 0 {
+                    let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                        kind: StackSlotKind::ExplicitSlot,
+                        size: slot_size,
+                    });
+
+                    let value = Value::StackSlot(slot);
+                    self.ctx.values.insert(id, value);
+
+                    self.resolve_addr = Some(value);
+                }
 
                 let then_ebb = self.builder.create_block();
                 let else_ebb = self.builder.create_block();
@@ -880,7 +881,9 @@ impl<'a> FunctionCompileContext<'a> {
                     }
                     crate::NodeElse::If(else_if) => {
                         self.compile_id(else_if)?;
-                        self.store_copy(else_if, self.resolve_addr.unwrap());
+                        if let Some(resolve_addr) = self.resolve_addr {
+                            self.store_copy(else_if, resolve_addr);
+                        }
                         self.builder.ins().jump(merge_ebb, &[]);
                     }
                     crate::NodeElse::None => {
@@ -901,28 +904,37 @@ impl<'a> FunctionCompileContext<'a> {
                 block,
             } => {
                 self.compile_id(iterable)?;
-                let array_value = self.id_value(iterable);
-                let array_length_value = self.load(
-                    types::I64,
-                    array_value,
-                    self.ctx.get_pointer_type().bytes() as _,
-                );
-                let array_pointer_value = self.load(self.ctx.get_pointer_type(), array_value, 0);
+
+                let (array_pointer_value, array_length_value) = match self.ctx.get_type(iterable) {
+                    Type::Array(_, ArrayLen::None) => {
+                        let array_value = self.id_value(iterable);
+                        let array_pointer_value =
+                            self.load(self.ctx.get_pointer_type(), array_value, 0);
+                        let array_length_value = self.load(
+                            types::I64,
+                            array_value,
+                            self.ctx.get_pointer_type().bytes() as _,
+                        );
+
+                        (array_pointer_value, array_length_value)
+                    }
+                    Type::Array(_, ArrayLen::Some(len)) => {
+                        let array_pointer_value = self.id_value(iterable);
+                        let array_length_value = self.builder.ins().iconst(types::I64, len as i64);
+
+                        (array_pointer_value, array_length_value)
+                    }
+                    ty => panic!("For loop over non-iterable type {:?}", ty),
+                };
+
                 let array_elem_type_size = self.ctx.id_type_size(label);
 
                 // Make a stack slot for the label
                 let label_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
-                    size: self.ctx.id_type_size(label),
+                    size: array_elem_type_size,
                 });
-                let label_slot_addr = self.builder.ins().stack_addr(
-                    self.ctx.module.isa().pointer_type(),
-                    label_slot,
-                    0,
-                );
-                self.ctx
-                    .values
-                    .insert(label, Value::Register(label_slot_addr));
+                self.ctx.values.insert(label, Value::StackSlot(label_slot));
 
                 // Index starts at 0
                 let index = Variable::new(id.0);
@@ -961,6 +973,10 @@ impl<'a> FunctionCompileContext<'a> {
                     .ins()
                     .iadd(array_pointer_value, array_element_offset);
 
+                let label_slot_addr =
+                    self.builder
+                        .ins()
+                        .stack_addr(self.ctx.get_pointer_type(), label_slot, 0);
                 self.emit_small_memory_copy(
                     label_slot_addr,
                     element_ptr,
@@ -1106,11 +1122,7 @@ impl<'a> FunctionCompileContext<'a> {
                 let index_value = self.builder.ins().imul_imm(index_value, member_size as i64);
                 let element_ptr = self.builder.ins().iadd(array_ptr_value, index_value);
 
-                if self.ctx.id_is_aggregate_type(id) {
-                    self.ctx.values.insert(id, Value::Reference(element_ptr));
-                } else {
-                    self.ctx.values.insert(id, Value::Register(element_ptr));
-                }
+                self.ctx.values.insert(id, Value::Reference(element_ptr));
 
                 Ok(())
             }
@@ -1379,7 +1391,9 @@ impl<'a> FunctionCompileContext<'a> {
     fn store_with_offset(&mut self, id: NodeId, dest: Value, offset: u32) {
         let size = self.ctx.id_type_size(id) as u64;
 
-        let source = self.ctx.values[&id];
+        let Some(source) = self.ctx.values.get(&id) else {
+            return;
+        };
 
         match (source, dest) {
             (_, Value::Func(_)) => {
@@ -1389,13 +1403,13 @@ impl<'a> FunctionCompileContext<'a> {
                 panic!("Attempt to store into a register");
             }
             (a @ (Value::Func(_) | Value::Register(_)), Value::StackSlot(dest_ss)) => {
-                let source_value = self.as_cranelift_value(a);
+                let source_value = self.as_cranelift_value(*a);
                 self.builder
                     .ins()
                     .stack_store(source_value, dest_ss, offset as i32);
             }
             (a @ (Value::StackSlot(_) | Value::Reference(_)), Value::StackSlot(dest_ss)) => {
-                let source_ptr = self.as_cranelift_value(a);
+                let source_ptr = self.as_cranelift_value(*a);
                 let dest_ptr = self.builder.ins().stack_addr(
                     self.ctx.module.isa().pointer_type(),
                     dest_ss,
@@ -1405,13 +1419,13 @@ impl<'a> FunctionCompileContext<'a> {
                 self.emit_small_memory_copy(dest_ptr, source_ptr, size);
             }
             (a @ (Value::Func(_) | Value::Register(_)), Value::Reference(dest_ptr)) => {
-                let source_value = self.as_cranelift_value(a);
+                let source_value = self.as_cranelift_value(*a);
                 self.builder
                     .ins()
                     .store(MemFlags::new(), source_value, dest_ptr, offset as i32);
             }
             (a @ (Value::StackSlot(_) | Value::Reference(_)), Value::Reference(dest_ptr)) => {
-                let source_ptr = self.as_cranelift_value(a);
+                let source_ptr = self.as_cranelift_value(*a);
                 let dest_ptr = self.builder.ins().iadd_imm(dest_ptr, offset as i64);
                 self.emit_small_memory_copy(dest_ptr, source_ptr, size);
             }
