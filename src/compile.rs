@@ -1281,7 +1281,7 @@ impl<'a> FunctionCompileContext<'a> {
             match self.ctx.nodes[id].clone() {
                 Node::Symbol(_) => unrolled.push(id),
                 Node::ArrayAccess { array, index } => {
-                    self.unroll_member_access(array, index, unrolled)?
+                    todo!()
                 }
                 Node::StructDeclParam { name, .. } => unrolled.push(name),
                 Node::MemberAccess {

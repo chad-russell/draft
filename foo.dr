@@ -42,7 +42,9 @@ fn main() i64 {
     // for val in arr {
         // print_i64(val.x);
     // }
-    print_i64(arr[0].x);
+
+    let a0 = arr[0];
+    print_i64(a0.x);
 
     return 0;
 }
