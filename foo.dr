@@ -5,10 +5,10 @@ struct Foo {
     y: i64,
 }
 
-struct Bar {
-    ohno_bar: i64,
-    #transparent foo: Foo,
-}
+// struct Bar {
+    // ohno_bar: i64,
+    // #transparent foo: Foo,
+// }
 
 // struct Baz {
     // ohno_baz: i64,
@@ -22,10 +22,27 @@ struct Bar {
 
 fn main() i64 {
     // let #transparent f = Foo { 1, 2 };
-    let #transparent b = Bar { 999, Foo { 1, 2 } };
+    // let #transparent b = Bar { 999, Foo { 1, 2 } };
     // let #transparent b = Baz { 999, Bar { 999, Foo { 1, 2 } } };
     // let #transparent q = Qux { 999, Baz { 999, Bar { 999, Foo { 1, 2 } } } };
-    y |> print_i64;
+    // y |> print_i64;
+
+    // let b = Bar { &Foo { 1, 2 } };
+    // b.foo.x |> print_i64;
     
+    let arr: [_]_ = [_{x: 1i64}, _{2}, _{3}];
+
+    // let foos = &_{
+        // foo1: Foo { 1, 2 },
+        // foo2: Foo { 1, 2 },
+        // foo3: Foo { 1, 2 },
+    // };
+    // let arr = _{ data: #cast(*Foo) foos, len: 3i64 } as []Foo;
+
+    // for val in arr {
+        // print_i64(val.x);
+    // }
+    print_i64(arr[0].x);
+
     return 0;
 }

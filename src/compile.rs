@@ -138,14 +138,14 @@ impl Context {
 
             for &param in params.borrow().iter() {
                 sig.params
-                    .push(AbiParam::new(self.get_cranelift_type(param)));
+                    .push(AbiParam::new(self.id_cranelift_type(param)));
             }
 
             let return_size = return_ty.map(|rt| self.id_type_size(rt)).unwrap_or(0);
 
             if return_size > 0 {
                 sig.returns
-                    .push(AbiParam::new(self.get_cranelift_type(return_ty.unwrap())));
+                    .push(AbiParam::new(self.id_cranelift_type(return_ty.unwrap())));
             }
 
             let func_name = self.mangled_func_name(name, id);
@@ -204,8 +204,13 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    fn get_cranelift_type(&self, param: NodeId) -> CraneliftType {
-        match self.types[&param] {
+    fn id_cranelift_type(&self, param: NodeId) -> CraneliftType {
+        self.cranelift_type(self.types[&param].clone())
+    }
+
+    #[instrument(skip_all)]
+    fn cranelift_type(&self, ty: Type) -> CraneliftType {
+        match ty {
             Type::I8 | Type::U8 | Type::Bool => types::I8,
             Type::I16 | Type::U16 => types::I16,
             Type::I32 | Type::U32 => types::I32,
@@ -219,7 +224,7 @@ impl Context {
             | Type::Array(_, _)
             | Type::String => self.get_pointer_type(),
             Type::Infer(_) => panic!(),
-            _ => todo!("{:?}", &self.types[&param]),
+            a => todo!("{:?}", a),
         }
     }
 
@@ -297,12 +302,12 @@ impl Context {
         let mut sig = self.module.make_signature();
         for param in param_ids.iter() {
             sig.params
-                .push(AbiParam::new(self.get_cranelift_type(*param)));
+                .push(AbiParam::new(self.id_cranelift_type(*param)));
         }
 
         if return_size > 0 {
             sig.returns
-                .push(AbiParam::new(self.get_cranelift_type(return_ty.unwrap())));
+                .push(AbiParam::new(self.id_cranelift_type(return_ty.unwrap())));
         }
 
         sig
@@ -683,7 +688,67 @@ impl<'a> FunctionCompileContext<'a> {
                 Ok(())
             }
             Node::MemberAccess { value, member } => {
-                self.perform_member_access(id, value, member)?;
+                // self.perform_member_access(id, value, member)?;
+
+                let mut unrolled = Vec::new();
+                self.unroll_member_access(value, member, &mut unrolled)?;
+
+                // println!("Unrolled:");
+                // for un in unrolled.iter() {
+                //     if let Node::Symbol(sym) = self.ctx.nodes[un] {
+                //         println!("{}", self.ctx.string_interner.resolve(sym.0).unwrap());
+                //     } else {
+                //         println!("{:?}", self.ctx.nodes[un]);
+                //     }
+                // }
+                // println!("\n");
+
+                // a dot b
+                let a = unrolled[0];
+                self.compile_id(a)?;
+                let mut a_val = self.id_value(a);
+                let mut a_ty = self.ctx.get_type(a);
+
+                let mut cur = 0;
+                while cur < unrolled.len() - 1 {
+                    // We start out with an id_value already. But each additional time through the loop,
+                    // we need to manually create it. We know `a_val` is a Value::Reference(_), so we can just follow
+                    // the same rules for Reference from id_value
+                    if cur > 0 && !self.ctx.is_aggregate_type(a_ty.clone()) {
+                        let a_ty = self.ctx.cranelift_type(a_ty.clone());
+                        a_val = self.load(a_ty, a_val, 0);
+                    }
+
+                    let b = unrolled[cur + 1];
+                    let Node::Symbol(_) = self.ctx.nodes[a] else {
+                        todo!()
+                    };
+
+                    let mut pointiness = 0;
+                    while let Type::Pointer(inner) = a_ty {
+                        pointiness += 1;
+                        a_ty = self.ctx.get_type(inner);
+                    }
+
+                    // Dereference the pointer until we get to the actual value
+                    // Stopping at 1 because structs are always reference types anyway, so member access on a pointer to a struct
+                    // is effectively the same as member access on a struct
+                    while pointiness > 1 {
+                        a_val = self.load(types::I64, a_val, 0);
+                        pointiness -= 1;
+                    }
+
+                    let (offset, ty) = self.get_member_offset(a_ty, b)?;
+                    a_ty = ty;
+                    if offset != 0 {
+                        a_val = self.builder.ins().iadd_imm(a_val, offset as i64);
+                    }
+
+                    self.ctx.values.insert(id, Value::Reference(a_val));
+
+                    cur += 1;
+                }
+
                 Ok(())
             }
             Node::AddressOf(a) => {
@@ -752,7 +817,7 @@ impl<'a> FunctionCompileContext<'a> {
                         self.ctx.values.insert(id, Value::StackSlot(slot));
                     } else {
                         let rvalue = self.id_value(value);
-                        let ty = self.ctx.get_cranelift_type(value);
+                        let ty = self.ctx.id_cranelift_type(value);
                         let value = self.load(ty, rvalue, 0);
                         self.ctx.values.insert(id, Value::Register(value));
                     }
@@ -770,13 +835,13 @@ impl<'a> FunctionCompileContext<'a> {
                 let return_size = return_ty.map(|rt| self.ctx.id_type_size(rt)).unwrap_or(0);
                 if return_size > 0 {
                     sig.returns.push(AbiParam::new(
-                        self.ctx.get_cranelift_type(return_ty.unwrap()),
+                        self.ctx.id_cranelift_type(return_ty.unwrap()),
                     ));
                 }
 
                 for param in params.borrow().iter() {
                     sig.params
-                        .push(AbiParam::new(self.ctx.get_cranelift_type(*param)));
+                        .push(AbiParam::new(self.ctx.id_cranelift_type(*param)));
                 }
 
                 let name = self.ctx.get_symbol(name);
@@ -1206,69 +1271,25 @@ impl<'a> FunctionCompileContext<'a> {
     }
 
     #[instrument(skip_all)]
-    fn perform_member_access(
-        &mut self,
-        id: NodeId,
+    fn unroll_member_access(
+        &self,
         value: NodeId,
         member: NodeId,
+        unrolled: &mut Vec<NodeId>,
     ) -> EmptyDraftResult {
-        self.compile_id(value)?;
-
-        // println!(
-        //     "Performing member access on:\n\t{:?}({:?})\n\t{:?}({:?})",
-        //     self.ctx.nodes[value].ty(),
-        //     self.ctx.ranges[value],
-        //     self.ctx.nodes[member].ty(),
-        //     self.ctx.ranges[member],
-        // );
-
-        let symbol_member = match self.ctx.nodes[member].clone() {
-            Node::Symbol(_) => Some(member),
-            Node::StructDeclParam { name, .. } => Some(name),
-            _ => None,
-        };
-
-        if let Some(member) = symbol_member {
-            let offset = self.get_member_offset(value, member)?;
-
-            let mut pointiness = 0;
-            let mut ty = self.ctx.get_type(value);
-            while let Type::Pointer(inner) = ty {
-                pointiness += 1;
-                ty = self.ctx.get_type(inner);
+        for &id in &[value, member] {
+            match self.ctx.nodes[id].clone() {
+                Node::Symbol(_) => unrolled.push(id),
+                Node::ArrayAccess { array, index } => {
+                    self.unroll_member_access(array, index, unrolled)?
+                }
+                Node::StructDeclParam { name, .. } => unrolled.push(name),
+                Node::MemberAccess {
+                    value: inner_value,
+                    member: inner_member,
+                } => self.unroll_member_access(inner_value, inner_member, unrolled)?,
+                a => todo!("Unroll member access for value node {:?}", a),
             }
-
-            let mut value = self.id_value(value);
-
-            // Dereference the pointer until we get to the actual value
-            // Stopping at 1 because structs are always reference types anyway, so member access on a pointer to a struct
-            // is effectively the same as member access on a struct
-            while pointiness > 1 {
-                value = self.load(types::I64, value, 0);
-                pointiness -= 1;
-            }
-
-            if offset != 0 {
-                value = self.builder.ins().iadd_imm(value, offset as i64);
-            }
-
-            self.ctx.values.insert(id, Value::Reference(value));
-        } else if let Node::MemberAccess {
-            value: inner_value,
-            member: inner_member,
-        } = self.ctx.nodes[member]
-        {
-            let a = value;
-            let b = inner_value;
-            let c = inner_member;
-
-            // tmp = a.b
-
-            // Perform tmp.c
-
-            todo!("oh dear");
-        } else {
-            todo!("This should have already been rewritten!");
         }
 
         Ok(())
@@ -1349,28 +1370,31 @@ impl<'a> FunctionCompileContext<'a> {
     }
 
     #[instrument(skip_all)]
-    fn get_member_offset(&mut self, value: NodeId, member: NodeId) -> DraftResult<u32> {
+    fn get_member_offset(
+        &mut self,
+        mut value_ty: Type,
+        member: NodeId,
+    ) -> DraftResult<(u32, Type)> {
         let member_name = self.ctx.get_symbol(member);
 
-        let mut ty = self.ctx.get_type(value);
-        while let Type::Pointer(inner) = ty {
-            ty = self.ctx.get_type(inner);
+        while let Type::Pointer(inner) = value_ty {
+            value_ty = self.ctx.get_type(inner);
         }
 
-        if let Type::Array(_, _) | Type::String = ty {
+        if let Type::Array(_, _) | Type::String = value_ty {
             let data_sym = self.ctx.string_interner.get_or_intern("data");
             let len_sym = self.ctx.string_interner.get_or_intern("len");
             if member_name.0 == data_sym {
-                return Ok(0);
+                return Ok((0, Type::Infer(None)));
             } else if member_name.0 == len_sym {
-                return Ok(self.ctx.get_pointer_type().bytes());
+                return Ok((self.ctx.get_pointer_type().bytes(), Type::Infer(None)));
             } else {
                 panic!()
             }
         }
 
-        let Type::Struct { params, .. } = ty else {
-            panic!("Not a struct: {:?}", ty);
+        let Type::Struct { params, .. } = value_ty else {
+            panic!("Not a struct: {:?}", value_ty);
         };
 
         let fields = params.clone();
@@ -1387,7 +1411,7 @@ impl<'a> FunctionCompileContext<'a> {
             let field_name = self.ctx.nodes[field_name].as_symbol().unwrap();
 
             if field_name == member_name {
-                return Ok(offset);
+                return Ok((offset, self.ctx.get_type(*field)));
             }
 
             offset += self.ctx.id_type_size(*field);
@@ -1397,7 +1421,7 @@ impl<'a> FunctionCompileContext<'a> {
 
         return Err(CompileError::Generic(
             format!("Member not found: {:?}", member_name_str),
-            self.ctx.ranges[value],
+            self.ctx.ranges[member],
         ));
     }
 
@@ -1496,7 +1520,13 @@ impl<'a> FunctionCompileContext<'a> {
     #[instrument(skip_all)]
     fn id_value(&mut self, id: NodeId) -> CraneliftValue {
         let value = self.ctx.values[&id];
+        let value_ty = self.ctx.get_type(id);
 
+        self.id_value_from_parts(value, value_ty)
+    }
+
+    #[instrument(skip_all)]
+    fn id_value_from_parts(&mut self, value: Value, ty: Type) -> CraneliftValue {
         match value {
             Value::Func(func_id) => {
                 let func_ref = *self.declared_func_ids.entry(func_id).or_insert_with(|| {
@@ -1512,24 +1542,24 @@ impl<'a> FunctionCompileContext<'a> {
             Value::Register(val) => val,
             Value::Reference(r) => {
                 // aggregate types don't fit into a register. Anything else can be eagerly "promoted"
-                if self.ctx.id_is_aggregate_type(id) {
+                if self.ctx.is_aggregate_type(ty.clone()) {
                     r
                 } else {
                     self.builder
                         .ins()
-                        .load(self.ctx.get_cranelift_type(id), MemFlags::new(), r, 0)
+                        .load(self.ctx.cranelift_type(ty), MemFlags::new(), r, 0)
                 }
             }
             Value::StackSlot(slot) => {
                 // aggregate types don't fit into a register. Anything else can be eagerly "promoted"
-                if self.ctx.id_is_aggregate_type(id) {
+                if self.ctx.is_aggregate_type(ty.clone()) {
                     self.builder
                         .ins()
                         .stack_addr(self.ctx.get_pointer_type(), slot, 0)
                 } else {
                     self.builder
                         .ins()
-                        .stack_load(self.ctx.get_cranelift_type(id), slot, 0)
+                        .stack_load(self.ctx.cranelift_type(ty), slot, 0)
                 }
             }
         }
@@ -1559,12 +1589,12 @@ impl<'a> ToplevelCompileContext<'a> {
 
                 for &param in params.borrow().iter() {
                     sig.params
-                        .push(AbiParam::new(self.ctx.get_cranelift_type(param)));
+                        .push(AbiParam::new(self.ctx.id_cranelift_type(param)));
                 }
 
                 if let Some(return_ty) = return_ty {
                     sig.returns
-                        .push(AbiParam::new(self.ctx.get_cranelift_type(return_ty)));
+                        .push(AbiParam::new(self.ctx.id_cranelift_type(return_ty)));
                 }
 
                 let func_id = self
@@ -1642,11 +1672,11 @@ impl<'a> ToplevelCompileContext<'a> {
 
                         if let Some(ty) = ty {
                             sig.params
-                                .push(AbiParam::new(self.ctx.get_cranelift_type(ty)));
+                                .push(AbiParam::new(self.ctx.id_cranelift_type(ty)));
                         }
 
                         sig.returns
-                            .push(AbiParam::new(self.ctx.get_cranelift_type(base)));
+                            .push(AbiParam::new(self.ctx.id_cranelift_type(base)));
 
                         let func_id = self
                             .ctx

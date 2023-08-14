@@ -417,7 +417,7 @@ impl Context {
         Ok(())
     }
 
-    // // #[instrument(skip_all)]
+    // #[instrument(skip_all)]
     // fn rewrite_member_access(&mut self, id: NodeId) {
     //     let Node::MemberAccess { value, member } = self.nodes[id] else {
     //         // unreachable!()
@@ -439,13 +439,13 @@ impl Context {
     //             // self.rewrite_member_access(nested_member);
     //             // self.rewrite_member_access(member);
 
-    //             // println!(
-    //             //     "Rewriting member access on:\n\t{:?}({:?})\n\t{:?}({:?})",
-    //             //     self.nodes[value].ty(),
-    //             //     self.ranges[value],
-    //             //     self.nodes[member].ty(),
-    //             //     self.ranges[member],
-    //             // );
+    //             println!(
+    //                 "Rewriting member access on:\n\t{:?}({:?})\n\t{:?}({:?})",
+    //                 self.nodes[value].ty(),
+    //                 self.ranges[value],
+    //                 self.nodes[member].ty(),
+    //                 self.ranges[member],
+    //             );
 
     //             // id: a.(b.c)
     //             // value: a
@@ -465,17 +465,14 @@ impl Context {
     //             self.nodes[member] = a_dot_b;
     //             self.nodes[id] = that_dot_c;
 
-    //             self.completes.remove(&id);
-    //             // self.completes.remove(&value);
-    //             self.completes.remove(&member);
-    //             // self.completes.remove(&nested_value);
-    //             // self.completes.remove(&nested_member);
+    //             self.types.insert(member, self.types[&nested_value].clone());
+    //             self.types.insert(id, self.types[&nested_member].clone());
 
-    //             self.assign_type(id);
-    //             // self.assign_type(value);
-    //             self.assign_type(member);
-    //             // self.assign_type(nested_value);
-    //             // self.assign_type(nested_member);
+    //             println!(
+    //                 "Type:\na_dot_b:{:?}\nthat_dot_c:{:?}\n",
+    //                 self.get_type(id),
+    //                 self.get_type(member)
+    //             );
     //         }
     //         a => todo!("Rewrite member access for member {}", a.ty()),
     //     }
