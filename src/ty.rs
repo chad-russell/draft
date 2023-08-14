@@ -959,48 +959,12 @@ impl Context {
                     return false;
                 }
 
-                for &param in params.borrow().iter() {
-                    let param_ty = self.get_type(param);
-
-                    let Node::StructDeclParam { transparent, .. } = self.nodes[param] else {
-                        unreachable!()
-                    };
-
-                    if !transparent {
-                        continue;
-                    }
-
-                    // Only structs are eligible for being transparent for now
-                    let Type::Struct {
-                        params: field_params,
-                        ..
-                    } = param_ty
-                    else {
-                        self.errors.push(CompileError::Node(
-                            "Only structs can be transparent".to_string(),
-                            param,
-                        ));
-                        return true;
-                    };
-
-                    for &fp in field_params.borrow().iter() {
-                        let Node::StructDeclParam { name, .. } = self.nodes[fp] else {
-                            unreachable!()
-                        };
-
-                        let sym = self.get_symbol(name);
-
-                        let node_id = self.push_node(
-                            self.ranges[param],
-                            Node::MemberAccess {
-                                value: param,
-                                member: fp,
-                            },
-                        );
-
-                        self.scope_insert_into_scope_id(sym, node_id, scope);
-                    }
-                }
+                // for &param in params.borrow().iter() {
+                //     if !self.insert_transparent_members(param, scope) {
+                //         self.deferreds.push(id);
+                //         return false;
+                //     }
+                // }
             }
             Node::EnumDefinition { name, params } => {
                 // don't directly codegen a polymorph, wait until it's copied first
@@ -2308,5 +2272,84 @@ impl Context {
                 value,
             ));
         }
+    }
+
+    #[instrument(skip_all)]
+    pub fn insert_transparent_members(&mut self, param: NodeId, scope: ScopeId) -> bool {
+        let param_ty = self.get_type(param);
+
+        let Node::StructDeclParam { transparent, .. } = self.nodes[param] else {
+            unreachable!()
+        };
+
+        if !transparent {
+            return false;
+        }
+
+        // Only structs are eligible for being transparent for now
+        let Type::Struct {
+            params: field_params,
+            ..
+        } = param_ty
+        else {
+            self.errors.push(CompileError::Node(
+                "Only structs can be transparent".to_string(),
+                param,
+            ));
+            return true;
+        };
+
+        for &fp in field_params.borrow().iter() {
+            let Node::StructDeclParam { name, .. } = self.nodes[fp] else {
+                unreachable!()
+            };
+
+            let sym = self.get_symbol(name);
+
+            let node_id = self.push_node(
+                self.ranges[param],
+                Node::MemberAccess {
+                    value: param,
+                    member: fp,
+                },
+            );
+
+            self.scope_insert_into_scope_id(sym, node_id, scope);
+        }
+
+        // let mut should_defer = false;
+        // for param in params.borrow().iter() {
+        //     if !self.types.contains_key(param) {
+        //         should_defer = true;
+        //         self.deferreds.push(*param);
+        //     }
+        // }
+
+        // self.types.insert(
+        //     id,
+        //     Type::Struct {
+        //         name,
+        //         params: params.clone(),
+        //         decl: Some(id),
+        //     },
+        // );
+
+        // if let Some(name) = name {
+        //     self.match_types(id, name);
+        // }
+
+        // if should_defer {
+        //     self.deferreds.push(id);
+        //     return false;
+        // }
+
+        // for &param in params.borrow().iter() {
+        //     if !self.insert_transparent_members(param, scope) {
+        //         self.deferreds.push(id);
+        //         return false;
+        //     }
+        // }
+
+        return true;
     }
 }

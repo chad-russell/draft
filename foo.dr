@@ -6,13 +6,11 @@ struct Foo {
 }
 
 struct Bar {
-    f: Foo,
-}
-
-fn sum_foo(f: *Foo) i64 {
-    return f.x + f.y;
+    #transparent f: Foo,
 }
 
 fn main() i64 {
+    let #transparent b = Bar { Foo { 1, 2 } };
+    (f.x + f.y) |> print_i64;
     return 0;
 }
