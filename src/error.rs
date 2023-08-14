@@ -10,3 +10,5 @@ pub enum CompileError {
 }
 
 pub type DraftResult<T> = Result<T, CompileError>;
+
+pub type EmptyDraftResult = DraftResult<()>;

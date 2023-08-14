@@ -8,8 +8,8 @@ use cranelift_jit::JITModule;
 use tracing::instrument;
 
 use crate::{
-    AddressableMatch, Args, CompileError, DraftResult, Location, Node, NodeId, Range, RopeySource,
-    Scope, ScopeId, Scopes, Source, SourceInfo, StaticStrSource, Sym, Type, TypeMatch,
+    AddressableMatch, Args, CompileError, EmptyDraftResult, Location, Node, NodeId, Range,
+    RopeySource, Scope, ScopeId, Scopes, Source, SourceInfo, StaticStrSource, Sym, Type, TypeMatch,
     UnificationData, Value,
 };
 
@@ -310,7 +310,7 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn prepare(&mut self) -> DraftResult<()> {
+    pub fn prepare(&mut self) -> EmptyDraftResult {
         for id in self.top_level.clone() {
             self.assign_type(id);
             self.unify_types();
@@ -327,36 +327,45 @@ impl Context {
             hardstop += 1;
         }
 
-        // for id in 0..self.nodes.len() {
-        //     if let Node::Cast { ty, value } = self.nodes[NodeId(id)] {
-        //         // todo(chad): find a more robust way of doing this.
-        //         // Basically looping through all nodes isn't great because we will also loop through
-        //         // nodes in polymorph sources. So for now if the node hasn't been typechecked, then we just skip it.
+        for id in 0..self.nodes.len() {
+            let id = NodeId(id);
 
-        //         if !self.types.contains_key(&ty) || !self.types.contains_key(&value) {
-        //             continue;
-        //         }
+            match self.nodes[id] {
+                Node::Cast { ty, value } => {
+                    // todo(chad): find a more robust way of doing this.
+                    // Basically looping through all nodes isn't great because we will also loop through
+                    // nodes in polymorph sources. So for now if the node hasn't been typechecked, then we just skip it.
 
-        //         let ty = self.types[&ty].clone();
-        //         let value_ty = self.types[&value].clone();
+                    if !self.types.contains_key(&ty) || !self.types.contains_key(&value) {
+                        continue;
+                    }
 
-        //         let Type::Pointer(_) = ty else {
-        //             self.errors.push(CompileError::Node(
-        //                 format!("Can only cast to pointer types (casting to {:?})", ty),
-        //                 NodeId(id),
-        //             ));
-        //             break;
-        //         };
+                    let ty = self.types[&ty].clone();
+                    let value_ty = self.types[&value].clone();
 
-        //         let Type::Pointer(_) = value_ty else {
-        //             self.errors.push(CompileError::Node(
-        //                 format!("Can only cast from pointer types (found {:?})", value_ty),
-        //                 NodeId(id),
-        //             ));
-        //             break;
-        //         };
-        //     }
-        // }
+                    let Type::Pointer(_) = ty else {
+                        self.errors.push(CompileError::Node(
+                            format!("Can only cast to pointer types (casting to {:?})", ty),
+                            id,
+                        ));
+                        break;
+                    };
+
+                    let Type::Pointer(_) = value_ty else {
+                        self.errors.push(CompileError::Node(
+                            format!("Can only cast from pointer types (found {:?})", value_ty),
+                            id,
+                        ));
+                        break;
+                    };
+                }
+                // Node::MemberAccess { .. } => {
+                //     // Rewrite anything of the form `a.(b.c)` to `(a.b).c`
+                //     self.rewrite_member_access(id);
+                // }
+                _ => {}
+            }
+        }
 
         if self.args.print_type_matches {
             println!(
@@ -407,6 +416,70 @@ impl Context {
 
         Ok(())
     }
+
+    // // #[instrument(skip_all)]
+    // fn rewrite_member_access(&mut self, id: NodeId) {
+    //     let Node::MemberAccess { value, member } = self.nodes[id] else {
+    //         // unreachable!()
+    //         return;
+    //     };
+
+    //     // let Node::Symbol(_) = self.nodes[value] else {
+    //     //     todo!("Rewrite member access for value {}", self.nodes[value].ty())
+    //     // };
+
+    //     // a.(b.c) -> (a.b).c
+    //     // dot(a, dot(b, c)) -> dot(dot(a, b), c)
+    //     match self.nodes[member].clone() {
+    //         Node::Symbol(_) | Node::StructDeclParam { .. } => {}
+    //         Node::MemberAccess {
+    //             value: nested_value,
+    //             member: nested_member,
+    //         } => {
+    //             // self.rewrite_member_access(nested_member);
+    //             // self.rewrite_member_access(member);
+
+    //             // println!(
+    //             //     "Rewriting member access on:\n\t{:?}({:?})\n\t{:?}({:?})",
+    //             //     self.nodes[value].ty(),
+    //             //     self.ranges[value],
+    //             //     self.nodes[member].ty(),
+    //             //     self.ranges[member],
+    //             // );
+
+    //             // id: a.(b.c)
+    //             // value: a
+    //             // member: b.c
+    //             // nested_value: b
+    //             // nested_member: c
+
+    //             let a_dot_b = Node::MemberAccess {
+    //                 value,
+    //                 member: nested_value,
+    //             };
+    //             let that_dot_c = Node::MemberAccess {
+    //                 value: member,
+    //                 member: nested_member,
+    //             };
+
+    //             self.nodes[member] = a_dot_b;
+    //             self.nodes[id] = that_dot_c;
+
+    //             self.completes.remove(&id);
+    //             // self.completes.remove(&value);
+    //             self.completes.remove(&member);
+    //             // self.completes.remove(&nested_value);
+    //             // self.completes.remove(&nested_member);
+
+    //             self.assign_type(id);
+    //             // self.assign_type(value);
+    //             self.assign_type(member);
+    //             // self.assign_type(nested_value);
+    //             // self.assign_type(nested_member);
+    //         }
+    //         a => todo!("Rewrite member access for member {}", a.ty()),
+    //     }
+    // }
 
     #[instrument(skip_all)]
     pub fn get_symbol(&self, sym_id: NodeId) -> Sym {

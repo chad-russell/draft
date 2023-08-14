@@ -18,8 +18,8 @@ use cranelift_module::{default_libcall_names, DataDescription, FuncId, Init, Lin
 use tracing::instrument;
 
 use crate::{
-    ArrayLen, AsCastStyle, CompileError, Context, DraftResult, IdVec, Node, NodeId, Op,
-    StaticMemberResolution, Type,
+    ArrayLen, AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, Node,
+    NodeId, Op, StaticMemberResolution, Type,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -63,7 +63,7 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn predeclare_string_constants(&mut self) -> DraftResult<()> {
+    pub fn predeclare_string_constants(&mut self) -> EmptyDraftResult {
         let data_id = self
             .module
             .declare_data("string_constants", Linkage::Local, false, false)
@@ -91,7 +91,7 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn predeclare_functions(&mut self) -> DraftResult<()> {
+    pub fn predeclare_functions(&mut self) -> EmptyDraftResult {
         for t in self.topo.clone() {
             if !self.completes.contains(&t) {
                 continue;
@@ -104,7 +104,7 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn define_functions(&mut self) -> DraftResult<()> {
+    pub fn define_functions(&mut self) -> EmptyDraftResult {
         let mut codegen_ctx = self.module.make_context();
         let mut func_ctx = FunctionBuilderContext::new();
 
@@ -126,7 +126,7 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn predeclare_function(&mut self, id: NodeId) -> DraftResult<()> {
+    pub fn predeclare_function(&mut self, id: NodeId) -> EmptyDraftResult {
         if let Node::FnDefinition {
             name,
             params,
@@ -179,7 +179,7 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn call_fn(&mut self, fn_name: &str) -> DraftResult<()> {
+    pub fn call_fn(&mut self, fn_name: &str) -> EmptyDraftResult {
         let fn_name_interned = self.string_interner.get_or_intern(fn_name);
 
         let node_id = self
@@ -381,7 +381,7 @@ struct FunctionCompileContext<'a> {
 
 impl<'a> FunctionCompileContext<'a> {
     #[instrument(skip_all)]
-    pub fn compile_id(&mut self, id: NodeId) -> DraftResult<()> {
+    pub fn compile_id(&mut self, id: NodeId) -> EmptyDraftResult {
         // idempotency
         match self.ctx.values.get(&id) {
             None => {}
@@ -683,41 +683,7 @@ impl<'a> FunctionCompileContext<'a> {
                 Ok(())
             }
             Node::MemberAccess { value, member } => {
-                self.compile_id(value)?;
-
-                let Node::Symbol(_) = &self.ctx.nodes[member] else {
-                    todo!("Member access for {:?}", &self.ctx.nodes[member])
-                };
-
-                let offset = self.get_member_offset(value, member)?;
-
-                let mut pointiness = 0;
-                let mut ty = self.ctx.get_type(value);
-                while let Type::Pointer(inner) = ty {
-                    pointiness += 1;
-                    ty = self.ctx.get_type(inner);
-                }
-
-                let mut value = self.id_value(value);
-
-                // Dereference the pointer until we get to the actual value
-                // Stopping at 1 because structs are always reference types anyway, so member access on a pointer to a struct
-                // is effectively the same as member access on a struct
-                while pointiness > 1 {
-                    value = self.load(types::I64, value, 0);
-                    pointiness -= 1;
-                }
-
-                if offset != 0 {
-                    value = self.builder.ins().iadd_imm(value, offset as i64);
-                }
-
-                if self.ctx.id_is_aggregate_type(id) {
-                    self.ctx.values.insert(id, Value::Reference(value));
-                } else {
-                    self.ctx.values.insert(id, Value::Reference(value));
-                }
-
+                self.perform_member_access(id, value, member)?;
                 Ok(())
             }
             Node::AddressOf(a) => {
@@ -1240,7 +1206,76 @@ impl<'a> FunctionCompileContext<'a> {
     }
 
     #[instrument(skip_all)]
-    fn compile_ids(&mut self, ids: IdVec) -> DraftResult<()> {
+    fn perform_member_access(
+        &mut self,
+        id: NodeId,
+        value: NodeId,
+        member: NodeId,
+    ) -> EmptyDraftResult {
+        self.compile_id(value)?;
+
+        // println!(
+        //     "Performing member access on:\n\t{:?}({:?})\n\t{:?}({:?})",
+        //     self.ctx.nodes[value].ty(),
+        //     self.ctx.ranges[value],
+        //     self.ctx.nodes[member].ty(),
+        //     self.ctx.ranges[member],
+        // );
+
+        let symbol_member = match self.ctx.nodes[member].clone() {
+            Node::Symbol(_) => Some(member),
+            Node::StructDeclParam { name, .. } => Some(name),
+            _ => None,
+        };
+
+        if let Some(member) = symbol_member {
+            let offset = self.get_member_offset(value, member)?;
+
+            let mut pointiness = 0;
+            let mut ty = self.ctx.get_type(value);
+            while let Type::Pointer(inner) = ty {
+                pointiness += 1;
+                ty = self.ctx.get_type(inner);
+            }
+
+            let mut value = self.id_value(value);
+
+            // Dereference the pointer until we get to the actual value
+            // Stopping at 1 because structs are always reference types anyway, so member access on a pointer to a struct
+            // is effectively the same as member access on a struct
+            while pointiness > 1 {
+                value = self.load(types::I64, value, 0);
+                pointiness -= 1;
+            }
+
+            if offset != 0 {
+                value = self.builder.ins().iadd_imm(value, offset as i64);
+            }
+
+            self.ctx.values.insert(id, Value::Reference(value));
+        } else if let Node::MemberAccess {
+            value: inner_value,
+            member: inner_member,
+        } = self.ctx.nodes[member]
+        {
+            let a = value;
+            let b = inner_value;
+            let c = inner_member;
+
+            // tmp = a.b
+
+            // Perform tmp.c
+
+            todo!("oh dear");
+        } else {
+            todo!("This should have already been rewritten!");
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    fn compile_ids(&mut self, ids: IdVec) -> EmptyDraftResult {
         for id in ids.borrow().iter() {
             self.compile_id(*id)?;
         }
@@ -1249,7 +1284,7 @@ impl<'a> FunctionCompileContext<'a> {
     }
 
     #[instrument(skip_all)]
-    fn compile_id_for_call(&mut self, id: NodeId, func: NodeId, params: IdVec) -> DraftResult<()> {
+    fn compile_id_for_call(&mut self, id: NodeId, func: NodeId, params: IdVec) -> EmptyDraftResult {
         self.compile_id(func)?;
 
         let param_ids = params.clone();
@@ -1315,7 +1350,7 @@ impl<'a> FunctionCompileContext<'a> {
 
     #[instrument(skip_all)]
     fn get_member_offset(&mut self, value: NodeId, member: NodeId) -> DraftResult<u32> {
-        let member_name = self.ctx.nodes[member].as_symbol().unwrap();
+        let member_name = self.ctx.get_symbol(member);
 
         let mut ty = self.ctx.get_type(value);
         while let Type::Pointer(inner) = ty {
@@ -1358,8 +1393,10 @@ impl<'a> FunctionCompileContext<'a> {
             offset += self.ctx.id_type_size(*field);
         }
 
+        let member_name_str = self.ctx.get_symbol_str(member);
+
         return Err(CompileError::Generic(
-            "Member not found".to_string(),
+            format!("Member not found: {:?}", member_name_str),
             self.ctx.ranges[value],
         ));
     }
@@ -1500,7 +1537,7 @@ impl<'a> FunctionCompileContext<'a> {
 }
 
 impl<'a> ToplevelCompileContext<'a> {
-    pub fn compile_toplevel_id(&mut self, id: NodeId) -> DraftResult<()> {
+    pub fn compile_toplevel_id(&mut self, id: NodeId) -> EmptyDraftResult {
         // idempotency
         match self.ctx.values.get(&id) {
             None | Some(Value::Func(_)) => {}

@@ -6,11 +6,26 @@ struct Foo {
 }
 
 struct Bar {
-    #transparent f: Foo,
+    ohno_bar: i64,
+    #transparent foo: Foo,
 }
 
+// struct Baz {
+    // ohno_baz: i64,
+    // #transparent bar: Bar,
+// }
+
+// struct Qux {
+    // ohno_qux: i64,
+    // #transparent baz: Baz,
+// }
+
 fn main() i64 {
-    let #transparent b = Bar { Foo { 1, 2 } };
-    (f.x + f.y) |> print_i64;
+    // let #transparent f = Foo { 1, 2 };
+    let #transparent b = Bar { 999, Foo { 1, 2 } };
+    // let #transparent b = Baz { 999, Bar { 999, Foo { 1, 2 } } };
+    // let #transparent q = Qux { 999, Baz { 999, Bar { 999, Foo { 1, 2 } } } };
+    y |> print_i64;
+    
     return 0;
 }

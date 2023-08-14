@@ -1,8 +1,10 @@
+use std::collections::BTreeMap;
+
 use tracing::instrument;
 
 use crate::{
-    AsCastStyle, CompileError, Context, DraftResult, IdVec, Node, NodeElse, NodeId,
-    NumericSpecification, Op, ParseTarget, ScopeId, StaticMemberResolution, Sym,
+    AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, Node, NodeElse,
+    NodeId, NumericSpecification, Op, ParseTarget, ScopeId, StaticMemberResolution, Sym,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -933,14 +935,6 @@ impl Context {
                     self.assign_type(param);
                 }
 
-                let mut should_defer = false;
-                for param in params.borrow().iter() {
-                    if !self.types.contains_key(param) {
-                        should_defer = true;
-                        self.deferreds.push(*param);
-                    }
-                }
-
                 self.types.insert(
                     id,
                     Type::Struct {
@@ -954,17 +948,30 @@ impl Context {
                     self.match_types(id, name);
                 }
 
+                let mut should_defer = false;
+                for param in params.borrow().iter() {
+                    if !self.types.contains_key(param) {
+                        should_defer = true;
+                        self.deferreds.push(*param);
+                    }
+                }
+
                 if should_defer {
                     self.deferreds.push(id);
                     return false;
                 }
 
-                // for &param in params.borrow().iter() {
-                //     if !self.insert_transparent_members(param, scope) {
-                //         self.deferreds.push(id);
-                //         return false;
-                //     }
-                // }
+                let mut scope_map = Default::default();
+                for &param in params.borrow().iter() {
+                    if !self.insert_transparent_members(param, &mut scope_map) {
+                        self.deferreds.push(id);
+                        return false;
+                    }
+                }
+
+                for (k, v) in scope_map {
+                    self.scope_insert_into_scope_id(k, v, scope);
+                }
             }
             Node::EnumDefinition { name, params } => {
                 // don't directly codegen a polymorph, wait until it's copied first
@@ -1038,8 +1045,6 @@ impl Context {
             Node::MemberAccess { value, member, .. } => {
                 self.assign_type(value);
 
-                let member_name_sym = self.get_symbol(member);
-
                 let mut value_ty = self.get_type(value);
 
                 while let Type::Pointer(ty) = value_ty {
@@ -1057,24 +1062,36 @@ impl Context {
                             );
                         };
 
-                        match self.scope_get_with_scope_id(member_name_sym, scope) {
-                            Some(found) => {
-                                self.match_types(id, found);
+                        match &self.nodes[member] {
+                            Node::Symbol(member_name_sym) => {
+                                match self.scope_get_with_scope_id(*member_name_sym, scope) {
+                                    Some(found) => {
+                                        self.match_types(id, found);
+                                    }
+                                    None => {
+                                        self.errors.push(CompileError::Node(
+                                            "Could not find member".to_string(),
+                                            member,
+                                        ));
+                                    }
+                                }
                             }
-                            None => {
-                                self.errors.push(CompileError::Node(
-                                    "Could not find member".to_string(),
-                                    member,
-                                ));
+                            Node::StructDeclParam { .. } | Node::MemberAccess { .. } => {
+                                self.match_types(id, member);
                             }
+                            a => self.errors.push(CompileError::Node(
+                                format!("Cannot perform member access for member {:?}", a),
+                                id,
+                            )),
                         }
                     }
                     Type::Struct {
                         decl: None, params, ..
                     } => {
+                        let member_name_sym = self.get_symbol(member);
+
                         let field_ids = params.clone();
                         let mut found = false;
-
                         for &field in field_ids.borrow().iter() {
                             let field_name = match &self.nodes[field] {
                                 Node::ValueParam {
@@ -1110,6 +1127,8 @@ impl Context {
                         }
                     }
                     Type::Array(array_ty, len) => {
+                        let member_name_sym = self.get_symbol(member);
+
                         let name = self.string_interner.resolve(member_name_sym.0).unwrap();
                         match name {
                             "len" => {
@@ -1146,6 +1165,8 @@ impl Context {
                         }
                     }
                     Type::String => {
+                        let member_name_sym = self.get_symbol(member);
+
                         let name = self.string_interner.resolve(member_name_sym.0).unwrap();
                         match name {
                             "len" => {
@@ -1781,45 +1802,6 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    fn propagate_transparency(&mut self, type_id: NodeId, name: NodeId, scope: ScopeId) {
-        let mut ty = self.get_type(type_id);
-
-        while let Type::Pointer(base_ty) = ty {
-            ty = self.types[&base_ty].clone();
-        }
-
-        let Type::Struct { params, .. } = ty else {
-            self.errors.push(CompileError::Node(
-                format!("Type not eligible for transparency: {:?}", ty),
-                name,
-            ));
-            return;
-        };
-
-        for &param in params.borrow().iter() {
-            let Node::StructDeclParam {
-                name: param_name, ..
-            } = self.nodes[param]
-            else {
-                unreachable!()
-            };
-
-            let sym = self.get_symbol(param_name);
-
-            let transparent_member_access = self.push_node(
-                self.ranges[param],
-                Node::MemberAccess {
-                    value: name,
-                    member: param_name,
-                },
-            );
-            self.assign_type(transparent_member_access);
-
-            self.scope_insert_into_scope_id(sym, transparent_member_access, scope);
-        }
-    }
-
-    #[instrument(skip_all)]
     fn assign_type_value_param(&mut self, value: NodeId, id: NodeId, name: Option<NodeId>) {
         self.assign_type(value);
         self.check_not_unspecified_polymorph(value);
@@ -2209,7 +2191,7 @@ impl Context {
         params: IdVec,
         name: NodeId,
         struct_literal_id: NodeId,
-    ) -> DraftResult<()> {
+    ) -> EmptyDraftResult {
         let Some(Type::Struct { params: decl, .. }) = self.types.get(&name) else {
             return Err(CompileError::Node(
                 "Not a struct".to_string(),
@@ -2275,7 +2257,53 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn insert_transparent_members(&mut self, param: NodeId, scope: ScopeId) -> bool {
+    fn propagate_transparency(&mut self, type_id: NodeId, name: NodeId, scope: ScopeId) {
+        let mut ty = self.get_type(type_id);
+
+        while let Type::Pointer(base_ty) = ty {
+            ty = self.types[&base_ty].clone();
+        }
+
+        let Type::Struct {
+            decl: Some(decl), ..
+        } = ty
+        else {
+            self.errors.push(CompileError::Node(
+                format!("Type not eligible for transparency: {:?}", ty),
+                name,
+            ));
+            return;
+        };
+
+        let Node::StructDefinition {
+            scope: struct_scope,
+            ..
+        } = self.nodes[decl].clone()
+        else {
+            unreachable!()
+        };
+
+        // todo(chad): @clone
+        for (entry_name, entry) in self.scopes[struct_scope].entries.clone() {
+            let transparent_member_access = self.push_node(
+                self.ranges[entry],
+                Node::MemberAccess {
+                    value: name,
+                    member: entry,
+                },
+            );
+            self.assign_type(transparent_member_access);
+
+            self.scope_insert_into_scope_id(entry_name, transparent_member_access, scope);
+        }
+    }
+
+    #[instrument(skip_all)]
+    pub fn insert_transparent_members(
+        &mut self,
+        param: NodeId,
+        scope_map: &mut BTreeMap<Sym, NodeId>,
+    ) -> bool {
         let param_ty = self.get_type(param);
 
         let Node::StructDeclParam { transparent, .. } = self.nodes[param] else {
@@ -2283,12 +2311,12 @@ impl Context {
         };
 
         if !transparent {
-            return false;
+            return true;
         }
 
         // Only structs are eligible for being transparent for now
         let Type::Struct {
-            params: field_params,
+            decl: Some(struct_decl),
             ..
         } = param_ty
         else {
@@ -2299,56 +2327,25 @@ impl Context {
             return true;
         };
 
-        for &fp in field_params.borrow().iter() {
-            let Node::StructDeclParam { name, .. } = self.nodes[fp] else {
-                unreachable!()
-            };
+        let Node::StructDefinition { scope, .. } = self.nodes[struct_decl].clone() else {
+            unreachable!()
+        };
 
-            let sym = self.get_symbol(name);
-
-            let node_id = self.push_node(
+        // Insert everything from that struct's scope into this scope.
+        // Since we've already verified type-checking has passed for the param,
+        // everything that needs to be recursively pulled in should already be in scope
+        // todo(chad): @clone
+        for (k, v) in self.scopes[scope].entries.clone() {
+            let transparent_member_access = self.push_node(
                 self.ranges[param],
                 Node::MemberAccess {
                     value: param,
-                    member: fp,
+                    member: v,
                 },
             );
 
-            self.scope_insert_into_scope_id(sym, node_id, scope);
+            scope_map.insert(k, transparent_member_access);
         }
-
-        // let mut should_defer = false;
-        // for param in params.borrow().iter() {
-        //     if !self.types.contains_key(param) {
-        //         should_defer = true;
-        //         self.deferreds.push(*param);
-        //     }
-        // }
-
-        // self.types.insert(
-        //     id,
-        //     Type::Struct {
-        //         name,
-        //         params: params.clone(),
-        //         decl: Some(id),
-        //     },
-        // );
-
-        // if let Some(name) = name {
-        //     self.match_types(id, name);
-        // }
-
-        // if should_defer {
-        //     self.deferreds.push(id);
-        //     return false;
-        // }
-
-        // for &param in params.borrow().iter() {
-        //     if !self.insert_transparent_members(param, scope) {
-        //         self.deferreds.push(id);
-        //         return false;
-        //     }
-        // }
 
         return true;
     }

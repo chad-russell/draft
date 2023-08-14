@@ -4,8 +4,8 @@ use string_interner::symbol::SymbolU32;
 use tracing::instrument;
 
 use crate::{
-    ArrayLen, AsCastStyle, CompileError, Context, DraftResult, IdVec, Node, NodeElse, NodeId,
-    Source, SourceInfo, StaticStrSource, Type,
+    ArrayLen, AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, Node,
+    NodeElse, NodeId, Source, SourceInfo, StaticStrSource, Type,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
@@ -678,7 +678,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    fn expect(&mut self, tok: Token) -> DraftResult<()> {
+    fn expect(&mut self, tok: Token) -> EmptyDraftResult {
         match self.source_info.top.tok {
             t if t == tok => {
                 self.pop();
@@ -709,7 +709,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse(&mut self) -> DraftResult<()> {
+    pub fn parse(&mut self) -> EmptyDraftResult {
         self.pop();
         self.pop();
 
@@ -2313,7 +2313,7 @@ impl Shunting {
 
 impl Context {
     #[instrument(skip_all)]
-    pub fn parse_file(&mut self, file_name: &str) -> DraftResult<()> {
+    pub fn parse_file(&mut self, file_name: &str) -> EmptyDraftResult {
         let mut source = self.make_source_info_from_file(file_name);
         let mut parser = Parser::from_source(self, &mut source);
 
@@ -2321,21 +2321,21 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn ropey_parse_file(&mut self, file_name: &str) -> DraftResult<()> {
+    pub fn ropey_parse_file(&mut self, file_name: &str) -> EmptyDraftResult {
         let mut source = self.make_ropey_source_info_from_file(file_name);
         let mut parser = Parser::from_source(self, &mut source);
         parser.parse()
     }
 
     #[instrument(skip_all)]
-    pub fn parse_str(&mut self, source: &'static str) -> DraftResult<()> {
+    pub fn parse_str(&mut self, source: &'static str) -> EmptyDraftResult {
         let mut source = SourceInfo::<StaticStrSource>::from_static_str(source);
         let mut parser = Parser::from_source(self, &mut source);
         parser.parse()
     }
 
     #[instrument(skip_all)]
-    pub fn parse_source<W: Source>(&mut self, source: &mut SourceInfo<W>) -> DraftResult<()> {
+    pub fn parse_source<W: Source>(&mut self, source: &mut SourceInfo<W>) -> EmptyDraftResult {
         let mut parser = Parser::<W>::from_source(self, source);
         parser.parse()
     }
@@ -2354,7 +2354,7 @@ impl Context {
         Rc::new(RefCell::new(vec))
     }
 
-    pub fn debug_tokens<W: Source>(&mut self, source: &mut SourceInfo<W>) -> DraftResult<()> {
+    pub fn debug_tokens<W: Source>(&mut self, source: &mut SourceInfo<W>) -> EmptyDraftResult {
         let mut parser = Parser::from_source(self, source);
 
         parser.pop();
