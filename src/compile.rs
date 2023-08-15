@@ -367,6 +367,12 @@ pub fn print_str(s: *const u8, len: i64) {
     });
 }
 
+#[derive(Clone, Copy, Debug)]
+enum UnrolledDot {
+    Symbol(NodeId),
+    ArrayIndex(NodeId),
+}
+
 struct ToplevelCompileContext<'a> {
     pub ctx: &'a mut Context,
     pub codegen_ctx: &'a mut CodegenContext,
@@ -691,7 +697,8 @@ impl<'a> FunctionCompileContext<'a> {
                 // self.perform_member_access(id, value, member)?;
 
                 let mut unrolled = Vec::new();
-                self.unroll_member_access(value, member, &mut unrolled)?;
+                self.unroll_member_access(value, &mut unrolled)?;
+                self.unroll_member_access(member, &mut unrolled)?;
 
                 // println!("Unrolled:");
                 // for un in unrolled.iter() {
@@ -704,10 +711,16 @@ impl<'a> FunctionCompileContext<'a> {
                 // println!("\n");
 
                 // a dot b
-                let a = unrolled[0];
-                self.compile_id(a)?;
-                let mut a_val = self.id_value(a);
-                let mut a_ty = self.ctx.get_type(a);
+                let mut a_val;
+                let mut a_ty;
+                {
+                    let UnrolledDot::Symbol(a) = unrolled[0] else {
+                        todo!()
+                    };
+                    self.compile_id(a)?;
+                    a_val = self.id_value(a);
+                    a_ty = self.ctx.get_type(a);
+                }
 
                 let mut cur = 0;
                 while cur < unrolled.len() - 1 {
@@ -720,9 +733,6 @@ impl<'a> FunctionCompileContext<'a> {
                     }
 
                     let b = unrolled[cur + 1];
-                    let Node::Symbol(_) = self.ctx.nodes[a] else {
-                        todo!()
-                    };
 
                     let mut pointiness = 0;
                     while let Type::Pointer(inner) = a_ty {
@@ -738,10 +748,37 @@ impl<'a> FunctionCompileContext<'a> {
                         pointiness -= 1;
                     }
 
-                    let (offset, ty) = self.get_member_offset(a_ty, b)?;
-                    a_ty = ty;
-                    if offset != 0 {
-                        a_val = self.builder.ins().iadd_imm(a_val, offset as i64);
+                    match b {
+                        UnrolledDot::Symbol(b) => {
+                            let (offset, ty) = self.get_member_offset(a_ty, b)?;
+                            a_ty = ty;
+                            if offset != 0 {
+                                a_val = self.builder.ins().iadd_imm(a_val, offset as i64);
+                            }
+                        }
+                        UnrolledDot::ArrayIndex(idx) => {
+                            self.compile_id(idx)?;
+
+                            let Type::Array(array_ty, _) = a_ty.clone() else {
+                                todo!()
+                            };
+                            let array_ty = self.ctx.get_type(array_ty);
+
+                            let ty_size = self.ctx.type_size(array_ty.clone());
+                            let ty_size = self.builder.ins().iconst(types::I64, ty_size as i64);
+
+                            let array_ptr_val = if let Type::Array(_, ArrayLen::Some(_)) = array_ty
+                            {
+                                a_val
+                            } else {
+                                self.load(types::I64, a_val, 0)
+                            };
+
+                            let idx_value = self.id_value(idx);
+                            let idx_value = self.builder.ins().imul(idx_value, ty_size);
+                            a_val = self.builder.ins().iadd(array_ptr_val, idx_value);
+                            a_ty = array_ty;
+                        }
                     }
 
                     self.ctx.values.insert(id, Value::Reference(a_val));
@@ -939,8 +976,7 @@ impl<'a> FunctionCompileContext<'a> {
                 let (array_pointer_value, array_length_value) = match self.ctx.get_type(iterable) {
                     Type::Array(_, ArrayLen::None) => {
                         let array_value = self.id_value(iterable);
-                        let array_pointer_value =
-                            self.load(self.ctx.get_pointer_type(), array_value, 0);
+                        let array_pointer_value = self.load(types::I64, array_value, 0);
                         let array_length_value = self.load(
                             types::I64,
                             array_value,
@@ -1116,15 +1152,32 @@ impl<'a> FunctionCompileContext<'a> {
                     size: member_size * members.borrow().len() as u32,
                 });
 
+                let member_is_aggregate_type = self.ctx.id_is_aggregate_type(ty);
+
                 let mut offset = 0;
                 for &member in members.borrow().iter() {
                     self.compile_id(member)?;
                     let member_value = self.id_value(member);
-                    self.builder.ins().stack_store(
-                        member_value,
-                        member_storage_slot,
-                        offset as i32,
-                    );
+
+                    if member_is_aggregate_type {
+                        let member_storage_slot_addr = self.builder.ins().stack_addr(
+                            self.ctx.get_pointer_type(),
+                            member_storage_slot,
+                            offset as i32,
+                        );
+                        self.emit_small_memory_copy(
+                            member_storage_slot_addr,
+                            member_value,
+                            member_size as _,
+                        );
+                    } else {
+                        self.builder.ins().stack_store(
+                            member_value,
+                            member_storage_slot,
+                            offset as i32,
+                        );
+                    }
+
                     offset += member_size;
                 }
 
@@ -1273,23 +1326,24 @@ impl<'a> FunctionCompileContext<'a> {
     #[instrument(skip_all)]
     fn unroll_member_access(
         &self,
-        value: NodeId,
-        member: NodeId,
-        unrolled: &mut Vec<NodeId>,
+        id: NodeId,
+        unrolled: &mut Vec<UnrolledDot>,
     ) -> EmptyDraftResult {
-        for &id in &[value, member] {
-            match self.ctx.nodes[id].clone() {
-                Node::Symbol(_) => unrolled.push(id),
-                Node::ArrayAccess { array, index } => {
-                    todo!()
-                }
-                Node::StructDeclParam { name, .. } => unrolled.push(name),
-                Node::MemberAccess {
-                    value: inner_value,
-                    member: inner_member,
-                } => self.unroll_member_access(inner_value, inner_member, unrolled)?,
-                a => todo!("Unroll member access for value node {:?}", a),
+        match self.ctx.nodes[id].clone() {
+            Node::Symbol(_) => unrolled.push(UnrolledDot::Symbol(id)),
+            Node::StructDeclParam { name, .. } => unrolled.push(UnrolledDot::Symbol(name)),
+            Node::MemberAccess {
+                value: inner_value,
+                member: inner_member,
+            } => {
+                self.unroll_member_access(inner_value, unrolled)?;
+                self.unroll_member_access(inner_member, unrolled)?;
             }
+            Node::ArrayAccess { array, index } => {
+                self.unroll_member_access(array, unrolled)?;
+                unrolled.push(UnrolledDot::ArrayIndex(index))
+            }
+            a => todo!("Unroll member access for value node {:?}", a),
         }
 
         Ok(())

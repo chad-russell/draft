@@ -166,6 +166,21 @@ fn test_for_array() i64 {
     return 0;
 }
 
+fn test_for_dynamic_array() i64 {
+    let arr: []_T = [_{x: 1i64, y: 1.1f64}, _{2, 2.2}, _{3, 3.3}] as []T;
+
+    for val in arr {
+        val.x = 999;
+    }
+
+    for val in arr {
+        print_i64(val.x);
+        print_f64(val.y);
+    }
+
+    return 0;
+}
+
 fn test_for_array_manual() i64 {
     let datas = &_{
         d1: _{x: 1i64, y: 1.1f64}, 
@@ -255,6 +270,40 @@ fn test_array_casts() i64 {
     change_array(d);
     
     return 0;
+}
+
+fn test_transparent() {
+    struct Foo {
+        x: i64,
+        y: i64,
+    }
+
+    struct Bar {
+        ohno_bar: i64,
+        #transparent foo: *Foo,
+    }
+
+    struct Baz {
+        ohno_baz: i64,
+        #transparent bar: Bar,
+    }
+
+    struct Qux {
+        ohno_qux: i64,
+        #transparent baz: Baz,
+    }
+    
+    // let #transparent f = Foo { 1, 2 };
+    // let #transparent b = Bar { 999, Foo { 1, 2 } };
+    // let #transparent b = Baz { 999, Bar { 999, Foo { 1, 2 } } };
+    let #transparent q = Qux { 999, Baz { 999, Bar { 999, &Foo { 1, 2 } } } };
+    y |> print_i64;
+
+    let b = Bar { 33, &Foo { 1, 2 } };
+    (b.foo.x + 20) |> print_i64;
+    (x + 20) |> print_i64;
+
+    return;
 }
 
 fn main() i64 {
@@ -361,7 +410,7 @@ fn main() i64 {
     
     test_interfaces();
     
-    // test_for_array();
+    test_for_array();
     test_for_array_manual();
     
     test_threading();
@@ -371,6 +420,8 @@ fn main() i64 {
     test_static_array_len();
 
     test_array_casts();
+
+    test_transparent();
 
     return 0;
 }

@@ -1,50 +1,30 @@
 extern print_i64(n: i64);
 
 struct Foo {
-    x: i64,
-    y: i64,
+    m: i64,
+    n: i64,
 }
 
-// struct Bar {
-    // ohno_bar: i64,
-    // #transparent foo: Foo,
-// }
+struct Bar {
+    x: i64,
+    y: i64,
+    #transparent f: Foo,
+}
 
-// struct Baz {
-    // ohno_baz: i64,
-    // #transparent bar: Bar,
-// }
-
-// struct Qux {
-    // ohno_qux: i64,
-    // #transparent baz: Baz,
-// }
-
-fn main() i64 {
-    // let #transparent f = Foo { 1, 2 };
-    // let #transparent b = Bar { 999, Foo { 1, 2 } };
-    // let #transparent b = Baz { 999, Bar { 999, Foo { 1, 2 } } };
-    // let #transparent q = Qux { 999, Baz { 999, Bar { 999, Foo { 1, 2 } } } };
-    // y |> print_i64;
-
-    // let b = Bar { &Foo { 1, 2 } };
-    // b.foo.x |> print_i64;
-    
-    let arr: [_]_ = [_{x: 1i64}, _{2}, _{3}];
-
-    // let foos = &_{
-        // foo1: Foo { 1, 2 },
-        // foo2: Foo { 1, 2 },
-        // foo3: Foo { 1, 2 },
-    // };
-    // let arr = _{ data: #cast(*Foo) foos, len: 3i64 } as []Foo;
-
-    // for val in arr {
-        // print_i64(val.x);
-    // }
-
-    let a0 = arr[0];
-    print_i64(a0.x);
+fn main() i64 { 
+    let #transparent b = Bar { 1, 2, Foo { m: 3, n: 4 } };
+    print_i64(b.x);
+    print_i64(b.y);
+    print_i64(b.f.m);
+    print_i64(b.f.n);
+    print_i64(b.m);
+    print_i64(b.n);
+    print_i64(x);
+    print_i64(y);
+    print_i64(f.m);
+    print_i64(f.n);
+    print_i64(m);
+    print_i64(n);
 
     return 0;
 }

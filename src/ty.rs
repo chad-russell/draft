@@ -2304,7 +2304,7 @@ impl Context {
         param: NodeId,
         scope_map: &mut BTreeMap<Sym, NodeId>,
     ) -> bool {
-        let param_ty = self.get_type(param);
+        let mut param_ty = self.get_type(param);
 
         let Node::StructDeclParam { transparent, .. } = self.nodes[param] else {
             unreachable!()
@@ -2312,6 +2312,10 @@ impl Context {
 
         if !transparent {
             return true;
+        }
+
+        while let Type::Pointer(pt) = param_ty {
+            param_ty = self.get_type(pt);
         }
 
         // Only structs are eligible for being transparent for now
