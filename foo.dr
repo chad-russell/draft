@@ -3,28 +3,25 @@ extern print_i64(n: i64);
 struct Foo {
     m: i64,
     n: i64,
+    #transparent vtable: *Foo_Vtable,
 }
 
-struct Bar {
-    x: i64,
-    y: i64,
-    #transparent f: Foo,
+struct Foo_Vtable {
+    sum: fn(this: *Foo) i64,
+    diff: fn(this: *Foo) i64,
 }
 
 fn main() i64 { 
-    let #transparent b = Bar { 1, 2, Foo { m: 3, n: 4 } };
-    print_i64(b.x);
-    print_i64(b.y);
-    print_i64(b.f.m);
-    print_i64(b.f.n);
-    print_i64(b.m);
-    print_i64(b.n);
-    print_i64(x);
-    print_i64(y);
-    print_i64(f.m);
-    print_i64(f.n);
-    print_i64(m);
-    print_i64(n);
+    let foo = Foo {
+        m: 1,
+        n: 2,
+        vtable: &_{
+            sum: fn(this: *Foo) i64 { return this.m + this.n; },
+            diff: fn(this: *Foo) i64 { return this.m - this.n; },
+        },
+    };
+
+    print_i64(foo->sum);
 
     return 0;
 }

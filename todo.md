@@ -39,7 +39,7 @@
 - [x] arrays assignable to Array type
 - [x] pipe/threading/ufcs operator
     - [x] threading operator can choose where the argument gets threaded into
-- [ ] #transparent
+- [x] #transparent
 - [ ] arrow operator
 - [ ] #this
 - [ ] const struct members
@@ -49,7 +49,7 @@
     - [x] store in program's data segment
 - [x] short-circuit and/or operators
 - [ ] pattern matching (on enums only at first, very simple single-depth match)
-    - [ ] `matches(...)`
+    - [ ] `#matches(...)`
     - [ ] `match`
     - [ ] `if let`
     - [ ] `let else`

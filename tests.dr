@@ -306,6 +306,35 @@ fn test_transparent() {
     return;
 }
 
+fn test_transparent2() {
+    struct Foo {
+        m: i64,
+        n: i64,
+    }
+
+    struct Bar {
+        x: i64,
+        y: i64,
+        #transparent f: Foo,
+    }
+    
+    let #transparent b = Bar { 1, 2, Foo { m: 3, n: 4 } };
+    print_i64(b.x);
+    print_i64(b.y);
+    print_i64(b.f.m);
+    print_i64(b.f.n);
+    print_i64(b.m);
+    print_i64(b.n);
+    print_i64(x);
+    print_i64(y);
+    print_i64(f.m);
+    print_i64(f.n);
+    print_i64(m);
+    print_i64(n);
+    
+    return;
+}
+
 fn main() i64 {
     {
         let te1 = 3i64;
@@ -422,6 +451,8 @@ fn main() i64 {
     test_array_casts();
 
     test_transparent();
+
+    test_transparent2();
 
     return 0;
 }

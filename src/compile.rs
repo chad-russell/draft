@@ -694,36 +694,21 @@ impl<'a> FunctionCompileContext<'a> {
                 Ok(())
             }
             Node::MemberAccess { value, member } => {
-                // self.perform_member_access(id, value, member)?;
-
                 let mut unrolled = Vec::new();
-                self.unroll_member_access(value, &mut unrolled)?;
                 self.unroll_member_access(member, &mut unrolled)?;
-
-                // println!("Unrolled:");
-                // for un in unrolled.iter() {
-                //     if let Node::Symbol(sym) = self.ctx.nodes[un] {
-                //         println!("{}", self.ctx.string_interner.resolve(sym.0).unwrap());
-                //     } else {
-                //         println!("{:?}", self.ctx.nodes[un]);
-                //     }
-                // }
-                // println!("\n");
 
                 // a dot b
                 let mut a_val;
                 let mut a_ty;
                 {
-                    let UnrolledDot::Symbol(a) = unrolled[0] else {
-                        todo!()
-                    };
+                    let a = value;
                     self.compile_id(a)?;
                     a_val = self.id_value(a);
                     a_ty = self.ctx.get_type(a);
                 }
 
                 let mut cur = 0;
-                while cur < unrolled.len() - 1 {
+                while cur < unrolled.len() {
                     // We start out with an id_value already. But each additional time through the loop,
                     // we need to manually create it. We know `a_val` is a Value::Reference(_), so we can just follow
                     // the same rules for Reference from id_value
@@ -732,7 +717,7 @@ impl<'a> FunctionCompileContext<'a> {
                         a_val = self.load(a_ty, a_val, 0);
                     }
 
-                    let b = unrolled[cur + 1];
+                    let b = unrolled[cur];
 
                     let mut pointiness = 0;
                     while let Type::Pointer(inner) = a_ty {
@@ -1317,7 +1302,7 @@ impl<'a> FunctionCompileContext<'a> {
                 _ => unreachable!(),
             },
             Node::FnDefinition { .. }
-            | Node::StructDefinition { .. }
+            | Node::StructDeclaration { .. }
             | Node::EnumDefinition { .. } => Ok(()), // This should have already been handled by the toplevel context
             _ => todo!("compile_id for {:?}", &self.ctx.nodes[id]),
         }
@@ -1448,27 +1433,25 @@ impl<'a> FunctionCompileContext<'a> {
         }
 
         let Type::Struct { params, .. } = value_ty else {
-            panic!("Not a struct: {:?}", value_ty);
+            panic!("Not a struct: {value_ty:?}")
         };
 
-        let fields = params.clone();
-
         let mut offset = 0;
-        for field in fields.borrow().iter() {
-            let field_name = match &self.ctx.nodes[field] {
+        for param in params.borrow().iter() {
+            let field_name = match &self.ctx.nodes[param] {
                 Node::StructDeclParam { name, .. } => *name,
                 Node::ValueParam {
                     name: Some(name), ..
                 } => *name,
-                _ => panic!("Not a param: {:?}", &self.ctx.nodes[field]),
+                _ => panic!("Not a param: {:?}", &self.ctx.nodes[param]),
             };
             let field_name = self.ctx.nodes[field_name].as_symbol().unwrap();
 
             if field_name == member_name {
-                return Ok((offset, self.ctx.get_type(*field)));
+                return Ok((offset, self.ctx.get_type(*param)));
             }
 
-            offset += self.ctx.id_type_size(*field);
+            offset += self.ctx.id_type_size(*param);
         }
 
         let member_name_str = self.ctx.get_symbol_str(member);

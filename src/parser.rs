@@ -125,7 +125,6 @@ pub enum Token {
     Colon,
     Comma,
     Dot,
-    Arrow,
     Underscore,
     UnderscoreSymbol(Sym),
     EqEq,
@@ -136,6 +135,7 @@ pub enum Token {
     LtEq,
     Eq,
     Thread,
+    ThreadArrow,
     Atmark,
     Fn,
     Impl,
@@ -236,6 +236,7 @@ pub fn breaks_symbol(c: char) -> bool {
 #[derive(PartialEq)]
 pub enum DeclParamParseType {
     Fn,
+    FnType,
     Struct,
     Enum,
 }
@@ -487,7 +488,7 @@ impl<'a, W: Source> Parser<'a, W> {
         if self.source_info.prefix(".", Token::Dot) {
             return;
         }
-        if self.source_info.prefix("->", Token::Arrow) {
+        if self.source_info.prefix("->", Token::ThreadArrow) {
             return;
         }
         if self.source_info.prefix(";", Token::Semicolon) {
@@ -724,12 +725,15 @@ impl<'a, W: Source> Parser<'a, W> {
     #[instrument(skip_all)]
     pub fn parse_top_level(&mut self) -> DraftResult<NodeId> {
         let tl = match self.source_info.top.tok {
-            Token::Fn => self.parse_fn(false),
+            Token::Fn => self.parse_fn_declaration(false),
             Token::Extern => self.parse_extern(),
-            Token::Struct => self.parse_struct_definition(),
+            Token::Struct => self.parse_struct_declaration(),
             Token::Enum => self.parse_enum_definition(),
             _ => {
-                let msg = format!("expected 'fn', found '{:?}'", self.source_info.top.tok);
+                let msg = format!(
+                    "expected 'fn', 'extern', 'struct', or 'enum', found '{:?}'",
+                    self.source_info.top.tok
+                );
 
                 Err(CompileError::Generic(msg, self.source_info.top.range))
             }
@@ -899,7 +903,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
             // put the param in scope
             let node = match parse_type {
-                DeclParamParseType::Fn => Node::FnDeclParam {
+                DeclParamParseType::Fn | DeclParamParseType::FnType => Node::FnDeclParam {
                     name,
                     ty,
                     default,
@@ -925,7 +929,15 @@ impl<'a, W: Source> Parser<'a, W> {
             };
 
             let param = self.ctx.push_node(range, node);
-            self.ctx.scope_insert(name_sym, param);
+
+            // Don't put fn type parameters into scope, there's no body or anything to reference them
+            // so one won't have been created and they would just end up in the outer scope
+            if matches!(
+                parse_type,
+                DeclParamParseType::Enum | DeclParamParseType::Fn | DeclParamParseType::Struct
+            ) {
+                self.ctx.scope_insert(name_sym, param);
+            }
 
             params.push(param);
 
@@ -940,7 +952,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse_struct_definition(&mut self) -> DraftResult<NodeId> {
+    pub fn parse_struct_declaration(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
         self.pop(); // `struct`
@@ -964,7 +976,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
         let struct_node = self.ctx.push_node(
             range,
-            Node::StructDefinition {
+            Node::StructDeclaration {
                 name: Some(name),
                 params: fields,
                 scope: struct_scope,
@@ -1030,7 +1042,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse_fn(&mut self, anonymous: bool) -> DraftResult<NodeId> {
+    pub fn parse_fn_declaration(&mut self, anonymous: bool) -> DraftResult<NodeId> {
         let old_polymorph_target = self.ctx.polymorph_target;
         self.ctx.polymorph_target = false;
 
@@ -1101,101 +1113,6 @@ impl<'a, W: Source> Parser<'a, W> {
         }
 
         self.ctx.polymorph_target = old_polymorph_target;
-
-        self.ctx.funcs.push(func);
-
-        Ok(func)
-    }
-
-    #[instrument(skip_all)]
-    pub fn parse_impl_fn(&mut self, for_id: NodeId) -> DraftResult<NodeId> {
-        let start = self.source_info.top.range.start;
-
-        self.pop(); // `fn`
-
-        let name = self.parse_symbol()?;
-        let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
-
-        // open a new scope
-        let pushed_scope = self.ctx.push_scope();
-
-        self.in_fn_params_decl = true;
-
-        let self_param_range = self.source_info.top.range;
-        let self_symbol = Sym(self.ctx.string_interner.get_or_intern("self"));
-        let self_symbol_node = self
-            .ctx
-            .push_node(self_param_range, Node::Symbol(self_symbol));
-        let self_ptr_ty = self
-            .ctx
-            .push_node(self_param_range, Node::Type(Type::Pointer(for_id)));
-        let self_param = self.ctx.push_node(
-            self_param_range,
-            Node::FnDeclParam {
-                name: self_symbol_node,
-                ty: Some(self_ptr_ty),
-                default: None,
-                index: 0,
-                transparent: false,
-            },
-        );
-        self.ctx.scope_insert(self_symbol, self_param);
-
-        self.expect(Token::LParen)?;
-        let params = self.parse_decl_params(DeclParamParseType::Fn)?;
-
-        let params_vec = params.clone();
-        params_vec.borrow_mut().insert(0, self_param);
-
-        for (i, param) in params_vec.borrow().iter().enumerate() {
-            let Node::FnDeclParam { index, .. } = &mut self.ctx.nodes[param] else {
-                unreachable!()
-            };
-            *index = i as u16;
-        }
-
-        self.expect(Token::RParen)?;
-        self.in_fn_params_decl = false;
-
-        let return_ty = if self.source_info.top.tok != Token::LCurly {
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
-
-        self.expect(Token::LCurly)?;
-
-        self.ctx.returns.push(Vec::new());
-
-        let mut stmts = Vec::new();
-        while self.source_info.top.tok != Token::RCurly {
-            let stmt = self.parse_block_stmt()?;
-            stmts.push(stmt);
-        }
-        let stmts = self.ctx.push_id_vec(stmts);
-
-        let range = self.expect_range(start, Token::RCurly)?;
-
-        let returns = self.ctx.returns.pop().unwrap();
-        let returns = self.ctx.push_id_vec(returns);
-        let func = self.ctx.push_node(
-            range,
-            Node::FnDefinition {
-                name: Some(name),
-                scope: self.ctx.top_scope,
-                params,
-                return_ty,
-                stmts,
-                returns,
-            },
-        );
-
-        // pop the top scope
-        self.ctx.pop_scope(pushed_scope);
-
-        if !self.is_polymorph_copying {
-            self.ctx.scope_insert(name_sym, func);
-        }
 
         self.ctx.funcs.push(func);
 
@@ -1316,7 +1233,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
                     let Some(Shunting::Id(value)) = output.pop() else {
                         self.ctx.errors.push(CompileError::Generic(
-                            "Expected value before `->`".to_string(),
+                            "Expected value before `|>`".to_string(),
                             self.source_info.top.range,
                         ));
                         break;
@@ -1332,6 +1249,51 @@ impl<'a, W: Source> Parser<'a, W> {
                     }
 
                     let unrolled = self.unroll_threading_call(&mut values);
+
+                    output.push(Shunting::Id(unrolled));
+                }
+                Token::ThreadArrow => {
+                    if !parsing_op {
+                        break;
+                    }
+
+                    let Some(Shunting::Id(value)) = output.pop() else {
+                        self.ctx.errors.push(CompileError::Generic(
+                            "Expected value before `->`".to_string(),
+                            self.source_info.top.range,
+                        ));
+                        break;
+                    };
+
+                    let mut values = vec![value];
+
+                    // Threading arrow function call?
+                    while self.source_info.top.tok == Token::ThreadArrow {
+                        self.pop(); // `->`
+                        let value = self.parse_expression_piece(false, true)?;
+                        values.push(value);
+                    }
+
+                    let unrolled = self.unroll_threading_call(&mut values);
+
+                    let Node::ThreadingCall { func, params } = self.ctx.nodes[unrolled].clone()
+                    else {
+                        unreachable!()
+                    };
+                    let param0 = params.borrow()[0];
+
+                    // a -> b == a.b(a) == a |> a.b
+                    let real_func = self.ctx.push_node(
+                        self.ctx.ranges[func],
+                        Node::MemberAccess {
+                            value: param0,
+                            member: func,
+                        },
+                    );
+                    self.ctx.nodes[unrolled] = Node::ThreadingCall {
+                        func: real_func,
+                        params,
+                    };
 
                     output.push(Shunting::Id(unrolled));
                 }
@@ -1513,7 +1475,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 self.ctx.string_literals.push(id);
                 Ok(id)
             }
-            Token::Fn => self.parse_fn(true),
+            Token::Fn => self.parse_fn_declaration(true),
             Token::Star => {
                 self.pop(); // `*`
 
@@ -1676,12 +1638,8 @@ impl<'a, W: Source> Parser<'a, W> {
             )),
         }?;
 
-        while let Token::LParen
-        | Token::LSquare
-        | Token::Dot
-        | Token::Arrow
-        | Token::DoubleColon
-        | Token::As = self.source_info.top.tok
+        while let Token::LParen | Token::LSquare | Token::Dot | Token::DoubleColon | Token::As =
+            self.source_info.top.tok
         {
             // function call?
             while self.source_info.top.tok == Token::LParen {
@@ -2017,9 +1975,9 @@ impl<'a, W: Source> Parser<'a, W> {
             Token::If => self.parse_if(),
             Token::For => self.parse_for(),
             Token::While => self.parse_while(),
-            Token::Struct => self.parse_struct_definition(),
+            Token::Struct => self.parse_struct_declaration(),
             Token::Enum => self.parse_enum_definition(),
-            Token::Fn => self.parse_fn(false),
+            Token::Fn => self.parse_fn_declaration(false),
             _ => {
                 let lvalue = self.parse_expression(true)?;
 
@@ -2119,7 +2077,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 self.pop(); // `fn`
 
                 self.expect(Token::LParen)?;
-                let params = self.parse_decl_params(DeclParamParseType::Fn)?;
+                let params = self.parse_decl_params(DeclParamParseType::FnType)?;
                 self.expect(Token::RParen)?;
 
                 let return_ty = if !matches!(
@@ -2383,12 +2341,12 @@ impl Context {
         parser.pop();
 
         let copied = match target {
-            ParseTarget::FnDefinition => parser.parse_fn(false)?,
-            ParseTarget::StructDefinition => {
-                let parsed = parser.parse_struct_definition()?;
+            ParseTarget::FnDefinition => parser.parse_fn_declaration(false)?,
+            ParseTarget::StructDeclaration => {
+                let parsed = parser.parse_struct_declaration()?;
 
                 // if the struct has generic params, we need to copy those too
-                let Node::StructDefinition { params, .. } = self.nodes[parsed].clone() else {
+                let Node::StructDeclaration { params, .. } = self.nodes[parsed].clone() else {
                     panic!()
                 };
                 for param in params.borrow().iter() {
@@ -2417,7 +2375,7 @@ impl Context {
 
 pub enum ParseTarget {
     FnDefinition,
-    StructDefinition,
+    StructDeclaration,
     EnumDefinition,
     Type,
 }

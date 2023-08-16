@@ -865,7 +865,7 @@ impl Context {
                 }
             }
             Node::StructDeclParam { ty, default, .. } => {
-                self.assign_type_struct_decl_param(ty, default, id);
+                self.assign_type_struct_decl_param(id, ty, default);
             }
             Node::EnumDeclParam { ty, .. } => {
                 self.assign_type_enum_decl_param(ty, id);
@@ -921,7 +921,7 @@ impl Context {
             Node::Call { func, params, .. } | Node::ThreadingCall { func, params } => {
                 return self.assign_type_inner_call(id, func, params);
             }
-            Node::StructDefinition {
+            Node::StructDeclaration {
                 name,
                 params,
                 scope,
@@ -1004,7 +1004,7 @@ impl Context {
                     // If this is a polymorph, copy it first
                     let name = if self.polymorph_sources.contains_key(&name) {
                         let &key = self.polymorph_sources.get(&name).unwrap();
-                        match self.polymorph_copy(key, ParseTarget::StructDefinition) {
+                        match self.polymorph_copy(key, ParseTarget::StructDeclaration) {
                             Ok(copied) => {
                                 self.assign_type(copied);
                                 self.nodes[id] = Node::StructLiteral {
@@ -1055,7 +1055,7 @@ impl Context {
                     Type::Struct {
                         decl: Some(decl), ..
                     } => {
-                        let Node::StructDefinition { scope, .. } = self.nodes[decl] else {
+                        let Node::StructDeclaration { scope, .. } = self.nodes[decl] else {
                             todo!(
                                 "Expected Node::StructDefintion, got {:?}",
                                 &self.nodes[decl]
@@ -1067,6 +1067,10 @@ impl Context {
                                 match self.scope_get_with_scope_id(*member_name_sym, scope) {
                                     Some(found) => {
                                         self.match_types(id, found);
+
+                                        // If we found something good, replace the member access with it.
+                                        // This is particularly useful since we could be replacing with an entire transparency tree
+                                        self.nodes[member] = self.nodes[found].clone();
                                     }
                                     None => {
                                         self.errors.push(CompileError::Node(
@@ -1423,7 +1427,7 @@ impl Context {
                     };
                     let sym = self.get_symbol(sym);
 
-                    let Node::StructDefinition {
+                    let Node::StructDeclaration {
                         scope: scope_id, ..
                     } = self.nodes[copied]
                     else {
@@ -1825,9 +1829,9 @@ impl Context {
     #[instrument(skip_all)]
     fn assign_type_struct_decl_param(
         &mut self,
+        id: NodeId,
         ty: Option<NodeId>,
         default: Option<NodeId>,
-        id: NodeId,
     ) {
         if let Some(ty) = ty {
             self.assign_type(ty);
@@ -2176,6 +2180,15 @@ impl Context {
                     }
                 }
             }
+            Type::Infer(_) => {
+                self.errors.push(CompileError::Node(
+                    format!("Could not infer type of for called function"),
+                    id,
+                ));
+
+                self.deferreds.push(id);
+                return false;
+            }
             ty => {
                 self.errors
                     .push(CompileError::Node(format!("Not a function: {:?}", ty), id));
@@ -2231,7 +2244,7 @@ impl Context {
     pub fn copy_polymorph_if_needed(&mut self, ty: NodeId) -> DraftResult<NodeId> {
         if let Some(&ty) = self.polymorph_sources.get(&ty) {
             let parse_target = match self.nodes[ty].clone() {
-                Node::StructDefinition { .. } => ParseTarget::StructDefinition,
+                Node::StructDeclaration { .. } => ParseTarget::StructDeclaration,
                 Node::EnumDefinition { .. } => ParseTarget::EnumDefinition,
                 Node::FnDefinition { .. } => ParseTarget::FnDefinition,
                 a => panic!("Expected struct, enum or fn definition: got {:?}", a),
@@ -2275,7 +2288,7 @@ impl Context {
             return;
         };
 
-        let Node::StructDefinition {
+        let Node::StructDeclaration {
             scope: struct_scope,
             ..
         } = self.nodes[decl].clone()
@@ -2331,7 +2344,7 @@ impl Context {
             return true;
         };
 
-        let Node::StructDefinition { scope, .. } = self.nodes[struct_decl].clone() else {
+        let Node::StructDeclaration { scope, .. } = self.nodes[struct_decl].clone() else {
             unreachable!()
         };
 
@@ -2347,6 +2360,8 @@ impl Context {
                     member: v,
                 },
             );
+
+            self.assign_type(transparent_member_access);
 
             scope_map.insert(k, transparent_member_access);
         }
