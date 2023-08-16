@@ -1064,8 +1064,8 @@ impl Context {
 
                         match &self.nodes[member] {
                             Node::Symbol(member_name_sym) => {
-                                match self.scope_get_with_scope_id(*member_name_sym, scope) {
-                                    Some(found) => {
+                                match self.scopes[scope].entries.get(member_name_sym) {
+                                    Some(&found) => {
                                         self.match_types(id, found);
 
                                         // If we found something good, replace the member access with it.

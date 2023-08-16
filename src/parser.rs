@@ -1226,74 +1226,46 @@ impl<'a, W: Source> Parser<'a, W> {
                         output.push(Shunting::Id(id))
                     }
                 }
-                Token::Thread => {
+                Token::Thread | Token::ThreadArrow => {
                     if !parsing_op {
                         break;
                     }
 
+                    let is_arrow = self.source_info.top.tok == Token::ThreadArrow;
+
                     let Some(Shunting::Id(value)) = output.pop() else {
-                        self.ctx.errors.push(CompileError::Generic(
-                            "Expected value before `|>`".to_string(),
-                            self.source_info.top.range,
-                        ));
+                        let msg = if is_arrow {
+                            "Expected value before `|>`".to_string()
+                        } else {
+                            "Expected value before `->`".to_string()
+                        };
+
+                        self.ctx
+                            .errors
+                            .push(CompileError::Generic(msg, self.source_info.top.range));
+
                         break;
                     };
 
-                    let mut values = vec![value];
+                    let mut values = vec![UnrolledThread::Node(value)];
 
-                    // Threading function call?
-                    while self.source_info.top.tok == Token::Thread {
-                        self.pop(); // `|>`
+                    // Threading function or arrow-function call?
+                    while self.source_info.top.tok == Token::Thread
+                        || self.source_info.top.tok == Token::ThreadArrow
+                    {
+                        if self.source_info.top.tok == Token::Thread {
+                            values.push(UnrolledThread::Thread);
+                        } else {
+                            assert!(self.source_info.top.tok == Token::ThreadArrow);
+                            values.push(UnrolledThread::Arrow);
+                        }
+
+                        self.pop(); // `|>` / `->`
                         let value = self.parse_expression_piece(false, true)?;
-                        values.push(value);
+                        values.push(UnrolledThread::Node(value));
                     }
 
                     let unrolled = self.unroll_threading_call(&mut values);
-
-                    output.push(Shunting::Id(unrolled));
-                }
-                Token::ThreadArrow => {
-                    if !parsing_op {
-                        break;
-                    }
-
-                    let Some(Shunting::Id(value)) = output.pop() else {
-                        self.ctx.errors.push(CompileError::Generic(
-                            "Expected value before `->`".to_string(),
-                            self.source_info.top.range,
-                        ));
-                        break;
-                    };
-
-                    let mut values = vec![value];
-
-                    // Threading arrow function call?
-                    while self.source_info.top.tok == Token::ThreadArrow {
-                        self.pop(); // `->`
-                        let value = self.parse_expression_piece(false, true)?;
-                        values.push(value);
-                    }
-
-                    let unrolled = self.unroll_threading_call(&mut values);
-
-                    let Node::ThreadingCall { func, params } = self.ctx.nodes[unrolled].clone()
-                    else {
-                        unreachable!()
-                    };
-                    let param0 = params.borrow()[0];
-
-                    // a -> b == a.b(a) == a |> a.b
-                    let real_func = self.ctx.push_node(
-                        self.ctx.ranges[func],
-                        Node::MemberAccess {
-                            value: param0,
-                            member: func,
-                        },
-                    );
-                    self.ctx.nodes[unrolled] = Node::ThreadingCall {
-                        func: real_func,
-                        params,
-                    };
 
                     output.push(Shunting::Id(unrolled));
                 }
@@ -1315,7 +1287,7 @@ impl<'a, W: Source> Parser<'a, W> {
                     let op = Op::from(self.source_info.top.tok);
 
                     while !operators.is_empty()
-                        && operators.last().unwrap().precedence() >= op.precedence()
+                        && operators.last().unwrap().precedence() > op.precedence()
                     {
                         output.push(Shunting::Op(operators.pop().unwrap()));
                     }
@@ -1359,13 +1331,21 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn unroll_threading_call(&mut self, values: &mut Vec<NodeId>) -> NodeId {
-        let inner_func_id = values.pop().unwrap();
+    pub fn unroll_threading_call(&mut self, values: &mut Vec<UnrolledThread>) -> NodeId {
+        let UnrolledThread::Node(inner_func_id) = values.pop().unwrap() else {
+            panic!("Expected Node")
+        };
+
+        let arrow_style = values.pop().unwrap() == UnrolledThread::Arrow;
+
         let param = if values.len() > 1 {
             self.unroll_threading_call(values)
         } else if values.len() == 1 {
             // for a single param, turn it into a value param node
-            values.pop().unwrap()
+            let UnrolledThread::Node(param) = values.pop().unwrap() else {
+                panic!("Expected Node")
+            };
+            param
         } else {
             panic!()
         };
@@ -1429,16 +1409,35 @@ impl<'a, W: Source> Parser<'a, W> {
             _ => (inner_func_id, self.ctx.push_id_vec(vec![param])),
         };
 
+        let node = if arrow_style {
+            // a -> b == a |> a.b
+            let param0 = params.borrow()[0];
+            let real_func = self.ctx.push_node(
+                self.ctx.ranges[inner_func_id],
+                Node::MemberAccess {
+                    value: param0,
+                    member: inner_func_id,
+                },
+            );
+
+            Node::ThreadingCall {
+                func: real_func,
+                params,
+            }
+        } else {
+            Node::ThreadingCall {
+                func: inner_func_id,
+                params,
+            }
+        };
+
         self.ctx.push_node(
             Range::new(
                 self.ctx.ranges[param].start,
                 self.ctx.ranges[inner_func_id].end,
                 self.source_info.path,
             ),
-            Node::ThreadingCall {
-                func: inner_func_id,
-                params,
-            },
+            node,
         )
     }
 
@@ -2424,4 +2423,11 @@ impl From<Token> for Op {
             _ => unreachable!(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum UnrolledThread {
+    Node(NodeId),
+    Thread,
+    Arrow,
 }

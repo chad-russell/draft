@@ -1,4 +1,10 @@
 extern print_i64(n: i64);
+extern print_str(ch: *u8, len: i64);
+
+fn print_string(s: string) {
+    print_str(s.data, s.len);
+    return;
+}
 
 struct Foo {
     m: i64,
@@ -6,22 +12,31 @@ struct Foo {
     #transparent vtable: *Foo_Vtable,
 }
 
+fn add_one(foo: *Foo) *Foo {
+    print_string("Adding one!\n");
+    foo.m = foo.m + 1;
+    foo.n = foo.n + 1;
+    return foo;
+}
+
 struct Foo_Vtable {
     sum: fn(this: *Foo) i64,
     diff: fn(this: *Foo) i64,
+    modify: fn(this: *Foo) *Foo,
 }
 
-fn main() i64 { 
+fn main() i64 {
     let foo = Foo {
         m: 1,
         n: 2,
         vtable: &_{
             sum: fn(this: *Foo) i64 { return this.m + this.n; },
             diff: fn(this: *Foo) i64 { return this.m - this.n; },
+            modify: add_one,
         },
     };
 
-    print_i64(foo->sum);
+    print_i64((&foo->modify->modify).n);
 
     return 0;
 }
