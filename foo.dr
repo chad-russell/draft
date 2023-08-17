@@ -30,9 +30,9 @@ fn add_one_foo2(foo: *Foo) *Foo {
 }
 
 struct Foo_Vtable {
-    sum: fn(this: *Foo) i64,
-    diff: fn(this: *Foo) i64,
-    modify: fn(this: *Foo) *Foo,
+    sum: fn(this: *_T!) i64,
+    diff: fn(this: *T) i64,
+    modify: fn(this: *T) *Foo,
 }
 
 fn main() i64 {
