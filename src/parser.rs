@@ -725,7 +725,7 @@ impl<'a, W: Source> Parser<'a, W> {
     #[instrument(skip_all)]
     pub fn parse_top_level(&mut self) -> DraftResult<NodeId> {
         let tl = match self.source_info.top.tok {
-            Token::Fn => self.parse_fn_declaration(false),
+            Token::Fn | Token::Transparent => self.parse_fn_definition(false),
             Token::Extern => self.parse_extern(),
             Token::Struct => self.parse_struct_declaration(),
             Token::Enum => self.parse_enum_definition(),
@@ -809,7 +809,7 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse_value_params(&mut self, is_threading_func_call: bool) -> DraftResult<IdVec> {
+    pub fn parse_value_params(&mut self, for_threading_args: bool) -> DraftResult<IdVec> {
         let mut params = Vec::new();
 
         while self.source_info.top.tok != Token::RParen && self.source_info.top.tok != Token::RCurly
@@ -828,7 +828,7 @@ impl<'a, W: Source> Parser<'a, W> {
                         index: params.len() as u16,
                     },
                 ));
-            } else if is_threading_func_call && self.source_info.top.tok == Token::Atmark {
+            } else if for_threading_args && self.source_info.top.tok == Token::Atmark {
                 let range = self.source_info.top.range;
                 self.pop(); // `@`
                 params.push(self.ctx.push_node(range, Node::ThreadingParamTarget));
@@ -1042,11 +1042,18 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
-    pub fn parse_fn_declaration(&mut self, anonymous: bool) -> DraftResult<NodeId> {
+    pub fn parse_fn_definition(&mut self, anonymous: bool) -> DraftResult<NodeId> {
         let old_polymorph_target = self.ctx.polymorph_target;
         self.ctx.polymorph_target = false;
 
         let start = self.source_info.top.range.start;
+
+        let transparent = if self.source_info.top.tok == Token::Transparent {
+            self.pop(); // `#transparent`
+            true
+        } else {
+            false
+        };
 
         self.pop(); // `fn`
 
@@ -1087,20 +1094,24 @@ impl<'a, W: Source> Parser<'a, W> {
 
         let returns = self.ctx.returns.pop().unwrap();
         let returns = self.ctx.push_id_vec(returns);
+
+        let scope_for_insert = self.ctx.top_scope;
+
+        // pop the top scope
+        self.ctx.pop_scope(pushed_scope);
+
         let func = self.ctx.push_node(
             range,
             Node::FnDefinition {
                 name,
-                scope: self.ctx.top_scope,
+                scope: scope_for_insert,
                 params,
                 return_ty,
                 stmts,
                 returns,
+                transparent,
             },
         );
-
-        // pop the top scope
-        self.ctx.pop_scope(pushed_scope);
 
         if !self.is_polymorph_copying {
             if let Some(name_sym) = name_sym {
@@ -1198,7 +1209,7 @@ impl<'a, W: Source> Parser<'a, W> {
                         break;
                     }
 
-                    let id = self.parse_expression_piece(struct_literals_allowed, false)?;
+                    let id = self.parse_expression_piece(struct_literals_allowed, false, false)?;
                     output.push(Shunting::Id(id))
                 }
                 Token::Star => {
@@ -1217,7 +1228,8 @@ impl<'a, W: Source> Parser<'a, W> {
 
                         self.pop(); // `*`
 
-                        let expr = self.parse_expression_piece(struct_literals_allowed, false)?;
+                        let expr =
+                            self.parse_expression_piece(struct_literals_allowed, false, true)?;
                         let id = self.ctx.push_node(
                             Range::new(start, self.ctx.ranges[expr].end, self.source_info.path),
                             Node::Deref(expr),
@@ -1225,49 +1237,6 @@ impl<'a, W: Source> Parser<'a, W> {
 
                         output.push(Shunting::Id(id))
                     }
-                }
-                Token::Thread | Token::ThreadArrow => {
-                    if !parsing_op {
-                        break;
-                    }
-
-                    let is_arrow = self.source_info.top.tok == Token::ThreadArrow;
-
-                    let Some(Shunting::Id(value)) = output.pop() else {
-                        let msg = if is_arrow {
-                            "Expected value before `|>`".to_string()
-                        } else {
-                            "Expected value before `->`".to_string()
-                        };
-
-                        self.ctx
-                            .errors
-                            .push(CompileError::Generic(msg, self.source_info.top.range));
-
-                        break;
-                    };
-
-                    let mut values = vec![UnrolledThread::Node(value)];
-
-                    // Threading function or arrow-function call?
-                    while self.source_info.top.tok == Token::Thread
-                        || self.source_info.top.tok == Token::ThreadArrow
-                    {
-                        if self.source_info.top.tok == Token::Thread {
-                            values.push(UnrolledThread::Thread);
-                        } else {
-                            assert!(self.source_info.top.tok == Token::ThreadArrow);
-                            values.push(UnrolledThread::Arrow);
-                        }
-
-                        self.pop(); // `|>` / `->`
-                        let value = self.parse_expression_piece(false, true)?;
-                        values.push(UnrolledThread::Node(value));
-                    }
-
-                    let unrolled = self.unroll_threading_call(&mut values);
-
-                    output.push(Shunting::Id(unrolled));
                 }
                 Token::Plus
                 | Token::Dash
@@ -1445,7 +1414,8 @@ impl<'a, W: Source> Parser<'a, W> {
     pub fn parse_expression_piece(
         &mut self,
         struct_literals_allowed: bool,
-        is_threading_func_call: bool,
+        for_threading: bool,
+        for_addr_deref: bool,
     ) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
@@ -1474,11 +1444,11 @@ impl<'a, W: Source> Parser<'a, W> {
                 self.ctx.string_literals.push(id);
                 Ok(id)
             }
-            Token::Fn => self.parse_fn_declaration(true),
+            Token::Fn => self.parse_fn_definition(true),
             Token::Star => {
                 self.pop(); // `*`
 
-                let expr = self.parse_expression_piece(true, false)?;
+                let expr = self.parse_expression_piece(true, false, true)?;
                 let id = self.ctx.push_node(
                     Range::new(start, self.ctx.ranges[expr].end, self.source_info.path),
                     Node::Deref(expr),
@@ -1489,7 +1459,7 @@ impl<'a, W: Source> Parser<'a, W> {
             Token::AddressOf => {
                 self.pop(); // `&`
 
-                let expr = self.parse_expression_piece(true, false)?;
+                let expr = self.parse_expression_piece(true, false, true)?;
 
                 let end = self.ctx.ranges[expr].end;
                 let id = self.ctx.push_node(
@@ -1637,13 +1607,18 @@ impl<'a, W: Source> Parser<'a, W> {
             )),
         }?;
 
-        while let Token::LParen | Token::LSquare | Token::Dot | Token::DoubleColon | Token::As =
-            self.source_info.top.tok
+        while let Token::LParen
+        | Token::LSquare
+        | Token::Dot
+        | Token::DoubleColon
+        | Token::As
+        | Token::Thread
+        | Token::ThreadArrow = self.source_info.top.tok
         {
             // function call?
             while self.source_info.top.tok == Token::LParen {
                 self.pop(); // `(`
-                let params = self.parse_value_params(is_threading_func_call)?;
+                let params = self.parse_value_params(true)?;
                 let end = self.expect_range(start, Token::RParen)?.end;
                 value = self.ctx.push_node(
                     Range::new(start, end, self.source_info.path),
@@ -1652,6 +1627,12 @@ impl<'a, W: Source> Parser<'a, W> {
                         params,
                     },
                 );
+            }
+
+            // If we're parsing for the rhs of a threading call, then
+            // only function calls are valid. Anything else we break and it is not part of the expression
+            if for_threading {
+                break;
             }
 
             // array access?
@@ -1699,6 +1680,10 @@ impl<'a, W: Source> Parser<'a, W> {
             }
 
             // as cast?
+            if for_addr_deref {
+                break;
+            }
+
             if self.source_info.top.tok == Token::As {
                 self.pop(); // `as`
                 let ty = self.parse_type()?;
@@ -1711,6 +1696,31 @@ impl<'a, W: Source> Parser<'a, W> {
                         style: AsCastStyle::None,
                     },
                 );
+            }
+
+            // thread or thread arrow?
+            if self.source_info.top.tok == Token::Thread
+                || self.source_info.top.tok == Token::ThreadArrow
+            {
+                let is_arrow = self.source_info.top.tok == Token::ThreadArrow;
+
+                let thread_type = if is_arrow {
+                    UnrolledThread::Arrow
+                } else {
+                    UnrolledThread::Thread
+                };
+
+                self.pop(); // `|>` / `->`
+
+                let mut values = vec![
+                    UnrolledThread::Node(value),
+                    thread_type,
+                    UnrolledThread::Node(self.parse_expression_piece(true, true, false)?),
+                ];
+
+                let unrolled = self.unroll_threading_call(&mut values);
+
+                value = unrolled;
             }
         }
 
@@ -1976,7 +1986,7 @@ impl<'a, W: Source> Parser<'a, W> {
             Token::While => self.parse_while(),
             Token::Struct => self.parse_struct_declaration(),
             Token::Enum => self.parse_enum_definition(),
-            Token::Fn => self.parse_fn_declaration(false),
+            Token::Fn | Token::Transparent => self.parse_fn_definition(false),
             _ => {
                 let lvalue = self.parse_expression(true)?;
 
@@ -2340,7 +2350,7 @@ impl Context {
         parser.pop();
 
         let copied = match target {
-            ParseTarget::FnDefinition => parser.parse_fn_declaration(false)?,
+            ParseTarget::FnDefinition => parser.parse_fn_definition(false)?,
             ParseTarget::StructDeclaration => {
                 let parsed = parser.parse_struct_declaration()?;
 

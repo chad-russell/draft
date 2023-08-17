@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 use tracing::instrument;
 
@@ -824,9 +824,12 @@ impl Context {
                 return_ty,
                 stmts,
                 returns,
+                transparent,
                 ..
             } => {
-                if let Some(value) = self.assign_type_fn(id, return_ty, params, stmts, returns) {
+                if let Some(value) =
+                    self.assign_type_fn(id, return_ty, params, stmts, returns, transparent)
+                {
                     return value;
                 }
             }
@@ -1083,10 +1086,17 @@ impl Context {
                             Node::StructDeclParam { .. } | Node::MemberAccess { .. } => {
                                 self.match_types(id, member);
                             }
-                            a => self.errors.push(CompileError::Node(
-                                format!("Cannot perform member access for member {:?}", a),
-                                id,
-                            )),
+                            _a => {
+                                self.deferreds.push(member);
+                                self.deferreds.push(id);
+
+                                // self.errors.push(CompileError::Node(
+                                //     format!("Cannot perform member access for member {:?}", a),
+                                //     id,
+                                // ));
+
+                                return false;
+                            }
                         }
                     }
                     Type::Struct {
@@ -2058,6 +2068,7 @@ impl Context {
         params: IdVec,
         stmts: IdVec,
         returns: IdVec,
+        transparent: bool,
     ) -> Option<bool> {
         // don't directly codegen a polymorph, wait until it's copied first
         if self.polymorph_sources.contains_key(&id) {
@@ -2104,6 +2115,15 @@ impl Context {
                     }
                 }
             }
+        }
+
+        if let (Some(return_ty), true) = (return_ty, transparent) {
+            if !self.types.contains_key(&return_ty) {
+                self.deferreds.push(id);
+                return Some(false);
+            }
+
+            self.propagate_transparency(id, id, self.node_scopes[id]);
         }
 
         if !self.topo.contains(&id) {
@@ -2270,8 +2290,23 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    fn propagate_transparency(&mut self, type_id: NodeId, name: NodeId, scope: ScopeId) {
+    fn propagate_transparency(&mut self, type_id: NodeId, mut name: NodeId, scope: ScopeId) {
         let mut ty = self.get_type(type_id);
+
+        let mut should_deep_copy = false;
+
+        while let Type::Func { return_ty, .. } = ty {
+            should_deep_copy = true;
+
+            if let Some(return_ty) = return_ty {
+                ty = self.get_type(return_ty);
+                let params = self.push_id_vec(vec![]);
+                name = self.push_node(self.ranges[name], Node::Call { func: name, params });
+                self.assign_type(name);
+            } else {
+                break;
+            }
+        }
 
         while let Type::Pointer(base_ty) = ty {
             ty = self.types[&base_ty].clone();
@@ -2298,6 +2333,12 @@ impl Context {
 
         // todo(chad): @clone
         for (entry_name, entry) in self.scopes[struct_scope].entries.clone() {
+            let name = if should_deep_copy {
+                self.deep_copy_node(name)
+            } else {
+                name
+            };
+
             let transparent_member_access = self.push_node(
                 self.ranges[entry],
                 Node::MemberAccess {
@@ -2367,5 +2408,149 @@ impl Context {
         }
 
         return true;
+    }
+
+    #[instrument(skip_all)]
+    pub fn deep_copy_node(&mut self, id: NodeId) -> NodeId {
+        let range = self.ranges[id];
+
+        match self.nodes[id].clone() {
+            Node::Symbol(sym) => self.push_node(range, Node::Symbol(sym)),
+            Node::PolySpecialize {
+                sym,
+                overrides,
+                copied,
+            } => todo!(),
+            Node::PolySpecializeOverride { sym, ty } => todo!(),
+            Node::IntLiteral(_, _) => todo!(),
+            Node::FloatLiteral(_, _) => todo!(),
+            Node::StringLiteral(_) => id,
+            Node::BoolLiteral(_) => todo!(),
+            Node::Type(_) => todo!(),
+            Node::Return(r) => {
+                let r = r.map(|r| self.deep_copy_node(r));
+                self.push_node(range, Node::Return(r))
+            }
+            Node::Resolve(_) => todo!(),
+            Node::Let {
+                name,
+                ty,
+                expr,
+                transparent,
+            } => todo!(),
+            Node::Assign {
+                name,
+                expr,
+                is_store,
+            } => todo!(),
+            Node::FnDefinition {
+                name,
+                scope,
+                params,
+                return_ty,
+                stmts,
+                returns,
+                transparent,
+            } => {
+                let name = name.map(|name| self.deep_copy_node(name));
+                let params = self.deep_copy_id_vec(params);
+                let return_ty = return_ty.map(|ty| self.deep_copy_node(ty));
+                let stmts = self.deep_copy_id_vec(stmts);
+
+                self.push_node(
+                    range,
+                    Node::FnDefinition {
+                        name,
+                        scope,
+                        params,
+                        return_ty,
+                        stmts,
+                        returns,
+                        transparent,
+                    },
+                )
+            }
+            Node::Block {
+                stmts,
+                resolves,
+                is_standalone,
+            } => todo!(),
+            Node::Extern {
+                name,
+                params,
+                return_ty,
+            } => todo!(),
+            Node::StructDeclParam {
+                name,
+                ty,
+                default,
+                index,
+                transparent,
+            } => todo!(),
+            Node::EnumDeclParam { name, ty } => todo!(),
+            Node::FnDeclParam {
+                name,
+                ty,
+                default,
+                index,
+                transparent,
+            } => todo!(),
+            Node::ValueParam { name, value, index } => {
+                let name = name.map(|name| self.deep_copy_node(name));
+                let value = self.deep_copy_node(value);
+
+                self.push_node(range, Node::ValueParam { name, value, index })
+            }
+            Node::BinOp { op, lhs, rhs } => todo!(),
+            Node::Call { func, params } => {
+                // let func = self.deep_copy_node(func);
+                let params = self.deep_copy_id_vec(params);
+                self.push_node(range, Node::Call { func, params })
+            }
+            Node::ThreadingCall { func, params } => todo!(),
+            Node::ThreadingParamTarget => todo!(),
+            Node::ArrayAccess { array, index } => todo!(),
+            Node::StructDeclaration {
+                name,
+                params,
+                scope,
+            } => todo!(),
+            Node::StructLiteral { name, params } => todo!(),
+            Node::EnumDefinition { name, params } => todo!(),
+            Node::ArrayLiteral { members, ty } => todo!(),
+            Node::MemberAccess { value, member } => todo!(),
+            Node::StaticMemberAccess {
+                value,
+                member,
+                resolved,
+            } => todo!(),
+            Node::AddressOf(_) => todo!(),
+            Node::Deref(_) => todo!(),
+            Node::If {
+                cond,
+                then_block,
+                else_block,
+            } => todo!(),
+            Node::For {
+                label,
+                iterable,
+                block,
+            } => todo!(),
+            Node::While { cond, block } => todo!(),
+            Node::Cast { ty, value } => todo!(),
+            Node::SizeOf(_) => todo!(),
+            Node::AsCast { value, ty, style } => todo!(),
+        }
+    }
+
+    #[instrument(skip_all)]
+    pub fn deep_copy_id_vec(&mut self, v: IdVec) -> IdVec {
+        let v = v
+            .borrow_mut()
+            .iter()
+            .map(|&id| self.deep_copy_node(id))
+            .collect::<Vec<_>>();
+
+        Rc::new(RefCell::new(v))
     }
 }

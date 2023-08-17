@@ -6,16 +6,26 @@ fn print_string(s: string) {
     return;
 }
 
+struct Bar {
+    x: i64,
+    y: i64,
+}
+    
 struct Foo {
     m: i64,
     n: i64,
     #transparent vtable: *Foo_Vtable,
 }
 
-fn add_one(foo: *Foo) *Foo {
-    print_string("Adding one!\n");
+fn add_one_foo(foo: *Foo) *Foo {
+    // print_string("Adding one!\n");
     foo.m = foo.m + 1;
     foo.n = foo.n + 1;
+    return foo;
+}
+
+fn add_one_foo2(foo: *Foo) *Foo {
+    print_string("Adding one also!\n");
     return foo;
 }
 
@@ -26,17 +36,43 @@ struct Foo_Vtable {
 }
 
 fn main() i64 {
+    #transparent fn make_bar() Bar {
+        print_string("make_bar\n");
+
+        return Bar {
+            x: 1,
+            y: 2,
+        };
+    }
+
+    x |> print_i64;
+    y |> print_i64;
+
     let foo = Foo {
         m: 1,
         n: 2,
         vtable: &_{
             sum: fn(this: *Foo) i64 { return this.m + this.n; },
             diff: fn(this: *Foo) i64 { return this.m - this.n; },
-            modify: add_one,
+            modify: add_one_foo,
         },
     };
 
-    print_i64((&foo->modify->modify).n);
+    // foo.vtable.sum(&foo);
+
+    print_i64(&foo->modify->modify->sum);
+    
+    // let foo2 = Foo {
+        // m: 3,
+        // n: 4,
+        // vtable: &_{
+            // sum: fn(this: *_) i64 { return 1; },
+            // diff: fn(this: *_) i64 { return 0; },
+            // modify: add_one_foo2,
+        // },
+    // };
+    
+    // print_i64(&foo2->modify->modify->sum);
 
     return 0;
 }

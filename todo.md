@@ -39,12 +39,20 @@
 - [x] arrays assignable to Array type
 - [x] pipe/threading/ufcs operator
     - [x] threading operator can choose where the argument gets threaded into
-- [x] #transparent
-- [ ] arrow operator
+- [-] #transparent
+    - [x] keyword on struct members
+    - [x] keyword on let stmts
+    - [x] keyword on fn parameters
+    - [ ] keyword on fn declarations
+    - [x] structs can be transparent
+    - [ ] functions can be transparent
+    - [ ] enums can be transparent (??)
+    - [ ] arrays can be transparent (??)
+- [x] arrow operator
 - [ ] #this
 - [ ] const struct members
     - [ ] functions
-    - [ ] other stuff??
+    - [ ] other stuff (??)
 - [x] strings
     - [x] store in program's data segment
 - [x] short-circuit and/or operators

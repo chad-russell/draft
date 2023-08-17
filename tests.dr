@@ -335,6 +335,41 @@ fn test_transparent2() {
     return;
 }
 
+fn test_arrow_threading() {
+    struct Foo {
+        m: i64,
+        n: i64,
+        #transparent vtable: *Foo_Vtable,
+    }
+
+    fn add_one_foo(foo: *Foo) *Foo {
+        // print_string("Adding one!\n");
+        foo.m = foo.m + 1;
+        foo.n = foo.n + 1;
+        return foo;
+    }
+
+    struct Foo_Vtable {
+        sum: fn(this: *Foo) i64,
+        diff: fn(this: *Foo) i64,
+        modify: fn(this: *Foo) *Foo,
+    }
+
+    let foo = Foo {
+        m: 1,
+        n: 2,
+        vtable: &_{
+            sum: fn(this: *Foo) i64 { return this.m + this.n; },
+            diff: fn(this: *Foo) i64 { return this.m - this.n; },
+            modify: add_one_foo,
+        },
+    };
+
+    print_i64(&foo->modify->modify->sum);
+
+    return;
+}
+
 fn main() i64 {
     {
         let te1 = 3i64;
@@ -444,7 +479,7 @@ fn main() i64 {
     
     test_threading();
     
-    4 |> sub(@, 3) |> print_i64;
+    4 |> sub(3, @) |> print_i64;
     
     test_static_array_len();
 
@@ -453,6 +488,8 @@ fn main() i64 {
     test_transparent();
 
     test_transparent2();
+
+    test_arrow_threading();
 
     return 0;
 }

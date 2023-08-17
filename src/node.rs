@@ -70,6 +70,7 @@ pub enum Node {
         return_ty: Option<NodeId>,
         stmts: IdVec,
         returns: IdVec,
+        transparent: bool,
     },
     Block {
         stmts: IdVec,
