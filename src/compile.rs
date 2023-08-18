@@ -420,7 +420,7 @@ impl<'a> FunctionCompileContext<'a> {
                             .map(|v| self.ctx.values.insert(id, v));
                         Ok(())
                     }
-                    _ => todo!(),
+                    _ => todo!("{:?}", self.ctx.ranges[id]),
                 }
             }
             Node::IntLiteral(n, _) => {

@@ -802,7 +802,7 @@ impl Context {
             return;
         }
 
-        if self.polymorph_sources.contains_key(&id) {
+        if self.polymorph_sources.contains(&id) {
             return;
         }
 
@@ -930,7 +930,7 @@ impl Context {
                 scope,
             } => {
                 // don't directly codegen a polymorph, wait until it's copied first
-                if self.polymorph_sources.contains_key(&id) {
+                if self.polymorph_sources.contains(&id) {
                     return true;
                 }
 
@@ -978,7 +978,7 @@ impl Context {
             }
             Node::EnumDefinition { name, params } => {
                 // don't directly codegen a polymorph, wait until it's copied first
-                if self.polymorph_sources.contains_key(&id) {
+                if self.polymorph_sources.contains(&id) {
                     return true;
                 }
 
@@ -1005,9 +1005,9 @@ impl Context {
                     self.assign_type(name);
 
                     // If this is a polymorph, copy it first
-                    let name = if self.polymorph_sources.contains_key(&name) {
+                    let name = if self.polymorph_sources.contains(&name) {
                         let &key = self.polymorph_sources.get(&name).unwrap();
-                        match self.polymorph_copy(key, ParseTarget::StructDeclaration) {
+                        match self.copy_polymorph(key, ParseTarget::StructDeclaration) {
                             Ok(copied) => {
                                 self.assign_type(copied);
                                 self.nodes[id] = Node::StructLiteral {
@@ -1027,6 +1027,7 @@ impl Context {
                     };
 
                     self.match_types(name, id);
+
                     if let Err(err) = self.match_params_to_named_struct(params, name, id) {
                         self.errors.push(err);
                         return true;
@@ -1060,7 +1061,7 @@ impl Context {
                     } => {
                         let Node::StructDeclaration { scope, .. } = self.nodes[decl] else {
                             todo!(
-                                "Expected Node::StructDefintion, got {:?}",
+                                "Expected Node::StructDeclaration, got {:?}",
                                 &self.nodes[decl]
                             );
                         };
@@ -1076,24 +1077,20 @@ impl Context {
                                         self.nodes[member] = self.nodes[found].clone();
                                     }
                                     None => {
-                                        self.errors.push(CompileError::Node(
-                                            "Could not find member".to_string(),
+                                        self.defer_on(&[id], CompileError::Node(
+                                            format!("Could not find member {} in scope {}, which only contains {:?}", self.string_interner.resolve(member_name_sym.0).unwrap(), scope.0, self.debug_scope(scope)),
                                             member,
                                         ));
+                                        return false;
                                     }
                                 }
                             }
                             Node::StructDeclParam { .. } | Node::MemberAccess { .. } => {
                                 self.match_types(id, member);
                             }
-                            _a => {
+                            _ => {
                                 self.deferreds.push(member);
                                 self.deferreds.push(id);
-
-                                // self.errors.push(CompileError::Node(
-                                //     format!("Cannot perform member access for member {:?}", a),
-                                //     id,
-                                // ));
 
                                 return false;
                             }
@@ -1135,7 +1132,7 @@ impl Context {
 
                         if !found {
                             self.errors.push(CompileError::Node(
-                                "Could not find member".to_string(),
+                                "Could not find member in fields".to_string(),
                                 member,
                             ));
                         }
@@ -1216,9 +1213,9 @@ impl Context {
                 self.assign_type(value);
 
                 // If this is a polymorph, copy it first
-                let value = if self.polymorph_sources.contains_key(&value) {
+                let value = if self.polymorph_sources.contains(&value) {
                     let &key = self.polymorph_sources.get(&value).unwrap();
-                    match self.polymorph_copy(key, ParseTarget::EnumDefinition) {
+                    match self.copy_polymorph(key, ParseTarget::EnumDefinition) {
                         Ok(copied) => {
                             self.assign_type(copied);
                             self.nodes[id] = Node::StaticMemberAccess {
@@ -1788,23 +1785,13 @@ impl Context {
         }
 
         if let Some(ty) = ty {
-            if self.polymorph_sources.contains_key(&ty) {
-                self.errors.push(CompileError::Node(
-                    format!(
-                        "Generic arguments needed: {} is not a concrete type",
-                        self.nodes[ty].ty()
-                    ),
-                    ty,
-                ));
-                return Some(true);
-            }
-
             self.assign_type(ty);
+            self.check_not_unspecified_polymorph(ty);
             self.match_types(id, ty);
         }
 
         if transparent {
-            if !self.types.contains_key(&id) {
+            if !self.completes.contains(&id) {
                 self.deferreds.push(id);
                 return Some(false);
             }
@@ -1813,6 +1800,15 @@ impl Context {
         }
 
         None
+    }
+
+    #[instrument(skip_all)]
+    fn debug_scope(&self, scope: ScopeId) -> Vec<String> {
+        self.scopes[scope]
+            .entries
+            .keys()
+            .map(|k| (self.string_interner.resolve(k.0).unwrap().to_string()))
+            .collect::<Vec<_>>()
     }
 
     #[instrument(skip_all)]
@@ -1853,6 +1849,7 @@ impl Context {
         }
 
         if let Some(ty) = ty {
+            self.check_not_unspecified_polymorph(ty);
             self.match_types(id, ty);
         }
     }
@@ -1869,7 +1866,7 @@ impl Context {
         if let Some(ty) = ty {
             self.assign_type(ty);
 
-            if self.polymorph_sources.contains_key(&ty) {
+            if self.polymorph_sources.contains(&ty) {
                 self.errors.push(CompileError::Node(
                     format!(
                         "Generic arguments needed: {} is not a concrete type",
@@ -1890,7 +1887,7 @@ impl Context {
         }
 
         if transparent {
-            if !self.types.contains_key(&id) {
+            if !self.completes.contains(&id) {
                 self.deferreds.push(id);
                 return Some(false);
             }
@@ -1910,13 +1907,15 @@ impl Context {
                 self.assign_type(resolved);
                 self.match_types(id, resolved);
 
-                if let Some(&resolved) = self.polymorph_sources.get(&resolved) {
-                    self.polymorph_sources.insert(id, resolved);
+                if self.polymorph_sources.contains(&resolved) {
+                    self.polymorph_sources.insert(id);
                 }
             }
             None => {
-                self.errors
-                    .push(CompileError::Node("Symbol not found".to_string(), id));
+                self.defer_on(
+                    &[id],
+                    CompileError::Node("Symbol not found".to_string(), id),
+                );
             }
         }
     }
@@ -2071,7 +2070,7 @@ impl Context {
         transparent: bool,
     ) -> Option<bool> {
         // don't directly codegen a polymorph, wait until it's copied first
-        if self.polymorph_sources.contains_key(&id) {
+        if self.polymorph_sources.contains(&id) {
             return Some(true);
         }
         if let Some(return_ty) = return_ty {
@@ -2138,9 +2137,9 @@ impl Context {
         self.assign_type(func);
 
         // If func is a polymorph, copy it first
-        if self.polymorph_sources.contains_key(&func) {
+        if self.polymorph_sources.contains(&func) {
             let &key = self.polymorph_sources.get(&func).unwrap();
-            match self.polymorph_copy(key, ParseTarget::FnDefinition) {
+            match self.copy_polymorph(key, ParseTarget::FnDefinition) {
                 Ok(func_id) => {
                     func = func_id;
                     self.assign_type(func);
@@ -2201,12 +2200,11 @@ impl Context {
                 }
             }
             Type::Infer(_) => {
-                self.errors.push(CompileError::Node(
-                    format!("Could not infer type of for called function"),
-                    id,
-                ));
+                self.defer_on(
+                    &[id],
+                    CompileError::Node(format!("Could not infer type of for called function"), id),
+                );
 
-                self.deferreds.push(id);
                 return false;
             }
             ty => {
@@ -2270,7 +2268,7 @@ impl Context {
                 a => panic!("Expected struct, enum or fn definition: got {:?}", a),
             };
 
-            self.polymorph_copy(ty, parse_target)
+            self.copy_polymorph(ty, parse_target)
         } else {
             Ok(ty)
         }
@@ -2278,7 +2276,14 @@ impl Context {
 
     #[instrument(skip_all)]
     pub fn check_not_unspecified_polymorph(&mut self, value: NodeId) {
-        if self.polymorph_sources.contains_key(&value) {
+        let mut base_value = value;
+        let mut ty = self.get_type(value);
+        while let Type::Pointer(pt) = ty {
+            ty = self.get_type(pt);
+            base_value = pt;
+        }
+
+        if self.polymorph_sources.contains(&value) || self.polymorph_sources.contains(&base_value) {
             self.errors.push(CompileError::Node(
                 format!(
                     "Generic arguments needed: {} is not a concrete type",
@@ -2373,16 +2378,28 @@ impl Context {
         }
 
         // Only structs are eligible for being transparent for now
-        let Type::Struct {
-            decl: Some(struct_decl),
-            ..
-        } = param_ty
-        else {
-            self.errors.push(CompileError::Node(
-                "Only structs can be transparent".to_string(),
-                param,
-            ));
-            return true;
+        let struct_decl = match param_ty {
+            Type::Struct {
+                decl: Some(struct_decl),
+                ..
+            } => struct_decl,
+            Type::Infer(_) => {
+                self.defer_on(
+                    &[param],
+                    CompileError::Node(
+                        format!("Only structs can be transparent: not {:?}", param_ty),
+                        param,
+                    ),
+                );
+                return false;
+            }
+            _ => {
+                self.errors.push(CompileError::Node(
+                    format!("Only structs can be transparent: not {:?}", param_ty),
+                    param,
+                ));
+                return true;
+            }
         };
 
         let Node::StructDeclaration { scope, .. } = self.nodes[struct_decl].clone() else {
@@ -2417,11 +2434,11 @@ impl Context {
         match self.nodes[id].clone() {
             Node::Symbol(sym) => self.push_node(range, Node::Symbol(sym)),
             Node::PolySpecialize {
-                sym,
-                overrides,
-                copied,
+                sym: _,
+                overrides: _,
+                copied: _,
             } => todo!(),
-            Node::PolySpecializeOverride { sym, ty } => todo!(),
+            Node::PolySpecializeOverride { sym: _, ty: _ } => todo!(),
             Node::IntLiteral(_, _) => todo!(),
             Node::FloatLiteral(_, _) => todo!(),
             Node::StringLiteral(_) => id,
@@ -2433,15 +2450,15 @@ impl Context {
             }
             Node::Resolve(_) => todo!(),
             Node::Let {
-                name,
-                ty,
-                expr,
-                transparent,
+                name: _,
+                ty: _,
+                expr: _,
+                transparent: _,
             } => todo!(),
             Node::Assign {
-                name,
-                expr,
-                is_store,
+                name: _,
+                expr: _,
+                is_store: _,
             } => todo!(),
             Node::FnDefinition {
                 name,
@@ -2471,29 +2488,29 @@ impl Context {
                 )
             }
             Node::Block {
-                stmts,
-                resolves,
-                is_standalone,
+                stmts: _,
+                resolves: _,
+                is_standalone: _,
             } => todo!(),
             Node::Extern {
-                name,
-                params,
-                return_ty,
+                name: _,
+                params: _,
+                return_ty: _,
             } => todo!(),
             Node::StructDeclParam {
-                name,
-                ty,
-                default,
-                index,
-                transparent,
+                name: _,
+                ty: _,
+                default: _,
+                index: _,
+                transparent: _,
             } => todo!(),
-            Node::EnumDeclParam { name, ty } => todo!(),
+            Node::EnumDeclParam { name: _, ty: _ } => todo!(),
             Node::FnDeclParam {
-                name,
-                ty,
-                default,
-                index,
-                transparent,
+                name: _,
+                ty: _,
+                default: _,
+                index: _,
+                transparent: _,
             } => todo!(),
             Node::ValueParam { name, value, index } => {
                 let name = name.map(|name| self.deep_copy_node(name));
@@ -2501,45 +2518,56 @@ impl Context {
 
                 self.push_node(range, Node::ValueParam { name, value, index })
             }
-            Node::BinOp { op, lhs, rhs } => todo!(),
+            Node::BinOp {
+                op: _,
+                lhs: _,
+                rhs: _,
+            } => todo!(),
             Node::Call { func, params } => {
                 // let func = self.deep_copy_node(func);
                 let params = self.deep_copy_id_vec(params);
                 self.push_node(range, Node::Call { func, params })
             }
-            Node::ThreadingCall { func, params } => todo!(),
+            Node::ThreadingCall { func: _, params: _ } => todo!(),
             Node::ThreadingParamTarget => todo!(),
-            Node::ArrayAccess { array, index } => todo!(),
+            Node::ArrayAccess { array: _, index: _ } => todo!(),
             Node::StructDeclaration {
-                name,
-                params,
-                scope,
+                name: _,
+                params: _,
+                scope: _,
             } => todo!(),
-            Node::StructLiteral { name, params } => todo!(),
-            Node::EnumDefinition { name, params } => todo!(),
-            Node::ArrayLiteral { members, ty } => todo!(),
-            Node::MemberAccess { value, member } => todo!(),
+            Node::StructLiteral { name: _, params: _ } => todo!(),
+            Node::EnumDefinition { name: _, params: _ } => todo!(),
+            Node::ArrayLiteral { members: _, ty: _ } => todo!(),
+            Node::MemberAccess {
+                value: _,
+                member: _,
+            } => todo!(),
             Node::StaticMemberAccess {
-                value,
-                member,
-                resolved,
+                value: _,
+                member: _,
+                resolved: _,
             } => todo!(),
             Node::AddressOf(_) => todo!(),
             Node::Deref(_) => todo!(),
             Node::If {
-                cond,
-                then_block,
-                else_block,
+                cond: _,
+                then_block: _,
+                else_block: _,
             } => todo!(),
             Node::For {
-                label,
-                iterable,
-                block,
+                label: _,
+                iterable: _,
+                block: _,
             } => todo!(),
-            Node::While { cond, block } => todo!(),
-            Node::Cast { ty, value } => todo!(),
+            Node::While { cond: _, block: _ } => todo!(),
+            Node::Cast { ty: _, value: _ } => todo!(),
             Node::SizeOf(_) => todo!(),
-            Node::AsCast { value, ty, style } => todo!(),
+            Node::AsCast {
+                value: _,
+                ty: _,
+                style: _,
+            } => todo!(),
         }
     }
 

@@ -1,78 +1,44 @@
 extern print_i64(n: i64);
 extern print_str(ch: *u8, len: i64);
+extern malloc(n: i64) *struct{};
 
 fn print_string(s: string) {
     print_str(s.data, s.len);
     return;
 }
 
-struct Bar {
-    x: i64,
-    y: i64,
+fn heapify(v: _T!) *T {
+    let a = #cast(*T) malloc(#size_of(T));
+    *a = v;
+    return a;
 }
-    
+
+struct VTable {
+    modify: fn(this: *_T!) *T,
+    sum: fn(this: *T) i64,
+}
+
 struct Foo {
-    m: i64,
-    n: i64,
-    #transparent vtable: *Foo_Vtable,
+    x: i64,
 }
 
-fn add_one_foo(foo: *Foo) *Foo {
-    // print_string("Adding one!\n");
-    foo.m = foo.m + 1;
-    foo.n = foo.n + 1;
-    return foo;
-}
-
-fn add_one_foo2(foo: *Foo) *Foo {
-    print_string("Adding one also!\n");
-    return foo;
-}
-
-struct Foo_Vtable {
-    sum: fn(this: *_T!) i64,
-    diff: fn(this: *T) i64,
-    modify: fn(this: *T) *Foo,
+#transparent fn get_vtable() *VTable!(T: Foo) {
+    return heapify(VTable {
+        modify: fn(this: *Foo) *Foo {
+            this.x = this.x + 1;
+            return this;
+        },
+        sum: fn(this: *Foo) i64 {
+            return this.x;
+        }
+    });
 }
 
 fn main() i64 {
-    #transparent fn make_bar() Bar {
-        print_string("make_bar\n");
+    let f: Foo;
+    f.x = 8;
 
-        return Bar {
-            x: 1,
-            y: 2,
-        };
-    }
-
-    x |> print_i64;
-    y |> print_i64;
-
-    let foo = Foo {
-        m: 1,
-        n: 2,
-        vtable: &_{
-            sum: fn(this: *Foo) i64 { return this.m + this.n; },
-            diff: fn(this: *Foo) i64 { return this.m - this.n; },
-            modify: add_one_foo,
-        },
-    };
-
-    // foo.vtable.sum(&foo);
-
-    print_i64(&foo->modify->modify->sum);
-    
-    // let foo2 = Foo {
-        // m: 3,
-        // n: 4,
-        // vtable: &_{
-            // sum: fn(this: *_) i64 { return 1; },
-            // diff: fn(this: *_) i64 { return 0; },
-            // modify: add_one_foo2,
-        // },
-    // };
-    
-    // print_i64(&foo2->modify->modify->sum);
+    &f |> modify |> modify |> sum |> print_i64;
 
     return 0;
 }

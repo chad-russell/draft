@@ -79,6 +79,9 @@ pub struct Context {
     pub string_literals: Vec<NodeId>,
     pub string_literal_offsets: SecondaryMap<usize>, // Offset into the global data segment for the start of the string literal with
 
+    pub hardstop: usize,
+    pub max_hardstop: usize,
+
     // todo(chad): switch to MaybeUninit at some point
     pub string_literal_data_id: Option<DataId>,
     pub ty_empty: Option<NodeId>,
@@ -109,7 +112,7 @@ pub struct Context {
 
     pub module: JITModule,
     pub values: SecondaryMap<Value>,
-    pub polymorph_sources: SecondaryMap<NodeId>,
+    pub polymorph_sources: SecondarySet,
 
     pub polymorph_copies: SecondarySet,
     pub completes: SecondarySet,
@@ -140,6 +143,9 @@ impl Context {
             string_literal_offsets: Default::default(),
             string_literal_data_id: None,
             ty_empty: None,
+
+            hardstop: 0,
+            max_hardstop: 8,
 
             returns: Default::default(),
             resolves: Default::default(),
@@ -310,6 +316,14 @@ impl Context {
     }
 
     #[instrument(skip_all)]
+    pub fn defer_on(&mut self, ids: &[NodeId], error: CompileError) {
+        self.deferreds.extend(ids.iter());
+        if self.hardstop == self.max_hardstop - 1 {
+            self.errors.push(error);
+        }
+    }
+
+    #[instrument(skip_all)]
     pub fn prepare(&mut self) -> EmptyDraftResult {
         for id in self.top_level.clone() {
             self.assign_type(id);
@@ -317,14 +331,15 @@ impl Context {
             self.circular_dependency_nodes.clear();
         }
 
-        let mut hardstop = 0;
-        while hardstop < 64 && !self.deferreds.is_empty() {
+        self.hardstop = 0;
+        while self.hardstop < self.max_hardstop && !self.deferreds.is_empty() {
             for node in std::mem::take(&mut self.deferreds) {
                 self.assign_type(node);
                 self.unify_types();
+                self.circular_dependency_nodes.clear();
             }
 
-            hardstop += 1;
+            self.hardstop += 1;
         }
 
         for id in 0..self.nodes.len() {
@@ -359,10 +374,6 @@ impl Context {
                         break;
                     };
                 }
-                // Node::MemberAccess { .. } => {
-                //     // Rewrite anything of the form `a.(b.c)` to `(a.b).c`
-                //     self.rewrite_member_access(id);
-                // }
                 _ => {}
             }
         }
@@ -387,10 +398,6 @@ impl Context {
             if let Type::Infer(_) = *ty {
                 self.errors
                     .push(CompileError::Node("Type not assigned".to_string(), *id));
-                // self.errors.push(CompileError::Node(
-                //     format!("Type not assigned: {}", id.0),
-                //     *id,
-                // ));
             }
             if *ty == Type::IntLiteral {
                 self.errors.push(CompileError::Node(
@@ -416,67 +423,6 @@ impl Context {
 
         Ok(())
     }
-
-    // #[instrument(skip_all)]
-    // fn rewrite_member_access(&mut self, id: NodeId) {
-    //     let Node::MemberAccess { value, member } = self.nodes[id] else {
-    //         // unreachable!()
-    //         return;
-    //     };
-
-    //     // let Node::Symbol(_) = self.nodes[value] else {
-    //     //     todo!("Rewrite member access for value {}", self.nodes[value].ty())
-    //     // };
-
-    //     // a.(b.c) -> (a.b).c
-    //     // dot(a, dot(b, c)) -> dot(dot(a, b), c)
-    //     match self.nodes[member].clone() {
-    //         Node::Symbol(_) | Node::StructDeclParam { .. } => {}
-    //         Node::MemberAccess {
-    //             value: nested_value,
-    //             member: nested_member,
-    //         } => {
-    //             // self.rewrite_member_access(nested_member);
-    //             // self.rewrite_member_access(member);
-
-    //             println!(
-    //                 "Rewriting member access on:\n\t{:?}({:?})\n\t{:?}({:?})",
-    //                 self.nodes[value].ty(),
-    //                 self.ranges[value],
-    //                 self.nodes[member].ty(),
-    //                 self.ranges[member],
-    //             );
-
-    //             // id: a.(b.c)
-    //             // value: a
-    //             // member: b.c
-    //             // nested_value: b
-    //             // nested_member: c
-
-    //             let a_dot_b = Node::MemberAccess {
-    //                 value,
-    //                 member: nested_value,
-    //             };
-    //             let that_dot_c = Node::MemberAccess {
-    //                 value: member,
-    //                 member: nested_member,
-    //             };
-
-    //             self.nodes[member] = a_dot_b;
-    //             self.nodes[id] = that_dot_c;
-
-    //             self.types.insert(member, self.types[&nested_value].clone());
-    //             self.types.insert(id, self.types[&nested_member].clone());
-
-    //             println!(
-    //                 "Type:\na_dot_b:{:?}\nthat_dot_c:{:?}\n",
-    //                 self.get_type(id),
-    //                 self.get_type(member)
-    //             );
-    //         }
-    //         a => todo!("Rewrite member access for member {}", a.ty()),
-    //     }
-    // }
 
     #[instrument(skip_all)]
     pub fn get_symbol(&self, sym_id: NodeId) -> Sym {

@@ -49,7 +49,7 @@
     - [ ] enums can be transparent (??)
     - [ ] arrays can be transparent (??)
 - [x] arrow operator
-- [ ] #this
+- [ ] #this (??)
 - [ ] const struct members
     - [ ] functions
     - [ ] other stuff (??)

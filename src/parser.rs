@@ -762,9 +762,9 @@ impl<'a, W: Source> Parser<'a, W> {
         let mut range = self.source_info.top.range;
 
         self.pop();
-        if self.in_struct_decl || self.in_enum_decl || self.in_fn_params_decl {
-            self.ctx.polymorph_target = true;
-        }
+        // if self.in_struct_decl || self.in_enum_decl || self.in_fn_params_decl {
+        //     self.ctx.polymorph_target = true;
+        // }
 
         range.end = self.source_info.top.range.end;
         self.pop(); // `!`
@@ -987,7 +987,7 @@ impl<'a, W: Source> Parser<'a, W> {
             self.ctx.scope_insert(name_sym, struct_node);
 
             if self.ctx.polymorph_target {
-                self.ctx.polymorph_sources.insert(struct_node, struct_node);
+                self.ctx.polymorph_sources.insert(struct_node);
             }
         }
 
@@ -1032,7 +1032,7 @@ impl<'a, W: Source> Parser<'a, W> {
         }
 
         if self.ctx.polymorph_target {
-            self.ctx.polymorph_sources.insert(enum_node, enum_node);
+            self.ctx.polymorph_sources.insert(enum_node);
         }
 
         self.ctx.polymorph_target = old_polymorph_target;
@@ -1120,7 +1120,7 @@ impl<'a, W: Source> Parser<'a, W> {
         }
 
         if self.ctx.polymorph_target {
-            self.ctx.polymorph_sources.insert(func, func);
+            self.ctx.polymorph_sources.insert(func);
         }
 
         self.ctx.polymorph_target = old_polymorph_target;
@@ -2338,9 +2338,18 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn polymorph_copy(&mut self, id: NodeId, target: ParseTarget) -> DraftResult<NodeId> {
+    pub fn copy_polymorph(&mut self, id: NodeId, target: ParseTarget) -> DraftResult<NodeId> {
+        let id = match self.nodes[id] {
+            Node::Symbol(sym) => self.scope_get(sym, id).unwrap(),
+            _ => id,
+        };
+
+        // println!("Copying polymorph at {:?}", self.ranges[id]);
+
         // Re-parse the region of the source code that contains the id
         let range = self.ranges[id];
+
+        // println!("Copying polymorph at {:?}", range);
 
         let mut source = self.make_source_info_from_range(range);
 
@@ -2378,6 +2387,7 @@ impl Context {
 
         self.polymorph_sources.remove(&copied);
         self.polymorph_copies.insert(copied);
+
         Ok(copied)
     }
 }
