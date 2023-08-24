@@ -210,6 +210,7 @@ impl Context {
     pub fn rearrange_params(
         &mut self,
         given: &[NodeId],
+        given_scope: Option<ScopeId>,
         decl: &[NodeId],
         err_id: NodeId,
     ) -> DraftResult<Vec<NodeId>> {
@@ -250,17 +251,20 @@ impl Context {
 
                 // Add the name
                 let name = decl[given_idx];
-                match self.nodes[name] {
+                match &self.nodes[name] {
                     Node::StructDeclParam { name, .. }
                     | Node::FnDeclParam { name, .. }
-                    | Node::EnumDeclParam { name, .. } => {
+                    | Node::EnumDeclParam { name, .. }
+                    | Node::ValueParam {
+                        name: Some(name), ..
+                    } => {
                         self.nodes[id_to_push] = Node::ValueParam {
-                            name: Some(name),
+                            name: Some(name.clone()),
                             value: existing_value,
                             index: existing_index,
                         };
                     }
-                    _ => panic!(),
+                    a => todo!("Expected named param, got {}", a.ty()),
                 }
 
                 rearranged_given.push(id_to_push);
@@ -322,6 +326,18 @@ impl Context {
                     break;
                 }
             }
+
+            match (found, given_scope) {
+                (false, Some(given_scope)) => {
+                    // Look for the param in the implicit scope
+                    let implicit_scope = &self.scopes[given_scope].implicit_entries;
+                    if let Some(imp) = implicit_scope.get(&decl_name_sym) {
+                        rearranged_given.push(*imp);
+                        found = true;
+                    }
+                }
+                _ => {}
+            };
 
             if !found {
                 match self.nodes[d] {
@@ -463,47 +479,66 @@ impl Context {
                     }
                 }
                 (None, None) => {
-                    if f1.borrow().len() != f2.borrow().len() {
-                        self.errors.push(CompileError::Node2(
-                            "Could not match types: struct fields differ in length".to_string(),
-                            ty1,
-                            ty2,
-                        ));
-                    }
+                    if f1.borrow().len() == 0 && f2.borrow().len() == 0 {
+                        // Nothing to do, two empty things can match each other
+                    } else {
+                        let f1_is_decl = if f1.borrow().len() > 0 {
+                            matches!(
+                                self.nodes[f1.borrow()[0]],
+                                Node::StructDeclParam { .. }
+                                    | Node::FnDeclParam { .. }
+                                    | Node::EnumDeclParam { .. }
+                            )
+                        } else {
+                            !matches!(
+                                self.nodes[f2.borrow()[0]],
+                                Node::StructDeclParam { .. }
+                                    | Node::FnDeclParam { .. }
+                                    | Node::EnumDeclParam { .. }
+                            )
+                        };
 
-                    if f1.borrow().len() > 0 {
-                        let first_f1_param = f1.borrow()[0];
-                        let first_f2_param = f2.borrow()[0];
+                        if f1_is_decl {
+                            let rearranged = self.rearrange_params(
+                                &f2.borrow(),
+                                Some(self.node_scopes[ty2]),
+                                &f1.borrow(),
+                                ty2,
+                            );
 
-                        match self.nodes[first_f1_param] {
-                            Node::StructDeclParam { .. }
-                            | Node::FnDeclParam { .. }
-                            | Node::EnumDeclParam { .. } => {
-                                if let Err(err) =
-                                    self.rearrange_params(&f2.borrow(), &f1.borrow(), ty2)
-                                {
-                                    self.errors.push(err);
-                                };
+                            match rearranged {
+                                Ok(rearranged) => {
+                                    *f2.borrow_mut() = rearranged;
+                                }
+                                Err(err) => self.errors.push(err),
                             }
-                            _ => {}
+                        } else {
+                            let rearranged = self.rearrange_params(
+                                &f1.borrow(),
+                                Some(self.node_scopes[ty1]),
+                                &f2.borrow(),
+                                ty2,
+                            );
+
+                            match rearranged {
+                                Ok(rearranged) => {
+                                    *f1.borrow_mut() = rearranged;
+                                }
+                                Err(err) => self.errors.push(err),
+                            }
                         }
 
-                        match self.nodes[first_f2_param] {
-                            Node::StructDeclParam { .. }
-                            | Node::FnDeclParam { .. }
-                            | Node::EnumDeclParam { .. } => {
-                                if let Err(err) =
-                                    self.rearrange_params(&f1.borrow(), &f2.borrow(), ty2)
-                                {
-                                    self.errors.push(err);
-                                };
-                            }
-                            _ => {}
+                        if f1.borrow().len() != f2.borrow().len() {
+                            self.errors.push(CompileError::Node2(
+                                "Could not match types: struct fields differ in length".to_string(),
+                                ty1,
+                                ty2,
+                            ));
                         }
-                    }
 
-                    for (f1, f2) in f1.borrow().iter().zip(f2.borrow().iter()) {
-                        self.match_types(*f1, *f2);
+                        for (f1, f2) in f1.borrow().iter().zip(f2.borrow().iter()) {
+                            self.match_types(*f1, *f2);
+                        }
                     }
                 }
             },
@@ -1302,7 +1337,9 @@ impl Context {
             Node::If {
                 cond,
                 then_block,
+                then_label,
                 else_block,
+                else_label,
             } => {
                 self.assign_type(cond);
 
@@ -1324,7 +1361,7 @@ impl Context {
                     }
                 }
             }
-            Node::Resolve(r) => match r {
+            Node::Break(r, _) => match r {
                 Some(r) => {
                     self.assign_type(r);
                     self.match_types(id, r);
@@ -1333,22 +1370,23 @@ impl Context {
                     self.types.insert(id, Type::Empty);
                 }
             },
-            Node::Block {
-                stmts, resolves, ..
-            } => {
+            Node::Continue(_) => {
+                self.types.insert(id, Type::Empty);
+            }
+            Node::Block { stmts, breaks, .. } => {
                 for &stmt in stmts.clone().borrow().iter() {
                     self.assign_type(stmt);
                 }
 
-                let resolves = resolves.clone();
+                let breaks = breaks.clone();
 
-                if resolves.borrow().is_empty() {
+                if breaks.borrow().is_empty() {
                     self.types.insert(id, Type::Empty);
                 }
 
-                for &resolve in resolves.borrow().iter() {
-                    self.assign_type(resolve);
-                    self.match_types(id, resolve);
+                for &br in breaks.borrow().iter() {
+                    self.assign_type(br);
+                    self.match_types(id, br);
                 }
             }
             Node::ArrayLiteral { members, ty } => {
@@ -1476,6 +1514,7 @@ impl Context {
                 iterable,
                 label,
                 block,
+                ..
             } => {
                 self.assign_type(iterable);
 
@@ -1495,7 +1534,7 @@ impl Context {
 
                 self.assign_type(block);
             }
-            Node::While { cond, block } => {
+            Node::While { cond, block, .. } => {
                 self.assign_type(cond);
 
                 match self.get_type(cond) {
@@ -1791,7 +1830,7 @@ impl Context {
         }
 
         if transparent {
-            if !self.completes.contains(&id) {
+            if !self.types.contains_key(&id) {
                 self.deferreds.push(id);
                 return Some(false);
             }
@@ -1887,7 +1926,7 @@ impl Context {
         }
 
         if transparent {
-            if !self.completes.contains(&id) {
+            if !self.types.contains_key(&id) {
                 self.deferreds.push(id);
                 return Some(false);
             }
@@ -2168,14 +2207,18 @@ impl Context {
                 let given = param_ids;
                 let decl = input_tys.clone();
 
-                let rearranged_given =
-                    match self.rearrange_params(&given.borrow(), &decl.borrow(), id) {
-                        Ok(r) => r,
-                        Err(err) => {
-                            self.errors.push(err);
-                            return true;
-                        }
-                    };
+                let rearranged_given = match self.rearrange_params(
+                    &given.borrow(),
+                    Some(self.node_scopes[id]),
+                    &decl.borrow(),
+                    id,
+                ) {
+                    Ok(r) => r,
+                    Err(err) => {
+                        self.errors.push(err);
+                        return true;
+                    }
+                };
 
                 *params.borrow_mut() = rearranged_given.clone();
 
@@ -2233,11 +2276,15 @@ impl Context {
         let given = params.clone();
         let decl = decl.clone();
 
-        let rearranged =
-            match self.rearrange_params(&given.borrow(), &decl.borrow(), struct_literal_id) {
-                Ok(r) => Some(r),
-                Err(err) => return Err(err),
-            };
+        let rearranged = match self.rearrange_params(
+            &given.borrow(),
+            Some(self.node_scopes[struct_literal_id]),
+            &decl.borrow(),
+            struct_literal_id,
+        ) {
+            Ok(r) => Some(r),
+            Err(err) => return Err(err),
+        };
 
         if let Some(rearranged) = rearranged {
             *params.borrow_mut() = rearranged.clone();
@@ -2448,7 +2495,8 @@ impl Context {
                 let r = r.map(|r| self.deep_copy_node(r));
                 self.push_node(range, Node::Return(r))
             }
-            Node::Resolve(_) => todo!(),
+            Node::Break(_, _) => todo!(),
+            Node::Continue(_) => todo!(),
             Node::Let {
                 name: _,
                 ty: _,
@@ -2488,8 +2536,9 @@ impl Context {
                 )
             }
             Node::Block {
+                label: _,
                 stmts: _,
-                resolves: _,
+                breaks: _,
                 is_standalone: _,
             } => todo!(),
             Node::Extern {
@@ -2553,14 +2602,21 @@ impl Context {
             Node::If {
                 cond: _,
                 then_block: _,
+                then_label: _,
                 else_block: _,
+                else_label: _,
             } => todo!(),
             Node::For {
                 label: _,
                 iterable: _,
                 block: _,
+                block_label: _,
             } => todo!(),
-            Node::While { cond: _, block: _ } => todo!(),
+            Node::While {
+                cond: _,
+                block: _,
+                block_label: _,
+            } => todo!(),
             Node::Cast { ty: _, value: _ } => todo!(),
             Node::SizeOf(_) => todo!(),
             Node::AsCast {

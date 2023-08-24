@@ -89,8 +89,8 @@ pub struct Context {
     // stack of returns - pushed when entering parsing a function, popped when exiting
     pub returns: Vec<Vec<NodeId>>,
 
-    // stack of resolves - pushed when entering parsing a resolve block, popped when exiting
-    pub resolves: Vec<Vec<NodeId>>,
+    // stack of breaks - pushed when entering parsing a break block, popped when exiting
+    pub breaks: Vec<Vec<NodeId>>,
 
     pub scopes: Scopes,
     pub top_scope: ScopeId,
@@ -148,7 +148,7 @@ impl Context {
             max_hardstop: 8,
 
             returns: Default::default(),
-            resolves: Default::default(),
+            breaks: Default::default(),
 
             scopes: Scopes::new(vec![Scope::new_top()]),
             top_scope: ScopeId(0),
@@ -201,7 +201,7 @@ impl Context {
         self.polymorph_sources.clear();
         self.polymorph_copies.clear();
         self.returns.clear();
-        self.resolves.clear();
+        self.breaks.clear();
 
         self.scopes.clear();
         self.scopes.push(Scope::new_top());

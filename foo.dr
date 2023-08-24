@@ -7,38 +7,20 @@ fn print_string(s: string) {
     return;
 }
 
-fn heapify(v: _T!) *T {
-    let a = #cast(*T) malloc(#size_of(T));
-    *a = v;
-    return a;
-}
-
-struct VTable {
-    modify: fn(this: *_T!) *T,
-    sum: fn(this: *T) i64,
-}
-
-struct Foo {
-    x: i64,
-}
-
-#transparent fn get_vtable() *VTable!(T: Foo) {
-    return heapify(VTable {
-        modify: fn(this: *Foo) *Foo {
-            this.x = this.x + 1;
-            return this;
-        },
-        sum: fn(this: *Foo) i64 {
-            return this.x;
-        }
-    });
-}
-
 fn main() i64 {
-    let f: Foo;
-    f.x = 8;
-
-    &f |> modify |> modify |> sum |> print_i64;
+    let a = true;
+    
+    for i in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] `i {
+        for j in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] `j {
+            if j > 5 {
+                continue `j;
+            }
+            print_i64(i);
+            print_i64(j);
+            print_string("\n");
+        }
+        print_string("***\n");
+    }
 
     return 0;
 }

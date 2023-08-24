@@ -4,6 +4,10 @@
     let a: [3]i64 = [1, 2, 3]; 
     a::len + a[0] |> print_i64;
     ```
+- [ ] putting `continue` or `break` where they don't belong causes errors. Need to catch this at semantic analysis time
+- [ ] having statements after a `return`, `continue` or `break` shouldn't cause a compile error
+- [ ] semantic checking for referencing in a nonexistent label
+- [ ] semantic checking for putting `continue` or `break` in the wrong context
 
 # Features
 - [x] test returning structs from a function
@@ -36,63 +40,68 @@
 - [x] for loops
 - [x] !=, <, >, <=, >= operators
 - [x] while loops
-- [x] arrays assignable to Array type
+- [x] arrays assignable to [] type
 - [x] pipe/threading/ufcs operator
     - [x] threading operator can choose where the argument gets threaded into
 - [-] #transparent
     - [x] keyword on struct members
     - [x] keyword on let stmts
     - [x] keyword on fn parameters
-    - [ ] keyword on fn declarations
+    - [x] keyword on fn declarations
     - [x] structs can be transparent
     - [ ] functions can be transparent
     - [ ] enums can be transparent (??)
     - [ ] arrays can be transparent (??)
 - [x] arrow operator
-- [ ] #this (??)
-- [ ] const struct members
-    - [ ] functions
-    - [ ] other stuff (??)
 - [x] strings
     - [x] store in program's data segment
 - [x] short-circuit and/or operators
+- [x] implicit function arguments
 - [ ] pattern matching (on enums only at first, very simple single-depth match)
     - [ ] `#matches(...)`
     - [ ] `match`
     - [ ] `if let`
     - [ ] `let else`
-- [ ] labelled blocks (use as target for resolve/continue/defer)
-- [ ] continue
+- [-] labelled blocks (use as target for break/continue/defer)
+    - [x] labelled while blocks
+    - [x] labelled if blocks
+    - [x] labelled for blocks
+    - [x] labelled general blocks
+    - [x] `break` can reference labels
+    - [x] `continue` can reference labels
+- [x] continue
 - [ ] defer
-- [ ] any / #astof(...) / type info stuff
-- [ ] question mark operator
-- [ ] string interpolation
-- [ ] coroutines
+    - [ ] can reference a label
 - [ ] c interop
     - [x] extern functions POC
     - [ ] make sure extern functions works with libs/dylibs when compiling to binary
     - [ ] pass structs as arguments
-- [ ] implicit function arguments
+- [ ] any / #astof(...) / type info stuff
 - [ ] debugger
 - [ ] modules, imports
     - [ ] import { A, B::{C, D}, E::* } from "whatever/bar"
+- [ ] const struct members
+    - [ ] functions
+    - [ ] other stuff (??)
+- [ ] string interpolation
+- [ ] question mark operator
+- [ ] coroutines
+- [ ] #this (??)
 
 # Performance
 - [x] investigate performance hit of using Box/Rc instead of the IdVec convention (it was about 10-15%)
-- [ ] use the `stack_store` cranelift ir instruction
-- [ ] use cranelift's frontend for `let` bindings - they don't need to always have stack storage by default unless something is specifically taking a reference to them later
-- [ ] when doing codegen for aggregate types, they don't always need their own slot. Usually it's going to get copied into the slot of somethign else like a let binding, so we can just directly codegen it into that slot
+- [x] when doing codegen for aggregate types, they don't always need their own slot. Usually it's going to get copied into the slot of somethign else like a let binding, so we can just directly codegen it into that slot
 - [ ] consider disabling bounds checking on array (DenseStorage) accesses
 - [ ] multithreading?
 
 # LSP / Tooling
 - [ ] brewfmt
-- [ ] create rust tests which each mimic one of the capabilities of the lsp
+- [ ] create rust tests which each mimic one of the capabilities of the lsp - for easy reproducing of errors
 - [x] error reporting
 - [ ] symbol outline
 - [-] completion
     - [x] for symbols in scope
-    - [ ] for dots on structs/enums/modules/etc.
+    - [ ] for member access
     - [ ] for functions (params)
 - [x] go to definition
 - [ ] hover

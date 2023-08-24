@@ -127,6 +127,8 @@ pub enum Token {
     Dot,
     Underscore,
     UnderscoreSymbol(Sym),
+    ImplicitSymbol(Sym),
+    LabelSymbol(Sym),
     EqEq,
     Neq,
     Gt,
@@ -172,7 +174,8 @@ pub enum Token {
     And,
     Or,
     Return,
-    Resolve,
+    Break,
+    Continue,
     Struct,
     Enum,
     AddressOf,
@@ -318,14 +321,23 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
 
-        let is_underscore = if self.source_info.source.char_count() > 1 {
-            self.source_info.source.starts_with("_")
+        let (is_underscore, is_implicit, is_label) = if self.source_info.source.char_count() > 1 {
+            if self.source_info.source.starts_with("_")
                 && !breaks_symbol(self.source_info.source.char_at(1).unwrap())
+            {
+                (true, false, false)
+            } else if self.source_info.source.starts_with("\\") {
+                (false, true, false)
+            } else if self.source_info.source.starts_with("`") {
+                (false, false, true)
+            } else {
+                (false, false, false)
+            }
         } else {
-            false
+            (false, false, false)
         };
 
-        if is_underscore {
+        if is_underscore || is_implicit || is_label {
             let start = self.source_info.loc;
             self.source_info.eat(1);
 
@@ -348,6 +360,10 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 let symtok = if is_underscore {
                     Token::UnderscoreSymbol(Sym(sym))
+                } else if is_implicit {
+                    Token::ImplicitSymbol(Sym(sym))
+                } else if is_label {
+                    Token::LabelSymbol(Sym(sym))
                 } else {
                     unreachable!();
                 };
@@ -398,7 +414,10 @@ impl<'a, W: Source> Parser<'a, W> {
         if self.source_info.prefix_keyword("return", Token::Return) {
             return;
         }
-        if self.source_info.prefix_keyword("resolve", Token::Resolve) {
+        if self.source_info.prefix_keyword("break", Token::Break) {
+            return;
+        }
+        if self.source_info.prefix_keyword("continue", Token::Continue) {
             return;
         }
         if self.source_info.prefix_keyword("struct", Token::Struct) {
@@ -758,6 +777,25 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
+    fn parse_possibly_implicit_symbol(&mut self) -> DraftResult<(NodeId, bool)> {
+        let range = self.source_info.top.range;
+        match self.source_info.top.tok {
+            Token::Symbol(sym) => {
+                self.pop();
+                Ok((self.ctx.push_node(range, Node::Symbol(sym)), false))
+            }
+            Token::ImplicitSymbol(sym) => {
+                self.pop();
+                Ok((self.ctx.push_node(range, Node::Symbol(sym)), true))
+            }
+            a => Err(CompileError::Generic(
+                format!("Expected symbol, got {:?}", a),
+                range,
+            )),
+        }
+    }
+
+    #[instrument(skip_all)]
     pub fn parse_poly_specialize(&mut self, sym: Sym) -> DraftResult<NodeId> {
         let mut range = self.source_info.top.range;
 
@@ -870,7 +908,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 false
             };
 
-            let name = self.parse_symbol()?;
+            let (name, implicit) = self.parse_possibly_implicit_symbol()?;
             let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
 
             let (ty, default) = if self.source_info.top.tok == Token::Colon {
@@ -937,6 +975,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 DeclParamParseType::Enum | DeclParamParseType::Fn | DeclParamParseType::Struct
             ) {
                 self.ctx.scope_insert(name_sym, param);
+                self.ctx.implicit_insert(name_sym, param, implicit);
             }
 
             params.push(param);
@@ -1202,6 +1241,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 | Token::U64
                 | Token::F32
                 | Token::F64
+                | Token::LabelSymbol(_)
                 | Token::True
                 | Token::False
                 | Token::If => {
@@ -1256,7 +1296,7 @@ impl<'a, W: Source> Parser<'a, W> {
                     let op = Op::from(self.source_info.top.tok);
 
                     while !operators.is_empty()
-                        && operators.last().unwrap().precedence() > op.precedence()
+                        && operators.last().unwrap().precedence() >= op.precedence()
                     {
                         output.push(Shunting::Op(operators.pop().unwrap()));
                     }
@@ -1592,6 +1632,16 @@ impl<'a, W: Source> Parser<'a, W> {
             }
             Token::UnderscoreLCurly => self.parse_struct_literal(),
             Token::LCurly => self.parse_block(true),
+            Token::LabelSymbol(sym) => {
+                self.pop(); // `a
+                let block = self.parse_block(true)?;
+                let Node::Block { label, .. } = &mut self.ctx.nodes[block] else {
+                    unreachable!()
+                };
+                *label = Some(sym);
+                self.ctx.ranges[block].start = start;
+                Ok(block)
+            }
             Token::Symbol(_)
                 if struct_literals_allowed && self.source_info.second.tok == Token::LCurly =>
             {
@@ -1781,7 +1831,7 @@ impl<'a, W: Source> Parser<'a, W> {
             self.pop(); // `#transparent`
         }
 
-        let name = self.parse_symbol()?;
+        let (name, implicit) = self.parse_possibly_implicit_symbol()?;
         let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
 
         let ty = if self.source_info.top.tok == Token::Colon {
@@ -1816,6 +1866,7 @@ impl<'a, W: Source> Parser<'a, W> {
         );
 
         self.ctx.scope_insert(name_sym, let_id);
+        self.ctx.implicit_insert(name_sym, let_id, implicit);
 
         Ok(let_id)
     }
@@ -1828,7 +1879,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
         let pushed_scope = self.ctx.push_scope();
 
-        self.ctx.resolves.push(Vec::new());
+        self.ctx.breaks.push(Vec::new());
 
         let mut stmts = Vec::new();
         while self.source_info.top.tok != Token::RCurly {
@@ -1841,14 +1892,15 @@ impl<'a, W: Source> Parser<'a, W> {
         self.ctx.pop_scope(pushed_scope);
 
         let stmts = self.ctx.push_id_vec(stmts);
-        let resolves = self.ctx.resolves.pop().unwrap();
-        let resolves = self.ctx.push_id_vec(resolves);
+        let breaks = self.ctx.breaks.pop().unwrap();
+        let breaks = self.ctx.push_id_vec(breaks);
 
         let block_id = self.ctx.push_node(
             range,
             Node::Block {
+                label: None,
                 stmts,
-                resolves,
+                breaks,
                 is_standalone,
             },
         );
@@ -1864,17 +1916,33 @@ impl<'a, W: Source> Parser<'a, W> {
 
         let cond = self.parse_expression(false)?;
 
+        let then_label = if let Token::LabelSymbol(sym) = self.source_info.top.tok {
+            self.pop(); // `a
+            Some(sym)
+        } else {
+            None
+        };
+
         let then_block = self.parse_block(false)?;
 
-        let (else_block, end) = if self.source_info.top.tok == Token::Else {
+        let (else_block, else_label, end) = if self.source_info.top.tok == Token::Else {
             self.pop(); // `else`
 
-            if self.source_info.top.tok == Token::LCurly {
+            if let Token::LCurly | Token::LabelSymbol(_) = self.source_info.top.tok {
+                let else_label = if let Token::LabelSymbol(sym) = self.source_info.top.tok {
+                    Some(sym)
+                } else {
+                    None
+                };
                 let else_block = self.parse_block(false)?;
-                (NodeElse::Block(else_block), self.ctx.ranges[else_block].end)
+                (
+                    NodeElse::Block(else_block),
+                    else_label,
+                    self.ctx.ranges[else_block].end,
+                )
             } else if self.source_info.top.tok == Token::If {
                 let else_if = self.parse_if()?;
-                (NodeElse::If(else_if), self.ctx.ranges[else_if].end)
+                (NodeElse::If(else_if), None, self.ctx.ranges[else_if].end)
             } else {
                 return Err(CompileError::Generic(
                     "Expected `if` or `{`".to_string(),
@@ -1882,7 +1950,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 ));
             }
         } else {
-            (NodeElse::None, self.ctx.ranges[then_block].end)
+            (NodeElse::None, None, self.ctx.ranges[then_block].end)
         };
 
         Ok(self.ctx.push_node(
@@ -1890,7 +1958,9 @@ impl<'a, W: Source> Parser<'a, W> {
             Node::If {
                 cond,
                 then_block,
+                then_label,
                 else_block,
+                else_label,
             },
         ))
     }
@@ -1911,6 +1981,13 @@ impl<'a, W: Source> Parser<'a, W> {
 
         let iterable = self.parse_expression(false)?;
 
+        let block_label = if let Token::LabelSymbol(sym) = self.source_info.top.tok {
+            self.pop(); // `a
+            Some(sym)
+        } else {
+            None
+        };
+
         let block = self.parse_block(false)?;
 
         self.ctx.pop_scope(pushed_label_scope);
@@ -1921,6 +1998,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 label,
                 iterable,
                 block,
+                block_label,
             },
         ))
     }
@@ -1935,13 +2013,24 @@ impl<'a, W: Source> Parser<'a, W> {
 
         let cond = self.parse_expression(false)?;
 
+        let block_label = if let Token::LabelSymbol(sym) = self.source_info.top.tok {
+            self.pop(); // `a
+            Some(sym)
+        } else {
+            None
+        };
+
         let block = self.parse_block(false)?;
 
         self.ctx.pop_scope(pushed_label_scope);
 
         Ok(self.ctx.push_node(
             Range::new(start, self.ctx.ranges[block].end, self.source_info.path),
-            Node::While { cond, block },
+            Node::While {
+                cond,
+                block,
+                block_label,
+            },
         ))
     }
 
@@ -1965,8 +2054,15 @@ impl<'a, W: Source> Parser<'a, W> {
                 self.ctx.returns.last_mut().unwrap().push(ret_id);
                 Ok(ret_id)
             }
-            Token::Resolve => {
-                self.pop(); // `resolve`
+            Token::Break => {
+                self.pop(); // `break`
+
+                let name = if let Token::LabelSymbol(sym) = self.source_info.top.tok {
+                    self.pop(); // `a
+                    Some(sym)
+                } else {
+                    None
+                };
 
                 let expr = if self.source_info.top.tok != Token::Semicolon {
                     Some(self.parse_expression(true)?)
@@ -1976,9 +2072,23 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 let range = self.expect_range(start, Token::Semicolon)?;
 
-                let ret_id = self.ctx.push_node(range, Node::Resolve(expr));
-                self.ctx.resolves.last_mut().unwrap().push(ret_id);
-                Ok(ret_id)
+                let res_id = self.ctx.push_node(range, Node::Break(expr, name));
+                self.ctx.breaks.last_mut().unwrap().push(res_id);
+                Ok(res_id)
+            }
+            Token::Continue => {
+                self.pop(); // `continue`
+
+                let continue_sym = if let Token::LabelSymbol(sym) = self.source_info.top.tok {
+                    self.pop(); // `a
+                    Some(sym)
+                } else {
+                    None
+                };
+
+                let range = self.expect_range(start, Token::Semicolon)?;
+                let id = self.ctx.push_node(range, Node::Continue(continue_sym));
+                Ok(id)
             }
             Token::Let => self.parse_let(),
             Token::If => self.parse_if(),

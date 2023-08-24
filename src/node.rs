@@ -51,7 +51,8 @@ pub enum Node {
     BoolLiteral(bool),
     Type(Type),
     Return(Option<NodeId>),
-    Resolve(Option<NodeId>),
+    Break(Option<NodeId>, Option<Sym>),
+    Continue(Option<Sym>),
     Let {
         name: NodeId,
         ty: Option<NodeId>,
@@ -73,8 +74,9 @@ pub enum Node {
         transparent: bool,
     },
     Block {
+        label: Option<Sym>,
         stmts: IdVec,
-        resolves: IdVec,
+        breaks: IdVec,
         is_standalone: bool,
     },
     Extern {
@@ -154,16 +156,20 @@ pub enum Node {
     If {
         cond: NodeId,
         then_block: NodeId,
+        then_label: Option<Sym>,
         else_block: NodeElse,
+        else_label: Option<Sym>,
     },
     For {
         label: NodeId,
         iterable: NodeId,
         block: NodeId,
+        block_label: Option<Sym>,
     },
     While {
         cond: NodeId,
         block: NodeId,
+        block_label: Option<Sym>,
     },
     Cast {
         ty: NodeId,
@@ -200,7 +206,8 @@ impl Node {
             Node::Assign { .. } => "Set".to_string(),
             Node::FnDefinition { .. } => "Func".to_string(),
             Node::Block { .. } => "Block".to_string(),
-            Node::Resolve(_) => "Block".to_string(),
+            Node::Break(_, _) => "Break".to_string(),
+            Node::Continue(_) => "Continue".to_string(),
             Node::Extern { .. } => "Extern".to_string(),
             Node::StructDeclParam { .. } => "StructDeclParam".to_string(),
             Node::EnumDeclParam { .. } => "EnumDeclParam".to_string(),

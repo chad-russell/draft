@@ -3,12 +3,13 @@ use std::collections::{HashMap, HashSet};
 use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::immediates::Imm64;
+use cranelift_codegen::ir::Block as CraneliftBlock;
 use cranelift_codegen::ir::{FuncRef, GlobalValue, GlobalValueData, StackSlot};
 // use cranelift_codegen::ir::SourceLoc;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 
 use cranelift_codegen::ir::{
-    stackslot::StackSize, types, AbiParam, Block, InstBuilder, MemFlags, Signature, StackSlotData,
+    stackslot::StackSize, types, AbiParam, InstBuilder, MemFlags, Signature, StackSlotData,
     StackSlotKind, Type as CraneliftType, Value as CraneliftValue,
 };
 use cranelift_codegen::settings::{self, Configurable};
@@ -19,7 +20,7 @@ use tracing::instrument;
 
 use crate::{
     ArrayLen, AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, Node,
-    NodeId, Op, StaticMemberResolution, Type,
+    NodeId, Op, StaticMemberResolution, Sym, Type,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -379,15 +380,32 @@ struct ToplevelCompileContext<'a> {
     pub func_ctx: &'a mut FunctionBuilderContext,
 }
 
+#[derive(Clone, Copy)]
+enum Block {
+    Block(CraneliftBlock),
+    Continue(CraneliftBlock),
+    Break(CraneliftBlock),
+}
+
+impl Into<CraneliftBlock> for Block {
+    fn into(self) -> CraneliftBlock {
+        match self {
+            Block::Block(b) => b,
+            Block::Continue(b) => b,
+            Block::Break(b) => b,
+        }
+    }
+}
+
 struct FunctionCompileContext<'a> {
     pub ctx: &'a mut Context,
     pub builder: FunctionBuilder<'a>,
-    pub exited_blocks: HashSet<Block>, // which blocks have been terminated
-    pub current_block: Block,          // where we are currently emitting instructions
-    pub resolve_addr: Option<Value>, // the address of the stack slot where we store the value of any Node::Resolve we encounter
-    pub resolve_jump_target: Option<Block>, // the jump target for any Node::Resolve we encounter
+    pub exited_blocks: HashSet<CraneliftBlock>, // which blocks have been terminated
+    pub break_addr: Option<Value>, // the address of the stack slot where we store the value of any Node::Break we encounter
     pub declared_func_ids: HashMap<FuncId, FuncRef>,
     pub global_str_ptr: Option<GlobalValue>,
+    pub blocks: Vec<(Option<Sym>, Block)>,
+    pub current_block: CraneliftBlock,
 }
 
 impl<'a> FunctionCompileContext<'a> {
@@ -481,7 +499,7 @@ impl<'a> FunctionCompileContext<'a> {
                     {
                         // If we're assigning from an aggregate literal, then nothing else can access it so we can just cheat and use the slot it already made.
                         self.ctx.values.insert(id, self.ctx.values[&expr]);
-                    } else if self.ctx.id_is_aggregate_type(expr) {
+                    } else {
                         let size: u32 = self.ctx.id_type_size(id);
                         let slot = self.builder.create_sized_stack_slot(StackSlotData {
                             kind: StackSlotKind::ExplicitSlot,
@@ -489,9 +507,6 @@ impl<'a> FunctionCompileContext<'a> {
                         });
                         self.store_copy(expr, Value::StackSlot(slot));
                         self.ctx.values.insert(id, Value::StackSlot(slot));
-                    } else {
-                        let value = self.id_value(expr);
-                        self.ctx.values.insert(id, Value::Register(value));
                     }
                 } else {
                     let size: u32 = self.ctx.id_type_size(id);
@@ -544,21 +559,25 @@ impl<'a> FunctionCompileContext<'a> {
                 let variable = Variable::new(id.0);
                 self.builder.declare_var(variable, types::I8);
 
-                let test_rhs_block = self.builder.create_block();
-                let cont_block = self.builder.create_block();
+                let test_rhs_block = self.create_block(None);
+                let cont_block = self.create_block(None);
 
                 self.compile_id(lhs)?;
                 let lhs_rvalue = self.id_value(lhs);
                 self.builder.def_var(variable, lhs_rvalue);
-                self.builder
-                    .ins()
-                    .brif(lhs_rvalue, test_rhs_block, &[], cont_block, &[]);
+                self.builder.ins().brif(
+                    lhs_rvalue,
+                    test_rhs_block.into(),
+                    &[],
+                    cont_block.into(),
+                    &[],
+                );
 
                 self.switch_to_block(test_rhs_block);
                 self.compile_id(rhs)?;
                 let rhs_rvalue = self.id_value(rhs);
                 self.builder.def_var(variable, rhs_rvalue);
-                self.builder.ins().jump(cont_block, &[]);
+                self.builder.ins().jump(cont_block.into(), &[]);
 
                 self.switch_to_block(cont_block);
 
@@ -887,12 +906,14 @@ impl<'a> FunctionCompileContext<'a> {
             Node::If {
                 cond,
                 then_block,
+                then_label,
                 else_block,
+                else_label,
             } => {
                 self.compile_id(cond)?;
                 let cond_value = self.id_value(cond);
 
-                let saved_resolve_addr = self.resolve_addr;
+                let saved_break_addr = self.break_addr;
 
                 // Make a stack slot for the result of the if statement
                 let slot_size = self.ctx.id_type_size(id);
@@ -905,15 +926,15 @@ impl<'a> FunctionCompileContext<'a> {
                     let value = Value::StackSlot(slot);
                     self.ctx.values.insert(id, value);
 
-                    self.resolve_addr = Some(value);
+                    self.break_addr = Some(value);
                 }
 
                 let then_ebb = self.builder.create_block();
                 let else_ebb = self.builder.create_block();
                 let merge_ebb = self.builder.create_block();
 
-                let saved_resolve_jump_target = self.resolve_jump_target;
-                self.resolve_jump_target = Some(merge_ebb);
+                self.blocks.push((then_label, Block::Break(merge_ebb)));
+                self.blocks.push((else_label, Block::Break(merge_ebb)));
 
                 self.builder
                     .ins()
@@ -934,8 +955,8 @@ impl<'a> FunctionCompileContext<'a> {
                     }
                     crate::NodeElse::If(else_if) => {
                         self.compile_id(else_if)?;
-                        if let Some(resolve_addr) = self.resolve_addr {
-                            self.store_copy(else_if, resolve_addr);
+                        if let Some(break_addr) = self.break_addr {
+                            self.store_copy(else_if, break_addr);
                         }
                         self.builder.ins().jump(merge_ebb, &[]);
                     }
@@ -946,8 +967,8 @@ impl<'a> FunctionCompileContext<'a> {
 
                 self.builder.switch_to_block(merge_ebb);
 
-                self.resolve_jump_target = saved_resolve_jump_target;
-                self.resolve_addr = saved_resolve_addr;
+                self.blocks.pop();
+                self.break_addr = saved_break_addr;
 
                 Ok(())
             }
@@ -955,6 +976,7 @@ impl<'a> FunctionCompileContext<'a> {
                 label,
                 iterable,
                 block,
+                block_label,
             } => {
                 self.compile_id(iterable)?;
 
@@ -997,6 +1019,10 @@ impl<'a> FunctionCompileContext<'a> {
                 let cond_ebb = self.builder.create_block();
                 let block_ebb = self.builder.create_block();
                 let merge_ebb = self.builder.create_block();
+                let incr_ebb = self.builder.create_block();
+
+                self.blocks.push((block_label, Block::Continue(incr_ebb)));
+                self.blocks.push((block_label, Block::Break(merge_ebb)));
 
                 self.builder.ins().jump(cond_ebb, &[]);
                 self.switch_to_block(cond_ebb);
@@ -1038,6 +1064,11 @@ impl<'a> FunctionCompileContext<'a> {
                 self.compile_id(block)?;
 
                 // increment iterator
+                if !self.exited_blocks.contains(&self.current_block) {
+                    self.builder.ins().jump(incr_ebb, &[]);
+                    self.switch_to_block(incr_ebb);
+                }
+
                 let used_index = self.builder.use_var(index);
                 let incremented = self.builder.ins().iadd_imm(used_index, 1);
                 self.builder.def_var(index, incremented);
@@ -1048,12 +1079,22 @@ impl<'a> FunctionCompileContext<'a> {
 
                 self.builder.switch_to_block(merge_ebb);
 
+                self.blocks.pop();
+                self.blocks.pop();
+
                 Ok(())
             }
-            Node::While { cond, block } => {
+            Node::While {
+                cond,
+                block,
+                block_label,
+            } => {
                 let cond_block = self.builder.create_block();
                 let while_block = self.builder.create_block();
                 let merge_block = self.builder.create_block();
+
+                self.blocks.push((block_label, Block::Continue(cond_block)));
+                self.blocks.push((block_label, Block::Break(merge_block)));
 
                 self.builder.ins().jump(cond_block, &[]);
                 self.switch_to_block(cond_block);
@@ -1071,9 +1112,13 @@ impl<'a> FunctionCompileContext<'a> {
 
                 self.switch_to_block(merge_block);
 
+                self.blocks.pop();
+                self.blocks.pop();
+
                 Ok(())
             }
             Node::Block {
+                label,
                 stmts,
                 is_standalone,
                 ..
@@ -1092,13 +1137,13 @@ impl<'a> FunctionCompileContext<'a> {
                     };
                     self.ctx.values.insert(id, value);
 
-                    let saved_resolve_addr = self.resolve_addr;
-                    self.resolve_addr = Some(value);
+                    let saved_break_addr = self.break_addr;
+                    self.break_addr = Some(value);
 
                     let merge_ebb = self.builder.create_block();
 
-                    let saved_resolve_jump_target = self.resolve_jump_target;
-                    self.resolve_jump_target = Some(merge_ebb);
+                    self.blocks.push((label, Block::Break(merge_ebb)));
+
                     self.compile_ids(stmts)?;
                     if !self.exited_blocks.contains(&self.current_block) {
                         self.builder.ins().jump(merge_ebb, &[]);
@@ -1106,23 +1151,32 @@ impl<'a> FunctionCompileContext<'a> {
 
                     self.switch_to_block(merge_ebb);
 
-                    self.resolve_addr = saved_resolve_addr;
-                    self.resolve_jump_target = saved_resolve_jump_target;
+                    self.break_addr = saved_break_addr;
+                    self.blocks.pop();
                 } else {
                     self.compile_ids(stmts)?;
                 }
 
                 Ok(())
             }
-            Node::Resolve(r) => {
+            Node::Break(r, name) => {
                 if let Some(r) = r {
                     self.compile_id(r)?;
-                    self.store_copy(r, self.resolve_addr.unwrap());
+                    self.store_copy(r, self.break_addr.unwrap());
                 }
 
-                self.builder
-                    .ins()
-                    .jump(self.resolve_jump_target.unwrap(), &[]);
+                let break_block = self.find_break_block(name).unwrap();
+
+                self.builder.ins().jump(break_block, &[]);
+
+                self.exit_current_block();
+
+                Ok(())
+            }
+            Node::Continue(sym) => {
+                let continue_block = self.find_continue_block(sym).unwrap();
+
+                self.builder.ins().jump(continue_block, &[]);
 
                 self.exit_current_block();
 
@@ -1393,7 +1447,9 @@ impl<'a> FunctionCompileContext<'a> {
     }
 
     #[instrument(skip_all)]
-    fn switch_to_block(&mut self, block: Block) {
+    fn switch_to_block(&mut self, block: impl Into<CraneliftBlock>) {
+        let block = block.into();
+
         self.builder.switch_to_block(block);
         self.current_block = block;
     }
@@ -1601,6 +1657,68 @@ impl<'a> FunctionCompileContext<'a> {
             }
         }
     }
+
+    #[inline]
+    fn create_block(&mut self, name: Option<Sym>) -> Block {
+        let block = self.builder.create_block();
+        let block = Block::Block(block);
+        self.blocks.push((name, block));
+        block
+    }
+
+    fn find_break_block(&self, name: Option<Sym>) -> Option<CraneliftBlock> {
+        match name {
+            Some(name) => {
+                for (bname, b) in self.blocks.iter().rev() {
+                    if let Block::Break(b) = b {
+                        if let Some(bname) = bname {
+                            if *bname == name {
+                                return Some(*b);
+                            }
+                        }
+                    }
+                }
+
+                return None;
+            }
+            None => {
+                for (_, b) in self.blocks.iter().rev() {
+                    if let Block::Break(b) = b {
+                        return Some(*b);
+                    }
+                }
+            }
+        }
+
+        return None;
+    }
+
+    fn find_continue_block(&self, name: Option<Sym>) -> Option<CraneliftBlock> {
+        match name {
+            Some(name) => {
+                for (bname, b) in self.blocks.iter().rev() {
+                    if let Block::Continue(b) = b {
+                        if let Some(bname) = bname {
+                            if *bname == name {
+                                return Some(*b);
+                            }
+                        }
+                    }
+                }
+
+                return None;
+            }
+            None => {
+                for (_, b) in self.blocks.iter().rev() {
+                    if let Block::Continue(b) = b {
+                        return Some(*b);
+                    }
+                }
+            }
+        }
+
+        return None;
+    }
 }
 
 impl<'a> ToplevelCompileContext<'a> {
@@ -1654,11 +1772,11 @@ impl<'a> ToplevelCompileContext<'a> {
                     ctx: self.ctx,
                     builder,
                     exited_blocks: Default::default(),
-                    current_block: ebb,
-                    resolve_addr: None,
-                    resolve_jump_target: None,
+                    break_addr: None,
                     declared_func_ids: Default::default(),
                     global_str_ptr: None,
+                    blocks: Default::default(),
+                    current_block: ebb,
                 };
 
                 for &stmt in stmts.borrow().iter() {

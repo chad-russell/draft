@@ -9,6 +9,7 @@ pub struct ScopeId(pub usize);
 pub struct Scope {
     pub parent: Option<ScopeId>,
     pub entries: BTreeMap<Sym, NodeId>,
+    pub implicit_entries: BTreeMap<Sym, NodeId>,
 }
 
 impl Scope {
@@ -16,6 +17,7 @@ impl Scope {
         Self {
             parent: Some(parent),
             entries: Default::default(),
+            implicit_entries: Default::default(),
         }
     }
 
@@ -23,6 +25,7 @@ impl Scope {
         Self {
             parent: None,
             entries: Default::default(),
+            implicit_entries: Default::default(),
         }
     }
 }
@@ -116,5 +119,42 @@ impl Context {
     pub fn scope_get(&self, sym: Sym, node: NodeId) -> Option<NodeId> {
         let scope_id = self.node_scopes[node];
         self.scope_get_with_scope_id(sym, scope_id)
+    }
+
+    #[inline]
+    pub fn implicit_insert(&mut self, sym: Sym, id: NodeId, implicit: bool) {
+        if !implicit {
+            return;
+        }
+
+        self.implicit_insert_into_scope_id(sym, id, self.top_scope);
+    }
+
+    pub fn implicit_insert_into_scope_id(&mut self, sym: Sym, id: NodeId, scope_id: ScopeId) {
+        if self.scopes[scope_id].implicit_entries.contains_key(&sym) {
+            self.errors.push(CompileError::Node(
+                format!(
+                    "Duplicate symbol definition '{}'",
+                    self.string_interner.resolve(sym.0).unwrap()
+                ),
+                id,
+            ));
+        }
+        self.scopes[scope_id].implicit_entries.insert(sym, id);
+    }
+
+    pub fn implicit_get_with_scope_id(&self, sym: Sym, scope: ScopeId) -> Option<NodeId> {
+        match self.scopes[scope].implicit_entries.get(&sym).copied() {
+            Some(id) => Some(id),
+            None => match self.scopes[scope].parent {
+                Some(parent) => self.implicit_get_with_scope_id(sym, parent),
+                None => None,
+            },
+        }
+    }
+
+    pub fn implicit_get(&self, sym: Sym, node: NodeId) -> Option<NodeId> {
+        let scope_id = self.node_scopes[node];
+        self.implicit_get_with_scope_id(sym, scope_id)
     }
 }
