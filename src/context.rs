@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+use cranelift_codegen::ir::GlobalValue;
 use cranelift_module::DataId;
 use string_interner::StringInterner;
 
@@ -112,6 +113,7 @@ pub struct Context {
 
     pub module: JITModule,
     pub values: SecondaryMap<Value>,
+    pub global_values: SecondaryMap<(DataId, Option<GlobalValue>)>,
     pub polymorph_sources: SecondarySet,
 
     pub polymorph_copies: SecondarySet,
@@ -119,6 +121,8 @@ pub struct Context {
     pub circular_dependency_nodes: SecondarySet,
     pub circular_concrete_types: SecondarySet,
     pub impls: SecondarySet,
+
+    pub type_info_decl: Option<NodeId>,
 }
 
 unsafe impl Send for Context {}
@@ -174,6 +178,9 @@ impl Context {
 
             module: Self::make_module(),
             values: Default::default(),
+            global_values: Default::default(),
+
+            type_info_decl: None,
         };
 
         ctx.ty_empty = Some(ctx.push_node(
@@ -325,6 +332,12 @@ impl Context {
 
     #[instrument(skip_all)]
     pub fn prepare(&mut self) -> EmptyDraftResult {
+        self.types
+            .insert(self.type_info_decl.unwrap(), Type::TypeInfo);
+        self.circular_dependency_nodes
+            .insert(self.type_info_decl.unwrap());
+        self.completes.insert(self.type_info_decl.unwrap());
+
         for id in self.top_level.clone() {
             self.assign_type(id);
             self.unify_types();
@@ -419,6 +432,7 @@ impl Context {
 
         self.predeclare_string_constants()?;
         self.predeclare_functions()?;
+        self.insert_type_infos_into_global_data()?;
         self.define_functions()?;
 
         Ok(())

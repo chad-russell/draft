@@ -1,26 +1,82 @@
 extern print_i64(n: i64);
 extern print_str(ch: *u8, len: i64);
 extern malloc(n: i64) *struct{};
+extern print_enum_tag(t: *TypeInfo);
 
-fn print_string(s: string) {
-    print_str(s.data, s.len);
-    return;
+// fn print_string(s: string) {
+    // print_str(s.data, s.len);
+    // return;
+// }
+
+enum Option {
+    None,
+    Some: _T!,
+}
+
+struct TypeInfoParam {
+    name: string,
+    ty: *TypeInfo,
+}
+
+enum TypeInfo {
+    Empty,
+    Bool,
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+    F64,
+    String,
+    Func: struct {
+        name: Option!(T: string),
+        inputs: []TypeInfoParam,
+        return_ty: Option!(T: *TypeInfo),
+    },
+    Struct: struct {
+        name: Option!(T: string),
+        params: []TypeInfoParam,
+    },
+    Enum: struct {
+        name: Option!(T: string),
+        params: []TypeInfoParam,
+    },
+    Pointer: *TypeInfo,
+    Array: struct {
+        elem_ty: *TypeInfo,
+        len: Option!(T: i64),
+    },
+}
+
+// struct Any {
+    // ty: *TypeInfo,
+    // value: *_T!,
+// }
+
+// fn any_of(value: *_T!) Any! {
+    // return Any {
+        // ty: #type_info(T),
+        // value: value,
+    // };
+// }
+
+struct Hack {
+    tag: u16,
+    data: *TypeInfo,
+}
+
+struct Foo {
+    x: i32,
+    y: i32,
 }
 
 fn main() i64 {
-    let a = true;
-    
-    for i in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] `i {
-        for j in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] `j {
-            if j > 5 {
-                continue `j;
-            }
-            print_i64(i);
-            print_i64(j);
-            print_string("\n");
-        }
-        print_string("***\n");
-    }
+    let f = Foo { 3, 4 };
+    let tf = #type_info(Foo);
 
     return 0;
 }

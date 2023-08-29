@@ -57,12 +57,7 @@
     - [x] store in program's data segment
 - [x] short-circuit and/or operators
 - [x] implicit function arguments
-- [ ] pattern matching (on enums only at first, very simple single-depth match)
-    - [ ] `#matches(...)`
-    - [ ] `match`
-    - [ ] `if let`
-    - [ ] `let else`
-- [-] labelled blocks (use as target for break/continue/defer)
+- [x] labelled blocks (use as target for break/continue/defer)
     - [x] labelled while blocks
     - [x] labelled if blocks
     - [x] labelled for blocks
@@ -70,13 +65,18 @@
     - [x] `break` can reference labels
     - [x] `continue` can reference labels
 - [x] continue
+- [ ] any / #astof(...) / type info stuff
 - [ ] defer
     - [ ] can reference a label
+- [ ] pattern matching (on enums only at first, very simple single-depth match)
+    - [ ] `#matches(...)`
+    - [ ] `match`
+    - [ ] `if let`
+    - [ ] `let else`
 - [ ] c interop
     - [x] extern functions POC
     - [ ] make sure extern functions works with libs/dylibs when compiling to binary
     - [ ] pass structs as arguments
-- [ ] any / #astof(...) / type info stuff
 - [ ] debugger
 - [ ] modules, imports
     - [ ] import { A, B::{C, D}, E::* } from "whatever/bar"
@@ -110,3 +110,17 @@
 - [ ] generate missing function
 - [ ] import suggestions
 - [x] syntax highlighter
+
+# New Pointer Approach (??)
+- Everything is a pointer, unless it's specifically declared to be a register
+- Any function returning a pointer to a T can act as an T-allocator for purposes of declaring variables
+    - The function must be callable with no arguments. It may however be polymorphic, and may take arguments as long as they are all implicitly available at every call site
+    - Examples (*all* of the below are of type *Foo):
+        - let a = 'stack Foo { 3, 4 };
+        - let b = 'malloc Foo { 3, 4 };
+        - let c = 'my_alloc Foo { 3, 4 };
+        - let d = 'array_push Foo { 3, 4 };
+- A pointer should be more than just a 64-bit integer. Conceptually, it can be any data imaginable where there is a way to translate that data into the precise location of another piece of data.
+    - Relative pointers (from a statically known offset)
+    - Array indices
+    - Map keys

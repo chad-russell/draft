@@ -10,7 +10,6 @@ use crate::{
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Empty,
-    SelfPointer,
     Infer(Option<Sym>),
     IntLiteral,
     I8,
@@ -31,7 +30,6 @@ pub enum Type {
         return_ty: Option<NodeId>,
     },
     Struct {
-        name: Option<NodeId>,
         params: IdVec,
         decl: Option<NodeId>,
     },
@@ -42,6 +40,7 @@ pub enum Type {
     EnumNoneType, // Type given to enum members with no storage. We need a distinct type to differentiate it from being unassigned
     Pointer(NodeId),
     Array(NodeId, ArrayLen),
+    TypeInfo,
 }
 
 impl Type {
@@ -169,12 +168,6 @@ impl Context {
                     ..
                 },
             ) => {
-                // println!("unifying struct with struct");
-                // println!("param 0 on n1: {:?}", self.nodes[p1.borrow()[0]]);
-                // println!("param 0 on n2: {:?}", self.nodes[p2.borrow()[0]]);
-
-                // return second;
-
                 // prefer named to unnamed structs
                 match (n1, n2) {
                     (Some(_), None) => first,
@@ -191,7 +184,7 @@ impl Context {
             // so it doesn't really matter which is chosen
             (Type::Func { .. }, Type::Func { .. })
             | (Type::Enum { .. }, Type::Enum { .. })
-            | (Type::Pointer(_) | Type::SelfPointer, Type::Pointer(_) | Type::SelfPointer)
+            | (Type::Pointer(_), Type::Pointer(_))
             | (Type::Array(_, _), Type::Array(_, _)) => first,
 
             // Anything else
@@ -384,10 +377,6 @@ impl Context {
         // );
 
         match (self.get_type(ty1), self.get_type(ty2)) {
-            (Type::Pointer(_), Type::SelfPointer) | (Type::SelfPointer, Type::Pointer(_)) => {
-                // This is always valid, because literally the only way to get a SelfPointer is by construction from the compiler.
-                // So we already know it's valid
-            }
             (Type::Pointer(pt1), Type::Pointer(pt2)) => {
                 self.match_types(pt1, pt2);
             }
@@ -976,7 +965,6 @@ impl Context {
                 self.types.insert(
                     id,
                     Type::Struct {
-                        name,
                         params: params.clone(),
                         decl: Some(id),
                     },
@@ -1011,7 +999,7 @@ impl Context {
                     self.scope_insert_into_scope_id(k, v, scope);
                 }
             }
-            Node::EnumDefinition { name, params } => {
+            Node::EnumDefinition { name, params, .. } => {
                 // don't directly codegen a polymorph, wait until it's copied first
                 if self.polymorph_sources.contains(&id) {
                     return true;
@@ -1071,14 +1059,7 @@ impl Context {
                     for &field in params.clone().borrow().iter() {
                         self.assign_type(field);
                     }
-                    self.types.insert(
-                        id,
-                        Type::Struct {
-                            name: None,
-                            params,
-                            decl: None,
-                        },
-                    );
+                    self.types.insert(id, Type::Struct { params, decl: None });
                 }
             }
             Node::MemberAccess { value, member, .. } => {
@@ -1337,9 +1318,8 @@ impl Context {
             Node::If {
                 cond,
                 then_block,
-                then_label,
                 else_block,
-                else_label,
+                ..
             } => {
                 self.assign_type(cond);
 
@@ -1472,11 +1452,17 @@ impl Context {
                     };
                     let sym = self.get_symbol(sym);
 
-                    let Node::StructDeclaration {
+                    let (Node::StructDeclaration {
                         scope: scope_id, ..
-                    } = self.nodes[copied]
+                    }
+                    | Node::EnumDefinition {
+                        scope: scope_id, ..
+                    }) = self.nodes[copied]
                     else {
-                        panic!()
+                        panic!(
+                            "Expected StructDeclaration or EnumDefinition, found {}",
+                            self.nodes[copied].ty()
+                        )
                     };
 
                     let resolved = self.scope_get_with_scope_id(sym, scope_id);
@@ -1509,6 +1495,10 @@ impl Context {
             Node::SizeOf(ty) => {
                 self.assign_type(ty);
                 self.types.insert(id, Type::I64);
+            }
+            Node::TypeInfo(ty) => {
+                self.assign_type(ty);
+                self.types.insert(id, Type::TypeInfo);
             }
             Node::For {
                 iterable,
@@ -2034,9 +2024,9 @@ impl Context {
                     self.assign_type(input_ty);
                 }
             }
-            Type::Struct { name, params, .. } => {
-                if let Some(name) = name {
-                    self.assign_type(name);
+            Type::Struct { params, decl } => {
+                if let Some(decl) = decl {
+                    self.assign_type(decl);
                 }
 
                 for &field in params.borrow().iter() {
@@ -2059,7 +2049,7 @@ impl Context {
                 self.assign_type(ty);
             }
             Type::Empty
-            | Type::SelfPointer
+            | Type::TypeInfo
             | Type::IntLiteral
             | Type::I8
             | Type::I16
@@ -2143,6 +2133,7 @@ impl Context {
                 (Err(err), _) => self.errors.push(err),
                 (Ok(ret_id), Some(return_ty)) => {
                     self.match_types(return_ty, ret_id);
+                    self.check_not_unspecified_polymorph(return_ty);
                 }
                 (Ok(ret_id), None) => {
                     if let Node::Return(Some(_)) = self.nodes[ret_id] {
@@ -2586,7 +2577,11 @@ impl Context {
                 scope: _,
             } => todo!(),
             Node::StructLiteral { name: _, params: _ } => todo!(),
-            Node::EnumDefinition { name: _, params: _ } => todo!(),
+            Node::EnumDefinition {
+                scope: _,
+                name: _,
+                params: _,
+            } => todo!(),
             Node::ArrayLiteral { members: _, ty: _ } => todo!(),
             Node::MemberAccess {
                 value: _,
@@ -2619,6 +2614,7 @@ impl Context {
             } => todo!(),
             Node::Cast { ty: _, value: _ } => todo!(),
             Node::SizeOf(_) => todo!(),
+            Node::TypeInfo(_) => todo!(),
             Node::AsCast {
                 value: _,
                 ty: _,

@@ -7,7 +7,7 @@ pub trait Source: std::fmt::Debug + Sized {
         self.char_count() == 0
     }
 
-    fn pop_chars(&mut self, chars: usize);
+    fn eat_chars(&mut self, chars: usize);
 
     fn next_char(&self) -> Option<char>;
 
@@ -44,7 +44,7 @@ impl Source for StaticStrSource {
         self.chars_remaining
     }
 
-    fn pop_chars(&mut self, chars: usize) {
+    fn eat_chars(&mut self, chars: usize) {
         self.source = &self.source[chars..];
         self.chars_remaining -= chars;
     }
@@ -96,7 +96,7 @@ impl Source for RopeySource {
         self.source_len - self.char_index
     }
 
-    fn pop_chars(&mut self, chars: usize) {
+    fn eat_chars(&mut self, chars: usize) {
         self.char_index += chars;
     }
 
@@ -215,7 +215,7 @@ impl<W: Source> SourceInfo<W> {
 
     pub fn eat_chars(&mut self, chars: usize) {
         let chars = chars.min(self.chars_left);
-        self.source.pop_chars(chars);
+        self.source.eat_chars(chars);
         self.chars_left -= chars;
     }
 

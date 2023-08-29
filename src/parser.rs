@@ -185,6 +185,7 @@ pub enum Token {
     SizeOf,
     Transparent,
     Hash,
+    TypeInfo,
     Eof,
 }
 
@@ -472,6 +473,12 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
         if self.source_info.prefix_keyword("#size_of", Token::SizeOf) {
+            return;
+        }
+        if self
+            .source_info
+            .prefix_keyword("#type_info", Token::TypeInfo)
+        {
             return;
         }
         if self
@@ -1051,6 +1058,7 @@ impl<'a, W: Source> Parser<'a, W> {
         let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
 
         let pushed_scope = self.ctx.push_scope();
+        let enum_scope = self.ctx.top_scope;
 
         self.expect(Token::LCurly)?;
         let fields = self.parse_decl_params(DeclParamParseType::Enum)?;
@@ -1061,6 +1069,7 @@ impl<'a, W: Source> Parser<'a, W> {
         let enum_node = self.ctx.push_node(
             range,
             Node::EnumDefinition {
+                scope: enum_scope,
                 name,
                 params: fields,
             },
@@ -1076,6 +1085,10 @@ impl<'a, W: Source> Parser<'a, W> {
 
         self.ctx.polymorph_target = old_polymorph_target;
         self.in_enum_decl = false;
+
+        if self.ctx.string_interner.resolve(name_sym.0).unwrap() == "TypeInfo" {
+            self.ctx.type_info_decl = Some(enum_node);
+        }
 
         Ok(enum_node)
     }
@@ -1230,6 +1243,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 | Token::AddressOf
                 | Token::Cast
                 | Token::SizeOf
+                | Token::TypeInfo
                 | Token::Fn
                 | Token::I8
                 | Token::I16
@@ -1577,6 +1591,17 @@ impl<'a, W: Source> Parser<'a, W> {
                 let range = self.expect_range(start, Token::RParen)?;
 
                 let id = self.ctx.push_node(range, Node::SizeOf(ty));
+
+                Ok(id)
+            }
+            Token::TypeInfo => {
+                self.pop(); // `#typeinfo`
+
+                self.expect(Token::LParen)?;
+                let e = self.parse_expression(true)?;
+                let range = self.expect_range(start, Token::RParen)?;
+
+                let id = self.ctx.push_node(range, Node::TypeInfo(e));
 
                 Ok(id)
             }

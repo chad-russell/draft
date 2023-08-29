@@ -135,6 +135,7 @@ pub enum Node {
         params: IdVec,
     },
     EnumDefinition {
+        scope: ScopeId,
         name: NodeId,
         params: IdVec,
     },
@@ -176,6 +177,7 @@ pub enum Node {
         value: NodeId,
     },
     SizeOf(NodeId),
+    TypeInfo(NodeId),
     AsCast {
         value: NodeId,
         ty: NodeId,
@@ -231,6 +233,7 @@ impl Node {
             Node::ArrayAccess { .. } => "ArrayAccess".to_string(),
             Node::Cast { .. } => "Cast".to_string(),
             Node::SizeOf(_) => "SizeOf".to_string(),
+            Node::TypeInfo(_) => "TypeInfo".to_string(),
             Node::AsCast { .. } => "AsCast".to_string(),
         }
     }

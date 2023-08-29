@@ -23,12 +23,14 @@ use crate::{
     NodeId, Op, StaticMemberResolution, Sym, Type,
 };
 
+const TYPE_INFO_SIZE_BYTES: u32 = 46;
+
 #[derive(Clone, Copy, Debug)]
 pub enum Value {
     Func(FuncId),              // A function id, can use this to get to a function pointer
     Register(CraneliftValue),  // A value type which can fit in a register
     StackSlot(StackSlot), // A value type which may or may not fit into a register, held in a stack slot
-    Reference(CraneliftValue), // The value is behind a pointer. For example, a struct field, array element or aggregate value
+    Reference(CraneliftValue), // The value is behind a pointer. For example, a struct field, array element, aggregate value, pointer to a global, etc.
 }
 
 impl Context {
@@ -100,6 +102,79 @@ impl Context {
 
             self.predeclare_function(t)?;
         }
+
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    pub fn insert_type_infos_into_global_data(&mut self) -> EmptyDraftResult {
+        for node_id in 0..self.nodes.len() {
+            let Node::TypeInfo(id) = self.nodes[NodeId(node_id)] else { continue; };
+            self.insert_type_info_into_global_data(id)?
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    pub fn insert_type_info_into_global_data(&mut self, id: NodeId) -> EmptyDraftResult {
+        let ty = self.types[&id].clone();
+
+        let data_id = self
+            .module
+            .declare_data(
+                &format!("type_info__{}", id.0),
+                Linkage::Local,
+                false,
+                false,
+            )
+            .map_err(|err| CompileError::Message(err.to_string()))?;
+
+        let mut bytes = Vec::new();
+
+        let mut desc = DataDescription::new();
+
+        match ty {
+            Type::I64 => {
+                // Write the tag, skip the value as it's never used anyway, and this is read-only memory
+                bytes.extend(&5u64.to_ne_bytes());
+
+                // todo(chad): @performance
+                while bytes.len() < TYPE_INFO_SIZE_BYTES as usize {
+                    bytes.push(0);
+                }
+
+                desc.init = Init::Bytes {
+                    contents: bytes.into_boxed_slice(),
+                };
+            }
+            Type::Pointer(pid) => {
+                // Write the tag
+                bytes.extend(&16u64.to_ne_bytes());
+
+                // todo(chad): @performance
+                while bytes.len() < TYPE_INFO_SIZE_BYTES as usize {
+                    bytes.push(0);
+                }
+
+                desc.init = Init::Bytes {
+                    contents: bytes.into_boxed_slice(),
+                };
+
+                // Write the value. This is a pointer to the type info of the pointed-to type
+                self.insert_type_info_into_global_data(pid)?;
+                let (pid_data_id, _) = self.global_values[&pid];
+                let pglobal = self.module.declare_data_in_data(pid_data_id, &mut desc);
+
+                // Write the data address of pglobal into the type info, after the tag
+                desc.write_data_addr(self.enum_tag_size(), pglobal, 0);
+            }
+            Type::Struct { name, params, .. } => {}
+            a => todo!("insert_type_infos_into_global_data for {:?}", a),
+        }
+
+        self.module.define_data(data_id, &desc).unwrap();
+        self.global_values.insert(id, (data_id, None));
 
         Ok(())
     }
@@ -235,17 +310,18 @@ impl Context {
     }
 
     #[instrument(skip_all)]
+    #[inline]
     fn enum_tag_size(&self) -> u32 {
         std::mem::size_of::<u16>() as u32
     }
 
     #[instrument(skip_all)]
-    fn id_type_size(&self, param: NodeId) -> StackSize {
-        self.type_size(self.types[&param].clone())
+    pub fn id_type_size(&self, id: NodeId) -> StackSize {
+        self.type_size(self.types[&id].clone())
     }
 
     #[instrument(skip_all)]
-    fn type_size(&self, ty: Type) -> StackSize {
+    pub fn type_size(&self, ty: Type) -> StackSize {
         match ty {
             Type::I8 | Type::U8 | Type::Bool => 1,
             Type::I16 | Type::U16 => 2,
@@ -255,7 +331,7 @@ impl Context {
             Type::Pointer(_) => self.get_pointer_type().bytes(),
             Type::Array(ty, ArrayLen::Some(len)) => self.id_type_size(ty) * len as StackSize,
             Type::Struct { params, .. } => {
-                // todo(chad): c struct packing rules if annotated
+                // todo(chad): alignment
                 params
                     .clone()
                     .borrow()
@@ -275,6 +351,7 @@ impl Context {
             }
             Type::Array(_, ArrayLen::None) | Type::String => 16,
             Type::EnumNoneType | Type::Empty => 0,
+            Type::TypeInfo => TYPE_INFO_SIZE_BYTES,
             _ => todo!("get_type_size for {:?}", ty),
         }
     }
@@ -401,7 +478,7 @@ struct FunctionCompileContext<'a> {
     pub ctx: &'a mut Context,
     pub builder: FunctionBuilder<'a>,
     pub exited_blocks: HashSet<CraneliftBlock>, // which blocks have been terminated
-    pub break_addr: Option<Value>, // the address of the stack slot where we store the value of any Node::Break we encounter
+    pub break_addr: Option<Value>, // the stack slot where we store the value of any Node::Break we encounter
     pub declared_func_ids: HashMap<FuncId, FuncRef>,
     pub global_str_ptr: Option<GlobalValue>,
     pub blocks: Vec<(Option<Sym>, Block)>,
@@ -968,6 +1045,8 @@ impl<'a> FunctionCompileContext<'a> {
                 self.builder.switch_to_block(merge_ebb);
 
                 self.blocks.pop();
+                self.blocks.pop();
+
                 self.break_addr = saved_break_addr;
 
                 Ok(())
@@ -1130,11 +1209,7 @@ impl<'a> FunctionCompileContext<'a> {
                         size: self.ctx.id_type_size(id),
                     });
 
-                    let value = if self.ctx.id_is_aggregate_type(id) {
-                        Value::StackSlot(slot)
-                    } else {
-                        Value::StackSlot(slot)
-                    };
+                    let value = Value::StackSlot(slot);
                     self.ctx.values.insert(id, value);
 
                     let saved_break_addr = self.break_addr;
@@ -1355,6 +1430,23 @@ impl<'a> FunctionCompileContext<'a> {
                 }
                 _ => unreachable!(),
             },
+            Node::TypeInfo(tid) => {
+                let (data_id, _gv) = self.ctx.global_values[&tid];
+
+                let gv = self
+                    .ctx
+                    .module
+                    .declare_data_in_func(data_id, self.builder.func);
+
+                let ptr = self
+                    .builder
+                    .ins()
+                    .global_value(self.ctx.get_pointer_type(), gv);
+
+                self.ctx.values.insert(id, Value::Reference(ptr));
+
+                Ok(())
+            }
             Node::FnDefinition { .. }
             | Node::StructDeclaration { .. }
             | Node::EnumDefinition { .. } => Ok(()), // This should have already been handled by the toplevel context
