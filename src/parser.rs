@@ -1022,8 +1022,8 @@ impl<'a, W: Source> Parser<'a, W> {
 
         let struct_node = self.ctx.push_node(
             range,
-            Node::StructDeclaration {
-                name: Some(name),
+            Node::StructDefinition {
+                name,
                 params: fields,
                 scope: struct_scope,
             },
@@ -2254,14 +2254,9 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 self.ctx.pop_scope(pushed_scope);
 
-                let id = self.ctx.push_node(
-                    range,
-                    Node::Type(Type::Struct {
-                        name: None,
-                        params,
-                        decl: None,
-                    }),
-                );
+                let id = self
+                    .ctx
+                    .push_node(range, Node::Type(Type::Struct { params, decl: None }));
 
                 Ok(id)
             }
@@ -2499,7 +2494,7 @@ impl Context {
                 let parsed = parser.parse_struct_declaration()?;
 
                 // if the struct has generic params, we need to copy those too
-                let Node::StructDeclaration { params, .. } = self.nodes[parsed].clone() else {
+                let Node::StructDefinition { params, .. } = self.nodes[parsed].clone() else {
                     panic!()
                 };
                 for param in params.borrow().iter() {

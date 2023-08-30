@@ -65,7 +65,9 @@
     - [x] `break` can reference labels
     - [x] `continue` can reference labels
 - [x] continue
-- [ ] any / #astof(...) / type info stuff
+- [-] any / #astof(...) / type info stuff
+- [ ] type alignment
+- [ ] enum discriminant type should be variable, based on how many members there are (but still alignment comes into play, so often we'll have a small type but also enough padding to make it not really matter)
 - [ ] defer
     - [ ] can reference a label
 - [ ] pattern matching (on enums only at first, very simple single-depth match)

@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
+use std::io::Empty;
 
 use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::immediates::Imm64;
 use cranelift_codegen::ir::Block as CraneliftBlock;
 use cranelift_codegen::ir::{FuncRef, GlobalValue, GlobalValueData, StackSlot};
-// use cranelift_codegen::ir::SourceLoc;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 
 use cranelift_codegen::ir::{
@@ -15,7 +15,9 @@ use cranelift_codegen::ir::{
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context as CodegenContext;
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{default_libcall_names, DataDescription, FuncId, Init, Linkage, Module};
+use cranelift_module::{
+    default_libcall_names, DataDescription, DataId, FuncId, Init, Linkage, Module,
+};
 use tracing::instrument;
 
 use crate::{
@@ -23,7 +25,7 @@ use crate::{
     NodeId, Op, StaticMemberResolution, Sym, Type,
 };
 
-const TYPE_INFO_SIZE_BYTES: u32 = 46;
+const TYPE_INFO_SIZE_BYTES: u32 = 64;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Value {
@@ -31,6 +33,26 @@ pub enum Value {
     Register(CraneliftValue),  // A value type which can fit in a register
     StackSlot(StackSlot), // A value type which may or may not fit into a register, held in a stack slot
     Reference(CraneliftValue), // The value is behind a pointer. For example, a struct field, array element, aggregate value, pointer to a global, etc.
+}
+
+pub struct GlobalBuilder {
+    data_id: DataId,
+    bytes: Vec<u8>,
+    desc: DataDescription,
+}
+
+impl GlobalBuilder {
+    #[instrument(skip_all)]
+    pub fn write_u64(&mut self, n: u64) {
+        self.bytes.extend(n.to_ne_bytes());
+    }
+
+    #[instrument(skip_all)]
+    pub fn extend_bytes_to_length(&mut self, len: usize) {
+        while self.bytes.len() < len {
+            self.bytes.push(0);
+        }
+    }
 }
 
 impl Context {
@@ -120,63 +142,189 @@ impl Context {
     pub fn insert_type_info_into_global_data(&mut self, id: NodeId) -> EmptyDraftResult {
         let ty = self.types[&id].clone();
 
-        let data_id = self
-            .module
-            .declare_data(
-                &format!("type_info__{}", id.0),
-                Linkage::Local,
-                false,
-                false,
-            )
-            .map_err(|err| CompileError::Message(err.to_string()))?;
-
-        let mut bytes = Vec::new();
-
-        let mut desc = DataDescription::new();
+        let mut gb = self.make_global_builder()?;
 
         match ty {
             Type::I64 => {
                 // Write the tag, skip the value as it's never used anyway, and this is read-only memory
-                bytes.extend(&5u64.to_ne_bytes());
-
-                // todo(chad): @performance
-                while bytes.len() < TYPE_INFO_SIZE_BYTES as usize {
-                    bytes.push(0);
-                }
-
-                desc.init = Init::Bytes {
-                    contents: bytes.into_boxed_slice(),
-                };
+                gb.write_u64(5);
+                gb.extend_bytes_to_length(TYPE_INFO_SIZE_BYTES as usize);
+                self.gb_finalize(gb, id);
+            }
+            Type::I32 => {
+                // Write the tag, skip the value as it's never used anyway, and this is read-only memory
+                gb.write_u64(4);
+                gb.extend_bytes_to_length(TYPE_INFO_SIZE_BYTES as usize);
+                self.gb_finalize(gb, id);
             }
             Type::Pointer(pid) => {
                 // Write the tag
-                bytes.extend(&16u64.to_ne_bytes());
-
-                // todo(chad): @performance
-                while bytes.len() < TYPE_INFO_SIZE_BYTES as usize {
-                    bytes.push(0);
-                }
-
-                desc.init = Init::Bytes {
-                    contents: bytes.into_boxed_slice(),
-                };
+                gb.write_u64(16);
+                gb.extend_bytes_to_length(TYPE_INFO_SIZE_BYTES as usize);
 
                 // Write the value. This is a pointer to the type info of the pointed-to type
-                self.insert_type_info_into_global_data(pid)?;
-                let (pid_data_id, _) = self.global_values[&pid];
-                let pglobal = self.module.declare_data_in_data(pid_data_id, &mut desc);
+                self.gb_write_type_info_pointer(&mut gb, pid)?;
 
-                // Write the data address of pglobal into the type info, after the tag
-                desc.write_data_addr(self.enum_tag_size(), pglobal, 0);
+                self.gb_finalize(gb, id);
             }
-            Type::Struct { name, params, .. } => {}
+            Type::Struct { params, decl } => {
+                // Write the tag
+                gb.write_u64(14);
+
+                // Write the name
+                {
+                    let name = decl.map(|d| match self.nodes[d] {
+                        Node::StructDefinition { name, .. } => {
+                            self.nodes[name].as_symbol().unwrap()
+                        }
+                        Node::EnumDefinition { name, .. } => self.nodes[name].as_symbol().unwrap(),
+                        Node::Symbol(sym) => sym,
+                        _ => unreachable!(),
+                    });
+
+                    match name {
+                        Some(sym) => {
+                            // Write the tag (Some)
+                            gb.write_u64(0);
+
+                            // Write the string value
+                            {
+                                // Write the pointer
+                                self.gb_write_string_data_pointer(&mut gb, sym)?;
+
+                                // Write the length
+                                let sym_str = self.string_interner.resolve(sym.0).unwrap();
+                                gb.write_u64(sym_str.len() as u64);
+                            }
+                        }
+                        None => {
+                            // Write the tag (None)
+                            gb.write_u64(1);
+
+                            // Pad with bytes that would represent the string value
+                            gb.write_u64(0);
+                            gb.write_u64(0);
+                        }
+                    }
+                }
+
+                // Write the params array
+                {
+                    // Build the data
+                    let params_data_id = {
+                        let params_data_id = self
+                            .module
+                            .declare_data(
+                                &format!("type_info__{}__struct_params", id.0),
+                                Linkage::Local,
+                                false,
+                                false,
+                            )
+                            .map_err(|err| CompileError::Message(err.to_string()))?;
+
+                        let mut params_desc = DataDescription::new();
+                        let mut params_bytes = Vec::new();
+
+                        for param in params.borrow().iter() {
+                            // TypeInfoParam
+                            {
+                                // Name (string)
+                                {
+                                    let (Node::StructDeclParam { name, ..} | Node::ValueParam { name: Some(name), .. }) = self.nodes[*param].clone() else { todo!("{:?}", self.nodes[*param].clone()) };
+                                    let name = self.nodes[name].as_symbol().unwrap();
+
+                                    // Write the pointer
+                                    let string_data_id = self.get_string_data_id(
+                                        name,
+                                        &format!("type_info__{}__param__{}__name", id.0, param.0),
+                                    )?;
+                                    let string_global = self
+                                        .module
+                                        .declare_data_in_data(string_data_id, &mut params_desc);
+                                    params_desc.write_data_addr(
+                                        params_bytes.len() as u32,
+                                        string_global,
+                                        0,
+                                    );
+                                    params_bytes.extend(0u64.to_ne_bytes()); // extend bytes to make room for the pointer
+
+                                    // Write the length
+                                    let name_str = self.string_interner.resolve(name.0).unwrap();
+                                    let name_len = name_str.len() as u64;
+                                    params_bytes.extend(name_len.to_ne_bytes());
+                                }
+
+                                // Type Info Pointer
+                                {
+                                    self.insert_type_info_into_global_data(*param)?;
+
+                                    let (param_data_id, _) = self.global_values[&param];
+                                    let param_global = self
+                                        .module
+                                        .declare_data_in_data(param_data_id, &mut params_desc);
+
+                                    // Write the data address of pglobal into the type info, after the tag
+                                    params_desc.write_data_addr(
+                                        params_bytes.len() as u32,
+                                        param_global,
+                                        0,
+                                    );
+                                    params_bytes.extend(0u64.to_ne_bytes()); // extend bytes to make room for the pointer
+                                }
+                            }
+                        }
+
+                        params_desc.init = Init::Bytes {
+                            contents: params_bytes.into_boxed_slice(),
+                        };
+
+                        self.module
+                            .define_data(params_data_id, &params_desc)
+                            .unwrap();
+
+                        params_data_id
+                    };
+
+                    // Write the data pointer
+                    self.gb_write_global_pointer(&mut gb, params_data_id)?;
+
+                    // Write the length
+                    gb.write_u64(params.borrow().len() as u64);
+                }
+
+                gb.extend_bytes_to_length(TYPE_INFO_SIZE_BYTES as usize);
+
+                self.gb_finalize(gb, id);
+            }
             a => todo!("insert_type_infos_into_global_data for {:?}", a),
         }
 
-        self.module.define_data(data_id, &desc).unwrap();
-        self.global_values.insert(id, (data_id, None));
-
         Ok(())
+    }
+
+    #[instrument(skip_all)]
+    pub fn get_string_data_id(&mut self, sym: Sym, name: &str) -> DraftResult<DataId> {
+        if let Some(data_id) = self.symbol_data_ids.get(&sym) {
+            return Ok(*data_id);
+        }
+
+        let sym_str = self.string_interner.resolve(sym.0).unwrap();
+
+        let string_data_id = self
+            .module
+            .declare_data(&name, Linkage::Local, false, false)
+            .map_err(|err| CompileError::Message(err.to_string()))?;
+        let mut string_desc = DataDescription::new();
+        string_desc.init = Init::Bytes {
+            contents: sym_str.as_bytes().to_vec().into_boxed_slice(),
+        };
+        self.module
+            .define_data(string_data_id, &string_desc)
+            .unwrap();
+
+        self.symbol_data_ids.insert(sym, string_data_id);
+
+        Ok(string_data_id)
     }
 
     #[instrument(skip_all)]
@@ -312,7 +460,8 @@ impl Context {
     #[instrument(skip_all)]
     #[inline]
     fn enum_tag_size(&self) -> u32 {
-        std::mem::size_of::<u16>() as u32
+        // todo(chad): this is horrible, but until alignment is sorted out it's the only valid size that works for everything
+        std::mem::size_of::<u64>() as u32
     }
 
     #[instrument(skip_all)]
@@ -417,6 +566,86 @@ impl Context {
     }
 }
 
+impl Context {
+    #[instrument(skip_all)]
+    fn make_global_builder(&mut self) -> DraftResult<GlobalBuilder> {
+        let data_id = self
+            .module
+            .declare_data(
+                &format!("g{}", self.global_builder_id),
+                Linkage::Local,
+                false,
+                false,
+            )
+            .map_err(|err| CompileError::Message(err.to_string()))?;
+
+        self.global_builder_id += 1;
+
+        let bytes = Vec::new();
+
+        let desc = DataDescription::new();
+
+        Ok(GlobalBuilder {
+            data_id,
+            bytes,
+            desc,
+        })
+    }
+
+    #[instrument(skip_all)]
+    fn gb_write_string_data_pointer(
+        &mut self,
+        gb: &mut GlobalBuilder,
+        sym: Sym,
+    ) -> EmptyDraftResult {
+        let string_data_id = self.get_string_data_id(sym, &format!("sym__{:?}", sym.0))?;
+        let string_global = self
+            .module
+            .declare_data_in_data(string_data_id, &mut gb.desc);
+        gb.desc
+            .write_data_addr(gb.bytes.len() as u32, string_global, 0);
+        gb.write_u64(0); // extend bytes to make room for the pointer
+
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    fn gb_write_global_pointer(&mut self, gb: &mut GlobalBuilder, id: DataId) -> EmptyDraftResult {
+        let global = self.module.declare_data_in_data(id, &mut gb.desc);
+        gb.desc.write_data_addr(gb.bytes.len() as u32, global, 0);
+        gb.write_u64(0); // extend bytes to make room for the pointer
+
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    fn gb_write_type_info_pointer(
+        &mut self,
+        gb: &mut GlobalBuilder,
+        id: NodeId,
+    ) -> EmptyDraftResult {
+        self.insert_type_info_into_global_data(id)?;
+        let (pid_data_id, _) = self.global_values[&id];
+        let pglobal = self.module.declare_data_in_data(pid_data_id, &mut gb.desc);
+
+        // Write the data address of pglobal into the type info, after the tag
+        gb.desc.write_data_addr(gb.bytes.len() as u32, pglobal, 0);
+        gb.bytes.extend(0u64.to_ne_bytes()); // extend bytes to make room for the pointer
+
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    pub fn gb_finalize(&mut self, mut gb: GlobalBuilder, id: NodeId) {
+        gb.desc.init = Init::Bytes {
+            contents: gb.bytes.into_boxed_slice(),
+        };
+
+        self.module.define_data(gb.data_id, &gb.desc).unwrap();
+        self.global_values.insert(id, (gb.data_id, None));
+    }
+}
+
 pub fn print_i64(n: i64) {
     println!("{}", n);
 }
@@ -427,7 +656,7 @@ pub fn print_f64(n: f64) {
 
 #[repr(C)]
 pub struct Enum {
-    pub tag: u16,
+    pub tag: u64,
     pub value: i64,
 }
 
@@ -1448,7 +1677,7 @@ impl<'a> FunctionCompileContext<'a> {
                 Ok(())
             }
             Node::FnDefinition { .. }
-            | Node::StructDeclaration { .. }
+            | Node::StructDefinition { .. }
             | Node::EnumDefinition { .. } => Ok(()), // This should have already been handled by the toplevel context
             _ => todo!("compile_id for {:?}", &self.ctx.nodes[id]),
         }
@@ -1953,13 +2182,12 @@ impl<'a> ToplevelCompileContext<'a> {
                                 .ins()
                                 .stack_addr(self.ctx.module.isa().pointer_type(), slot, 0);
 
-                        // Assign the enum tag to the first 2 bytes
-                        let tag = builder.ins().iconst(types::I16, index as i64);
+                        // Assign the enum tag
+                        let tag = builder.ins().iconst(types::I64, index as i64);
                         builder.ins().store(MemFlags::new(), tag, slot_addr, 0);
 
                         if ty.is_some() {
                             // Assign the value to the rest of however many bytes it needs
-                            // builder.ins().store(MemFlags::new(), ???, slot_addr, 2);
                             let params = builder.block_params(ebb);
                             let param_value = params[0];
 
@@ -1969,7 +2197,9 @@ impl<'a> ToplevelCompileContext<'a> {
                                 let source_value = param_value;
 
                                 let dest_value = slot_addr;
-                                let dest_value = builder.ins().iadd_imm(dest_value, 2);
+                                let dest_value = builder
+                                    .ins()
+                                    .iadd_imm(dest_value, self.ctx.enum_tag_size() as i64);
 
                                 builder.emit_small_memory_copy(
                                     self.ctx.module.isa().frontend_config(),
@@ -1982,9 +2212,12 @@ impl<'a> ToplevelCompileContext<'a> {
                                     MemFlags::new(),
                                 );
                             } else {
-                                builder
-                                    .ins()
-                                    .store(MemFlags::new(), param_value, slot_addr, 2);
+                                builder.ins().store(
+                                    MemFlags::new(),
+                                    param_value,
+                                    slot_addr,
+                                    self.ctx.enum_tag_size() as i32,
+                                );
                             }
                         }
 

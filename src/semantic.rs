@@ -158,18 +158,18 @@ impl Context {
 
             (
                 Type::Struct {
-                    name: n1,
+                    decl: d1,
                     // params: p1,
                     ..
                 },
                 Type::Struct {
-                    name: n2,
+                    decl: d2,
                     // params: p2,
                     ..
                 },
             ) => {
-                // prefer named to unnamed structs
-                match (n1, n2) {
+                // prefer structs that relate to a declaration, to structs that are inferred
+                match (d1, d2) {
                     (Some(_), None) => first,
                     (None, Some(_)) => second,
                     _ => first, // if both are named or both are unnamed, it doesn't matter which is chosen
@@ -420,117 +420,122 @@ impl Context {
             }
             (
                 Type::Struct {
-                    name: n1,
+                    decl: d1,
                     params: f1,
                     ..
                 },
                 Type::Struct {
-                    name: n2,
+                    decl: d2,
                     params: f2,
                     ..
                 },
             )
             | (
                 Type::Enum {
-                    name: n1,
+                    name: d1,
                     params: f1,
                 },
                 Type::Enum {
-                    name: n2,
+                    name: d2,
                     params: f2,
                 },
-            ) => match (n1, n2) {
-                (Some(n1), Some(n2)) => {
-                    let n1d = self.scope_get(self.get_symbol(n1), n1);
-                    let n2d = self.scope_get(self.get_symbol(n2), n2);
+            ) => {
+                match (d1, d2) {
+                    (Some(n1), Some(n2)) => {
+                        // todo(chad): @hack? Compare the range of the declaration site, since if these are polymorphs
+                        // they could be different node ids. Maybe polymorph deduplication will eventually solve this
+                        let n1r = self.ranges[n1];
+                        let n2r = self.ranges[n2];
 
-                    if n1d != n2d {
-                        self.errors.push(CompileError::Node2(
-                            "Could not match types: declaration sites differ".to_string(),
+                        if n1r != n2r {
+                            self.errors.push(CompileError::Node2(
+                            format!("Could not match types: declaration sites differ ({:?} vs {:?})", self.nodes[&n1].clone(), self.nodes[&n2].clone()),
                             n1,
                             n2,
                         ));
-                    }
-
-                    // Same declaration site means same number of parameters, so we can just match them up
-                    for (f1, f2) in f1.clone().borrow().iter().zip(f2.clone().borrow().iter()) {
-                        self.match_types(*f1, *f2);
-                    }
-                }
-                (None, Some(n)) => {
-                    if let Err(err) = self.match_params_to_named_struct(f1, n, ty1) {
-                        self.errors.push(err);
-                    }
-                }
-                (Some(n), None) => {
-                    if let Err(err) = self.match_params_to_named_struct(f2, n, ty2) {
-                        self.errors.push(err);
-                    }
-                }
-                (None, None) => {
-                    if f1.borrow().len() == 0 && f2.borrow().len() == 0 {
-                        // Nothing to do, two empty things can match each other
-                    } else {
-                        let f1_is_decl = if f1.borrow().len() > 0 {
-                            matches!(
-                                self.nodes[f1.borrow()[0]],
-                                Node::StructDeclParam { .. }
-                                    | Node::FnDeclParam { .. }
-                                    | Node::EnumDeclParam { .. }
-                            )
-                        } else {
-                            !matches!(
-                                self.nodes[f2.borrow()[0]],
-                                Node::StructDeclParam { .. }
-                                    | Node::FnDeclParam { .. }
-                                    | Node::EnumDeclParam { .. }
-                            )
-                        };
-
-                        if f1_is_decl {
-                            let rearranged = self.rearrange_params(
-                                &f2.borrow(),
-                                Some(self.node_scopes[ty2]),
-                                &f1.borrow(),
-                                ty2,
-                            );
-
-                            match rearranged {
-                                Ok(rearranged) => {
-                                    *f2.borrow_mut() = rearranged;
-                                }
-                                Err(err) => self.errors.push(err),
-                            }
-                        } else {
-                            let rearranged = self.rearrange_params(
-                                &f1.borrow(),
-                                Some(self.node_scopes[ty1]),
-                                &f2.borrow(),
-                                ty2,
-                            );
-
-                            match rearranged {
-                                Ok(rearranged) => {
-                                    *f1.borrow_mut() = rearranged;
-                                }
-                                Err(err) => self.errors.push(err),
-                            }
                         }
 
-                        if f1.borrow().len() != f2.borrow().len() {
-                            self.errors.push(CompileError::Node2(
-                                "Could not match types: struct fields differ in length".to_string(),
-                                ty1,
-                                ty2,
-                            ));
-                        }
-
-                        for (f1, f2) in f1.borrow().iter().zip(f2.borrow().iter()) {
+                        // Same declaration site means same number of parameters, so we can just match them up
+                        for (f1, f2) in f1.clone().borrow().iter().zip(f2.clone().borrow().iter()) {
                             self.match_types(*f1, *f2);
                         }
                     }
+                    (None, Some(n)) => {
+                        if let Err(err) = self.match_params_to_named_struct(f1, n, ty1) {
+                            self.errors.push(err);
+                        }
+                    }
+                    (Some(n), None) => {
+                        if let Err(err) = self.match_params_to_named_struct(f2, n, ty2) {
+                            self.errors.push(err);
+                        }
+                    }
+                    (None, None) => {
+                        if f1.borrow().len() == 0 && f2.borrow().len() == 0 {
+                            // Nothing to do, two empty things can match each other
+                        } else {
+                            let f1_is_decl = if f1.borrow().len() > 0 {
+                                matches!(
+                                    self.nodes[f1.borrow()[0]],
+                                    Node::StructDeclParam { .. }
+                                        | Node::FnDeclParam { .. }
+                                        | Node::EnumDeclParam { .. }
+                                )
+                            } else {
+                                !matches!(
+                                    self.nodes[f2.borrow()[0]],
+                                    Node::StructDeclParam { .. }
+                                        | Node::FnDeclParam { .. }
+                                        | Node::EnumDeclParam { .. }
+                                )
+                            };
+
+                            if f1_is_decl {
+                                let rearranged = self.rearrange_params(
+                                    &f2.borrow(),
+                                    Some(self.node_scopes[ty2]),
+                                    &f1.borrow(),
+                                    ty2,
+                                );
+
+                                match rearranged {
+                                    Ok(rearranged) => {
+                                        *f2.borrow_mut() = rearranged;
+                                    }
+                                    Err(err) => self.errors.push(err),
+                                }
+                            } else {
+                                let rearranged = self.rearrange_params(
+                                    &f1.borrow(),
+                                    Some(self.node_scopes[ty1]),
+                                    &f2.borrow(),
+                                    ty2,
+                                );
+
+                                match rearranged {
+                                    Ok(rearranged) => {
+                                        *f1.borrow_mut() = rearranged;
+                                    }
+                                    Err(err) => self.errors.push(err),
+                                }
+                            }
+
+                            if f1.borrow().len() != f2.borrow().len() {
+                                self.errors.push(CompileError::Node2(
+                                    "Could not match types: struct fields differ in length"
+                                        .to_string(),
+                                    ty1,
+                                    ty2,
+                                ));
+                            }
+
+                            for (f1, f2) in f1.borrow().iter().zip(f2.borrow().iter()) {
+                                self.match_types(*f1, *f2);
+                            }
+                        }
+                    }
                 }
-            },
+            }
             (Type::Array(n1, l1), Type::Array(n2, l2)) => {
                 if let (ArrayLen::Some(_), ArrayLen::None) | (ArrayLen::None, ArrayLen::Some(_)) =
                     (l1, l2)
@@ -635,7 +640,7 @@ impl Context {
         }
 
         if let Type::Struct {
-            name: Some(_),
+            decl: Some(_),
             params,
             ..
         } = ty
@@ -948,7 +953,7 @@ impl Context {
             Node::Call { func, params, .. } | Node::ThreadingCall { func, params } => {
                 return self.assign_type_inner_call(id, func, params);
             }
-            Node::StructDeclaration {
+            Node::StructDefinition {
                 name,
                 params,
                 scope,
@@ -970,9 +975,7 @@ impl Context {
                     },
                 );
 
-                if let Some(name) = name {
-                    self.match_types(id, name);
-                }
+                self.match_types(id, name);
 
                 let mut should_defer = false;
                 for param in params.borrow().iter() {
@@ -1075,7 +1078,7 @@ impl Context {
                     Type::Struct {
                         decl: Some(decl), ..
                     } => {
-                        let Node::StructDeclaration { scope, .. } = self.nodes[decl] else {
+                        let Node::StructDefinition { scope, .. } = self.nodes[decl] else {
                             todo!(
                                 "Expected Node::StructDeclaration, got {:?}",
                                 &self.nodes[decl]
@@ -1452,7 +1455,7 @@ impl Context {
                     };
                     let sym = self.get_symbol(sym);
 
-                    let (Node::StructDeclaration {
+                    let (Node::StructDefinition {
                         scope: scope_id, ..
                     }
                     | Node::EnumDefinition {
@@ -2300,7 +2303,7 @@ impl Context {
     pub fn copy_polymorph_if_needed(&mut self, ty: NodeId) -> DraftResult<NodeId> {
         if let Some(&ty) = self.polymorph_sources.get(&ty) {
             let parse_target = match self.nodes[ty].clone() {
-                Node::StructDeclaration { .. } => ParseTarget::StructDeclaration,
+                Node::StructDefinition { .. } => ParseTarget::StructDeclaration,
                 Node::EnumDefinition { .. } => ParseTarget::EnumDefinition,
                 Node::FnDefinition { .. } => ParseTarget::FnDefinition,
                 a => panic!("Expected struct, enum or fn definition: got {:?}", a),
@@ -2366,7 +2369,7 @@ impl Context {
             return;
         };
 
-        let Node::StructDeclaration {
+        let Node::StructDefinition {
             scope: struct_scope,
             ..
         } = self.nodes[decl].clone()
@@ -2425,7 +2428,7 @@ impl Context {
                 self.defer_on(
                     &[param],
                     CompileError::Node(
-                        format!("Only structs can be transparent: not {:?}", param_ty),
+                        format!("Only named structs can be transparent: not {:?}", param_ty),
                         param,
                     ),
                 );
@@ -2433,14 +2436,14 @@ impl Context {
             }
             _ => {
                 self.errors.push(CompileError::Node(
-                    format!("Only structs can be transparent: not {:?}", param_ty),
+                    format!("Only named structs can be transparent: not {:?}", param_ty),
                     param,
                 ));
                 return true;
             }
         };
 
-        let Node::StructDeclaration { scope, .. } = self.nodes[struct_decl].clone() else {
+        let Node::StructDefinition { scope, .. } = self.nodes[struct_decl].clone() else {
             unreachable!()
         };
 
@@ -2571,7 +2574,7 @@ impl Context {
             Node::ThreadingCall { func: _, params: _ } => todo!(),
             Node::ThreadingParamTarget => todo!(),
             Node::ArrayAccess { array: _, index: _ } => todo!(),
-            Node::StructDeclaration {
+            Node::StructDefinition {
                 name: _,
                 params: _,
                 scope: _,

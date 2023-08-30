@@ -125,8 +125,8 @@ pub enum Node {
         array: NodeId,
         index: NodeId,
     },
-    StructDeclaration {
-        name: Option<NodeId>,
+    StructDefinition {
+        name: NodeId,
         params: IdVec,
         scope: ScopeId,
     },
@@ -219,7 +219,7 @@ impl Node {
             Node::Call { .. } => "Call".to_string(),
             Node::ThreadingCall { .. } => "ThreadingCall".to_string(),
             Node::ThreadingParamTarget => "ThreadingParamTarget".to_string(),
-            Node::StructDeclaration { .. } => "StructDefinition".to_string(),
+            Node::StructDefinition { .. } => "StructDefinition".to_string(),
             Node::EnumDefinition { .. } => "EnumDefinition".to_string(),
             Node::StructLiteral { .. } => "StructLiteral".to_string(),
             Node::MemberAccess { .. } => "MemberAccess".to_string(),

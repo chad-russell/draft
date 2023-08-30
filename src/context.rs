@@ -114,6 +114,8 @@ pub struct Context {
     pub module: JITModule,
     pub values: SecondaryMap<Value>,
     pub global_values: SecondaryMap<(DataId, Option<GlobalValue>)>,
+    pub global_builder_id: u32,
+    pub symbol_data_ids: HashMap<Sym, DataId>,
     pub polymorph_sources: SecondarySet,
 
     pub polymorph_copies: SecondarySet,
@@ -179,6 +181,8 @@ impl Context {
             module: Self::make_module(),
             values: Default::default(),
             global_values: Default::default(),
+            global_builder_id: 0,
+            symbol_data_ids: Default::default(),
 
             type_info_decl: None,
         };
@@ -233,6 +237,9 @@ impl Context {
 
         self.module = Self::make_module();
         self.values.clear();
+        self.global_values.clear();
+        self.global_builder_id = 0;
+        self.symbol_data_ids.clear();
     }
 
     #[instrument(skip_all)]
@@ -332,6 +339,10 @@ impl Context {
 
     #[instrument(skip_all)]
     pub fn prepare(&mut self) -> EmptyDraftResult {
+        // self.assign_type(self.type_info_decl.unwrap());
+        // self.unify_types();
+        // dbg!(self.id_type_size(self.type_info_decl.unwrap()));
+
         self.types
             .insert(self.type_info_decl.unwrap(), Type::TypeInfo);
         self.circular_dependency_nodes

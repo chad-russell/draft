@@ -6,6 +6,50 @@ extern free(n: *struct{});
 extern put_char(ch: u8);
 extern print_str(ch: *u8, len: i64);
 
+enum Option {
+    None,
+    Some: _T!,
+}
+
+struct TypeInfoParam {
+    name: string,
+    ty: *TypeInfo,
+}
+
+enum TypeInfo {
+    Empty,
+    Bool,
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+    F64,
+    String,
+    Func: struct {
+        name: Option!(T: string),
+        inputs: []TypeInfoParam,
+        return_ty: Option!(T: *TypeInfo),
+    },
+    Struct: struct {
+        name: Option!(T: string),
+        params: []TypeInfoParam,
+    },
+    Enum: struct {
+        name: Option!(T: string),
+        params: []TypeInfoParam,
+    },
+    Pointer: *TypeInfo,
+    Array: struct {
+        elem_ty: *TypeInfo,
+        len: Option!(T: i64),
+    },
+}
+
 fn heapify(v: _T!) *T {
     let a = #cast(*T) malloc(#size_of(T));
     *a = v;
