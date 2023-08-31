@@ -64,33 +64,28 @@ enum TypeInfo {
     // };
 // }
 
-struct Hack {
-    tag: u64,
-    data: struct {
-        name: Option!(T: string),
-        inputs: []TypeInfoParam
-    }
-}
-
 struct Foo {
     x: i32,
     y: i32,
 }
 
+fn print_type(t: TypeInfo) {
+    if let I64 = t {
+        print_string("i64");
+    } else if let Struct(s) = t {
+        print_string("struct");
+    } else {
+        print_string("unknown");
+    }
+
+    return;
+}
+
 fn main() i64 {
-    let f = _{ x: 3i32, y: 4i32 };
+    let f = Foo { x: 3i32, y: 4i32 };
     let tf = #type_info(f);
 
-    print_enum_tag(&tf);
-
-    let hack = #cast(*Hack) &tf;
-    print_enum_tag(#cast &hack.data.name);
-
-    print_i64(hack.data.inputs.len);
-    for inp in hack.data.inputs {
-        print_string(inp.name);
-        print_string("\n");
-    }
+    print_type(tf);
 
     return 0;
 }

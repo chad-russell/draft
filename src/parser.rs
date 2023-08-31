@@ -4,8 +4,8 @@ use string_interner::symbol::SymbolU32;
 use tracing::instrument;
 
 use crate::{
-    ArrayLen, AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, Node,
-    NodeElse, NodeId, Source, SourceInfo, StaticStrSource, Type,
+    ArrayLen, AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, IfCond,
+    Node, NodeElse, NodeId, Source, SourceInfo, StaticStrSource, Type,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
@@ -1934,12 +1934,49 @@ impl<'a, W: Source> Parser<'a, W> {
     }
 
     #[instrument(skip_all)]
+    pub fn parse_if_let(&mut self) -> DraftResult<(IfCond, bool)> {
+        self.pop(); // `let`
+
+        let tag = self.parse_symbol()?;
+
+        let (alias, implicit) = if self.source_info.top.tok == Token::LParen {
+            self.pop(); // `(`
+            let (name, implicit) = self.parse_possibly_implicit_symbol()?;
+            self.expect(Token::RParen)?; // `)`
+            (Some(name), implicit)
+        } else {
+            (None, false)
+        };
+
+        self.expect(Token::Eq)?;
+
+        let expr = self.parse_expression(false)?;
+
+        Ok((IfCond::Let { tag, alias, expr }, implicit))
+    }
+
+    #[instrument(skip_all)]
     pub fn parse_if(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
         self.pop(); // `if`
 
-        let cond = self.parse_expression(false)?;
+        let (cond, alias_sym, alias_id, implicit) = if self.source_info.top.tok == Token::Let {
+            let (ifcond, implicit) = self.parse_if_let()?;
+
+            let IfCond::Let { alias, .. } = ifcond else { unreachable!() };
+            if let Some(alias) = alias {
+                let alias_sym = self.ctx.nodes[alias].as_symbol().unwrap();
+                self.ctx.implicit_insert(alias_sym, alias, implicit);
+
+                (ifcond, Some(alias_sym), Some(alias), implicit)
+            } else {
+                (ifcond, None, None, false)
+            }
+        } else {
+            let ifcond = IfCond::Expr(self.parse_expression(false)?);
+            (ifcond, None, None, false)
+        };
 
         let then_label = if let Token::LabelSymbol(sym) = self.source_info.top.tok {
             self.pop(); // `a
@@ -1949,6 +1986,24 @@ impl<'a, W: Source> Parser<'a, W> {
         };
 
         let then_block = self.parse_block(false)?;
+
+        // todo(chad): @performance
+        if let (Some(alias_sym), Some(alias_id)) = (alias_sym, alias_id) {
+            let Node::Block { stmts, .. } = self.ctx.nodes[then_block].clone() else { unreachable!() };
+
+            let stmts = stmts.borrow();
+            if let Some(first_stmt) = stmts.first() {
+                let block_scope = self.ctx.node_scopes[first_stmt];
+
+                self.ctx
+                    .scope_insert_into_scope_id(alias_sym, alias_id, block_scope);
+
+                if implicit {
+                    self.ctx
+                        .implicit_insert_into_scope_id(alias_sym, alias_id, block_scope);
+                }
+            }
+        }
 
         let (else_block, else_label, end) = if self.source_info.top.tok == Token::Else {
             self.pop(); // `else`
@@ -2275,7 +2330,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
                 Ok(self
                     .ctx
-                    .push_node(range, Node::Type(Type::Enum { name: None, params })))
+                    .push_node(range, Node::Type(Type::Enum { decl: None, params })))
             }
             Token::LSquare => {
                 let start = self.source_info.top.range.start;

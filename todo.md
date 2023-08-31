@@ -49,6 +49,7 @@
     - [x] keyword on fn parameters
     - [x] keyword on fn declarations
     - [x] structs can be transparent
+    - [ ] unnamed struct types can be transparent
     - [ ] functions can be transparent
     - [ ] enums can be transparent (??)
     - [ ] arrays can be transparent (??)
@@ -66,15 +67,14 @@
     - [x] `continue` can reference labels
 - [x] continue
 - [-] any / #astof(...) / type info stuff
+- [ ] pattern matching (on enums only at first, very simple single-depth match)
+    - [ ] `match`
+    - [x] `if let`
+    - [ ] `let else`
 - [ ] type alignment
 - [ ] enum discriminant type should be variable, based on how many members there are (but still alignment comes into play, so often we'll have a small type but also enough padding to make it not really matter)
 - [ ] defer
     - [ ] can reference a label
-- [ ] pattern matching (on enums only at first, very simple single-depth match)
-    - [ ] `#matches(...)`
-    - [ ] `match`
-    - [ ] `if let`
-    - [ ] `let else`
 - [ ] c interop
     - [x] extern functions POC
     - [ ] make sure extern functions works with libs/dylibs when compiling to binary

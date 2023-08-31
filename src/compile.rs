@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::io::Empty;
 
 use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::condcodes::IntCC;
@@ -21,8 +20,8 @@ use cranelift_module::{
 use tracing::instrument;
 
 use crate::{
-    ArrayLen, AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, Node,
-    NodeId, Op, StaticMemberResolution, Sym, Type,
+    ArrayLen, AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, IfCond,
+    Node, NodeId, Op, StaticMemberResolution, Sym, Type,
 };
 
 const TYPE_INFO_SIZE_BYTES: u32 = 64;
@@ -149,13 +148,13 @@ impl Context {
                 // Write the tag, skip the value as it's never used anyway, and this is read-only memory
                 gb.write_u64(5);
                 gb.extend_bytes_to_length(TYPE_INFO_SIZE_BYTES as usize);
-                self.gb_finalize(gb, id);
+                self.gb_finalize(gb, Some(id));
             }
             Type::I32 => {
                 // Write the tag, skip the value as it's never used anyway, and this is read-only memory
                 gb.write_u64(4);
                 gb.extend_bytes_to_length(TYPE_INFO_SIZE_BYTES as usize);
-                self.gb_finalize(gb, id);
+                self.gb_finalize(gb, Some(id));
             }
             Type::Pointer(pid) => {
                 // Write the tag
@@ -165,7 +164,7 @@ impl Context {
                 // Write the value. This is a pointer to the type info of the pointed-to type
                 self.gb_write_type_info_pointer(&mut gb, pid)?;
 
-                self.gb_finalize(gb, id);
+                self.gb_finalize(gb, Some(id));
             }
             Type::Struct { params, decl } => {
                 // Write the tag
@@ -212,77 +211,33 @@ impl Context {
                 {
                     // Build the data
                     let params_data_id = {
-                        let params_data_id = self
-                            .module
-                            .declare_data(
-                                &format!("type_info__{}__struct_params", id.0),
-                                Linkage::Local,
-                                false,
-                                false,
-                            )
-                            .map_err(|err| CompileError::Message(err.to_string()))?;
-
-                        let mut params_desc = DataDescription::new();
-                        let mut params_bytes = Vec::new();
+                        let mut params_gb = self.make_global_builder()?;
 
                         for param in params.borrow().iter() {
                             // TypeInfoParam
+                            // Name (string)
                             {
-                                // Name (string)
-                                {
-                                    let (Node::StructDeclParam { name, ..} | Node::ValueParam { name: Some(name), .. }) = self.nodes[*param].clone() else { todo!("{:?}", self.nodes[*param].clone()) };
-                                    let name = self.nodes[name].as_symbol().unwrap();
+                                let (Node::StructDeclParam { name, ..} | Node::ValueParam { name: Some(name), .. }) = self.nodes[*param].clone() else { todo!("{:?}", self.nodes[*param].clone()) };
+                                let name = self.nodes[name].as_symbol().unwrap();
 
-                                    // Write the pointer
-                                    let string_data_id = self.get_string_data_id(
-                                        name,
-                                        &format!("type_info__{}__param__{}__name", id.0, param.0),
-                                    )?;
-                                    let string_global = self
-                                        .module
-                                        .declare_data_in_data(string_data_id, &mut params_desc);
-                                    params_desc.write_data_addr(
-                                        params_bytes.len() as u32,
-                                        string_global,
-                                        0,
-                                    );
-                                    params_bytes.extend(0u64.to_ne_bytes()); // extend bytes to make room for the pointer
+                                // Write the pointer
+                                self.gb_write_string_data_pointer(&mut params_gb, name)?;
 
-                                    // Write the length
-                                    let name_str = self.string_interner.resolve(name.0).unwrap();
-                                    let name_len = name_str.len() as u64;
-                                    params_bytes.extend(name_len.to_ne_bytes());
-                                }
+                                // Write the length
+                                let name_str = self.string_interner.resolve(name.0).unwrap();
+                                params_gb.write_u64(name_str.len() as u64);
+                            }
 
-                                // Type Info Pointer
-                                {
-                                    self.insert_type_info_into_global_data(*param)?;
+                            // Type Info Pointer
+                            {
+                                self.insert_type_info_into_global_data(*param)?;
 
-                                    let (param_data_id, _) = self.global_values[&param];
-                                    let param_global = self
-                                        .module
-                                        .declare_data_in_data(param_data_id, &mut params_desc);
-
-                                    // Write the data address of pglobal into the type info, after the tag
-                                    params_desc.write_data_addr(
-                                        params_bytes.len() as u32,
-                                        param_global,
-                                        0,
-                                    );
-                                    params_bytes.extend(0u64.to_ne_bytes()); // extend bytes to make room for the pointer
-                                }
+                                let (param_data_id, _) = self.global_values[&param];
+                                self.gb_write_global_pointer(&mut params_gb, param_data_id)?;
                             }
                         }
 
-                        params_desc.init = Init::Bytes {
-                            contents: params_bytes.into_boxed_slice(),
-                        };
-
-                        self.module
-                            .define_data(params_data_id, &params_desc)
-                            .unwrap();
-
-                        params_data_id
+                        self.gb_finalize(params_gb, None)
                     };
 
                     // Write the data pointer
@@ -294,7 +249,7 @@ impl Context {
 
                 gb.extend_bytes_to_length(TYPE_INFO_SIZE_BYTES as usize);
 
-                self.gb_finalize(gb, id);
+                self.gb_finalize(gb, Some(id));
             }
             a => todo!("insert_type_infos_into_global_data for {:?}", a),
         }
@@ -444,6 +399,7 @@ impl Context {
             Type::Pointer(_)
             | Type::Func { .. }
             | Type::Struct { .. }
+            | Type::TypeInfo { .. }
             | Type::Enum { .. }
             | Type::Array(_, _)
             | Type::String => self.get_pointer_type(),
@@ -636,13 +592,18 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    pub fn gb_finalize(&mut self, mut gb: GlobalBuilder, id: NodeId) {
+    pub fn gb_finalize(&mut self, mut gb: GlobalBuilder, id: Option<NodeId>) -> DataId {
         gb.desc.init = Init::Bytes {
             contents: gb.bytes.into_boxed_slice(),
         };
 
         self.module.define_data(gb.data_id, &gb.desc).unwrap();
-        self.global_values.insert(id, (gb.data_id, None));
+
+        if let Some(id) = id {
+            self.global_values.insert(id, (gb.data_id, None));
+        }
+
+        gb.data_id
     }
 }
 
@@ -1216,8 +1177,55 @@ impl<'a> FunctionCompileContext<'a> {
                 else_block,
                 else_label,
             } => {
-                self.compile_id(cond)?;
-                let cond_value = self.id_value(cond);
+                let cond_value = match cond {
+                    IfCond::Expr(expr) => {
+                        self.compile_id(expr)?;
+                        self.id_value(expr)
+                    }
+                    IfCond::Let { tag, alias, expr } => {
+                        self.compile_id(expr)?;
+
+                        let tag_sym = self.ctx.get_symbol(tag);
+
+                        let expr_ty = self.ctx.get_type(expr);
+                        let Type::Enum { params, .. } = expr_ty else { unreachable!() };
+                        let mut param_index = -1;
+                        for (idx, &param) in params.borrow().iter().enumerate() {
+                            if let Node::EnumDeclParam { name, .. } = self.ctx.nodes[param].clone()
+                            {
+                                let name_sym = self.ctx.get_symbol(name);
+                                if name_sym == tag_sym {
+                                    param_index = idx as i64;
+                                    break;
+                                }
+                            } else {
+                                todo!()
+                            };
+                        }
+
+                        // Regardless, assign the value to the alias in case the branch is taken.
+                        // If the branch isn't taken it doesn't matter anyway
+                        if let Some(alias) = alias {
+                            let tag_offset = self.ctx.enum_tag_size();
+                            let enum_value_ptr = self.id_value(expr);
+                            let enum_value_ptr = self
+                                .builder
+                                .ins()
+                                .iadd_imm(enum_value_ptr, tag_offset as i64);
+                            let enum_value_ptr = Value::Reference(enum_value_ptr);
+                            self.ctx.values.insert(alias, enum_value_ptr);
+                        }
+
+                        // Get the tag value of expr
+                        let expr_value = self.id_value(expr);
+                        let tag_value = self.load(types::I64, expr_value, 0);
+
+                        // Compare against param_index
+                        self.builder
+                            .ins()
+                            .icmp_imm(IntCC::Equal, tag_value, param_index)
+                    }
+                };
 
                 let saved_break_addr = self.break_addr;
 
@@ -1692,6 +1700,7 @@ impl<'a> FunctionCompileContext<'a> {
         match self.ctx.nodes[id].clone() {
             Node::Symbol(_) => unrolled.push(UnrolledDot::Symbol(id)),
             Node::StructDeclParam { name, .. } => unrolled.push(UnrolledDot::Symbol(name)),
+            Node::EnumDeclParam { name, .. } => unrolled.push(UnrolledDot::Symbol(name)),
             Node::MemberAccess {
                 value: inner_value,
                 member: inner_member,
@@ -1807,6 +1816,29 @@ impl<'a> FunctionCompileContext<'a> {
             } else {
                 panic!()
             }
+        }
+
+        if let Type::Enum { params, .. } = value_ty {
+            let offset = self.ctx.enum_tag_size();
+
+            for param in params.borrow().iter() {
+                let param_name = match &self.ctx.nodes[param] {
+                    Node::EnumDeclParam { name, .. } => *name,
+                    _ => panic!("Not a param: {:?}", &self.ctx.nodes[param]),
+                };
+                let param_name = self.ctx.nodes[param_name].as_symbol().unwrap();
+
+                if param_name == member_name {
+                    return Ok((offset, self.ctx.get_type(*param)));
+                }
+            }
+
+            let member_name_str = self.ctx.get_symbol_str(member);
+
+            return Err(CompileError::Generic(
+                format!("Member not found: {:?}", member_name_str),
+                self.ctx.ranges[member],
+            ));
         }
 
         let Type::Struct { params, .. } = value_ty else {

@@ -25,6 +25,16 @@ pub enum NodeElse {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub enum IfCond {
+    Expr(NodeId),
+    Let {
+        tag: NodeId,
+        alias: Option<NodeId>,
+        expr: NodeId,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum AsCastStyle {
     None,
     StaticToDynamicArray,
@@ -155,7 +165,7 @@ pub enum Node {
     AddressOf(NodeId),
     Deref(NodeId),
     If {
-        cond: NodeId,
+        cond: IfCond,
         then_block: NodeId,
         then_label: Option<Sym>,
         else_block: NodeElse,

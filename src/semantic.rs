@@ -3,8 +3,8 @@ use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 use tracing::instrument;
 
 use crate::{
-    AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, Node, NodeElse,
-    NodeId, NumericSpecification, Op, ParseTarget, ScopeId, StaticMemberResolution, Sym,
+    AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, IfCond, Node,
+    NodeElse, NodeId, NumericSpecification, Op, ParseTarget, ScopeId, StaticMemberResolution, Sym,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,11 +30,11 @@ pub enum Type {
         return_ty: Option<NodeId>,
     },
     Struct {
-        params: IdVec,
         decl: Option<NodeId>,
+        params: IdVec,
     },
     Enum {
-        name: Option<NodeId>,
+        decl: Option<NodeId>,
         params: IdVec,
     },
     EnumNoneType, // Type given to enum members with no storage. We need a distinct type to differentiate it from being unassigned
@@ -432,11 +432,11 @@ impl Context {
             )
             | (
                 Type::Enum {
-                    name: d1,
+                    decl: d1,
                     params: f1,
                 },
                 Type::Enum {
-                    name: d2,
+                    decl: d2,
                     params: f2,
                 },
             ) => {
@@ -1019,7 +1019,7 @@ impl Context {
                 self.types.insert(
                     id,
                     Type::Enum {
-                        name: Some(name),
+                        decl: Some(id),
                         params,
                     },
                 );
@@ -1077,10 +1077,13 @@ impl Context {
                 match value_ty {
                     Type::Struct {
                         decl: Some(decl), ..
+                    }
+                    | Type::Enum {
+                        decl: Some(decl), ..
                     } => {
-                        let Node::StructDefinition { scope, .. } = self.nodes[decl] else {
+                        let (Node::StructDefinition { scope, .. } | Node::EnumDefinition { scope, .. }) = self.nodes[decl] else {
                             todo!(
-                                "Expected Node::StructDeclaration, got {:?}",
+                                "Expected Node::StructDefinition or Node::EnumDefinition, got {:?}",
                                 &self.nodes[decl]
                             );
                         };
@@ -1104,7 +1107,9 @@ impl Context {
                                     }
                                 }
                             }
-                            Node::StructDeclParam { .. } | Node::MemberAccess { .. } => {
+                            Node::StructDeclParam { .. }
+                            | Node::EnumDeclParam { .. }
+                            | Node::MemberAccess { .. } => {
                                 self.match_types(id, member);
                             }
                             _ => {
@@ -1324,7 +1329,70 @@ impl Context {
                 else_block,
                 ..
             } => {
-                self.assign_type(cond);
+                match cond {
+                    IfCond::Expr(cond) => {
+                        self.assign_type(cond);
+                    }
+                    IfCond::Let { tag, alias, expr } => {
+                        self.assign_type(expr);
+
+                        let tag_sym = self.get_symbol(tag);
+
+                        // Look up the tag in expr's type
+                        let expr_ty = self.get_type(expr);
+                        if let Type::Infer(_) = expr_ty {
+                            self.deferreds.push(id);
+                            return false;
+                        }
+
+                        let Type::Enum { params, .. } = expr_ty else { 
+                            self.errors.push(CompileError::Node(
+                                format!(
+                                    "Cannot use let if on non-enum type {:?}",
+                                    expr_ty
+                                ),
+                                expr,
+                            ));
+                            return true;
+                        };
+                        let mut found = false;
+                        for &param in params.borrow().iter() {
+                            if let Node::EnumDeclParam { name, ty } = self.nodes[param].clone() {
+                                let name_sym = self.get_symbol(name);
+                                if name_sym == tag_sym {
+                                    found = true;
+                                    if let Some(alias) = alias {
+                                        self.match_types(alias, param);
+
+                                        // If an alias was included, make sure the decl param actually has data attached to it
+                                        if ty.is_none() {
+                                            self.errors.push(CompileError::Node(
+                                                format!(
+                                                    "Cannot use alias on enum decl param {} as it has no data",
+                                                    self.string_interner.resolve(name_sym.0).unwrap(),
+                                                ),
+                                                alias,
+                                            ));
+                                        }
+                                    }
+                                    break;
+                                }
+                            } else {
+                                todo!()
+                            };
+                        }
+
+                        if !found {
+                            self.errors.push(CompileError::Node(
+                                format!(
+                                    "Could not find tag {} in enum",
+                                    self.string_interner.resolve(tag_sym.0).unwrap(),
+                                ),
+                                tag,
+                            ));
+                        }
+                    }
+                }
 
                 self.assign_type(then_block);
                 self.match_types(id, then_block);
@@ -2036,9 +2104,9 @@ impl Context {
                     self.assign_type(field);
                 }
             }
-            Type::Enum { name, params } => {
-                if let Some(name) = name {
-                    self.assign_type(name);
+            Type::Enum { decl, params } => {
+                if let Some(decl) = decl {
+                    self.assign_type(decl);
                 }
 
                 for &field in params.borrow().iter() {

@@ -476,6 +476,20 @@ fn test_propagate() i64 {
     return 0;
 }
 
+fn test_if_let() {
+    let a: Option!(T: i64) = Option::Some(3);
+    if let None = a {
+        print_string("ERROR\n");
+    } else if let Some(s) = a {
+        print_i64(22);
+        print_i64(s);
+    } else {
+        print_string("ERROR\n");
+    }
+
+    return;
+}
+
 fn main() i64 {
     {
         let te1 = 3i64;
@@ -598,6 +612,8 @@ fn main() i64 {
     test_arrow_threading();
 
     test_propagate();
+
+    test_if_let();
 
     return 0;
 }
