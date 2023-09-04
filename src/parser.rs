@@ -290,6 +290,8 @@ impl<'a, W: Source> Parser<'a, W> {
                     if escaped {
                         match c {
                             'n' => str_lit.push('\n'),
+                            'r' => str_lit.push('\r'),
+                            't' => str_lit.push('\t'),
                             '0' => str_lit.push('\0'),
                             _ => str_lit.push(c),
                         }
@@ -946,7 +948,6 @@ impl<'a, W: Source> Parser<'a, W> {
 
             let range = self.source_info.make_range(input_start, range_end);
 
-            // put the param in scope
             let node = match parse_type {
                 DeclParamParseType::Fn | DeclParamParseType::FnType => Node::FnDeclParam {
                     name,
@@ -977,10 +978,7 @@ impl<'a, W: Source> Parser<'a, W> {
 
             // Don't put fn type parameters into scope, there's no body or anything to reference them
             // so one won't have been created and they would just end up in the outer scope
-            if matches!(
-                parse_type,
-                DeclParamParseType::Enum | DeclParamParseType::Fn | DeclParamParseType::Struct
-            ) {
+            if !matches!(parse_type, DeclParamParseType::FnType) {
                 self.ctx.scope_insert(name_sym, param);
                 self.ctx.implicit_insert(name_sym, param, implicit);
             }
@@ -1194,7 +1192,7 @@ impl<'a, W: Source> Parser<'a, W> {
         let pushed_scope = self.ctx.push_scope();
 
         self.expect(Token::LParen)?;
-        let params = self.parse_decl_params(DeclParamParseType::Fn)?;
+        let params = self.parse_decl_params(DeclParamParseType::FnType)?;
         self.expect(Token::RParen)?;
 
         self.ctx.pop_scope(pushed_scope);
@@ -1967,8 +1965,6 @@ impl<'a, W: Source> Parser<'a, W> {
             let IfCond::Let { alias, .. } = ifcond else { unreachable!() };
             if let Some(alias) = alias {
                 let alias_sym = self.ctx.nodes[alias].as_symbol().unwrap();
-                self.ctx.implicit_insert(alias_sym, alias, implicit);
-
                 (ifcond, Some(alias_sym), Some(alias), implicit)
             } else {
                 (ifcond, None, None, false)
@@ -2002,6 +1998,9 @@ impl<'a, W: Source> Parser<'a, W> {
                     self.ctx
                         .implicit_insert_into_scope_id(alias_sym, alias_id, block_scope);
                 }
+
+                // Put the alias into the scope of the first statement in the block
+                self.ctx.node_scopes[alias_id] = block_scope;
             }
         }
 

@@ -343,11 +343,11 @@ impl Context {
         // self.unify_types();
         // dbg!(self.id_type_size(self.type_info_decl.unwrap()));
 
-        self.types
-            .insert(self.type_info_decl.unwrap(), Type::TypeInfo);
-        self.circular_dependency_nodes
-            .insert(self.type_info_decl.unwrap());
-        self.completes.insert(self.type_info_decl.unwrap());
+        // self.types
+        //     .insert(self.type_info_decl.unwrap(), Type::TypeInfo);
+        // self.circular_dependency_nodes
+        //     .insert(self.type_info_decl.unwrap());
+        // self.completes.insert(self.type_info_decl.unwrap());
 
         for id in self.top_level.clone() {
             self.assign_type(id);

@@ -1,0 +1,133 @@
+extern print_i64(n: i64);
+extern print_str(ch: *u8, len: i64);
+extern malloc(n: i64) *struct{};
+extern print_enum_tag(t: *TypeInfo);
+
+fn print_string(s: string) {
+    print_str(s.data, s.len);
+    return;
+}
+
+enum Option {
+    Some: _T!,
+    None,
+}
+
+struct TypeInfoParam {
+    name: string,
+    ty: *TypeInfo,
+}
+
+enum TypeInfo {
+    Empty,
+    Bool,
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+    F64,
+    String,
+    Func: struct {
+        name: Option!(T: string),
+        inputs: []TypeInfoParam,
+        return_ty: Option!(T: *TypeInfo),
+    },
+    Struct: struct {
+        name: Option!(T: string),
+        params: []TypeInfoParam,
+    },
+    Enum: struct {
+        name: Option!(T: string),
+        params: []TypeInfoParam,
+    },
+    Pointer: *TypeInfo,
+    Array: struct {
+        elem_ty: *TypeInfo,
+        len: Option!(T: i64),
+    },
+}
+
+// struct Any {
+    // ty: *TypeInfo,
+    // value: *_T!,
+// }
+
+// fn any_of(value: *_T!) Any! {
+    // return Any {
+        // ty: #type_info(T),
+        // value: value,
+    // };
+// }
+
+struct Foo {
+    x: i64,
+    y: i64,
+}
+
+fn print_type_info_param(p: TypeInfoParam, indent: i64) {
+    print_indent(indent);
+    print_string(p.name);
+    print_string(": ");
+    print_type_with_indent(*p.ty, 0);
+    return;
+}
+
+fn print_indent(indent: i64) {
+    let i = 0i64;
+    while i < indent {
+        print_string("  ");
+        i = i + 1;
+    }
+    return;
+}
+
+fn print_type_with_indent(t: TypeInfo, indent: i64) {
+    if let I32 = t {
+        print_indent(indent);
+        print_string("i32\n");
+    } 
+    else if let I64 = t {
+        print_indent(indent);
+        print_string("i64\n");
+    } 
+    else if let Struct(s) = t {
+        print_string("struct");
+        if let Some(name) = s.name {
+            print_string(" ");
+            print_string(name);
+        }
+        print_string(" {\n");
+        for p in s.params {
+            print_type_info_param(p, indent + 1);
+        }
+        print_string("}\n");
+    } 
+    else {
+        print_string("unknown\n");
+    }
+
+    return;
+}
+
+fn print_type(t: TypeInfo) {
+    print_type_with_indent(t, 0);
+    return;
+}
+
+fn main() i64 {
+    // let f = Foo { x: 3, y: 4 };
+
+    // #type_info(f) |> print_type;
+
+    let a = 3i64;
+
+    let b: struct { a: i64, #transparent f: Foo } = _{ 3, _{ 4, 5 } };
+    print_i64(b.f.x);
+
+    return 0;
+}

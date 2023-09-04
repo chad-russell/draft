@@ -50,7 +50,7 @@
     - [x] keyword on fn declarations
     - [x] structs can be transparent
     - [ ] unnamed struct types can be transparent
-    - [ ] functions can be transparent
+    - [x] functions can be transparent
     - [ ] enums can be transparent (??)
     - [ ] arrays can be transparent (??)
 - [x] arrow operator

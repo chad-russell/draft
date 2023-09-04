@@ -40,7 +40,6 @@ pub enum Type {
     EnumNoneType, // Type given to enum members with no storage. We need a distinct type to differentiate it from being unassigned
     Pointer(NodeId),
     Array(NodeId, ArrayLen),
-    TypeInfo,
 }
 
 impl Type {
@@ -881,7 +880,7 @@ impl Context {
                 self.assign_type_string_literal(id);
             }
             Node::Symbol(sym) => {
-                self.assign_type_symbol(sym, id);
+                return self.assign_type_symbol(sym, id);
             }
             Node::FnDeclParam {
                 name,
@@ -941,12 +940,12 @@ impl Context {
                         self.match_types(lhs, rhs);
                     }
                     Op::Add | Op::Sub | Op::Mul | Op::Div => {
-                        self.match_types(lhs, rhs);
                         self.match_types(id, lhs);
+                        self.match_types(lhs, rhs);
                     }
                     Op::EqEq | Op::Neq | Op::Gt | Op::Lt | Op::GtEq | Op::LtEq => {
-                        self.match_types(lhs, rhs);
                         self.types.insert(id, Type::Bool);
+                        self.match_types(lhs, rhs);
                     }
                 }
             }
@@ -1123,43 +1122,84 @@ impl Context {
                     Type::Struct {
                         decl: None, params, ..
                     } => {
-                        let member_name_sym = self.get_symbol(member);
-
-                        let field_ids = params.clone();
-                        let mut found = false;
-                        for &field in field_ids.borrow().iter() {
-                            let field_name = match &self.nodes[field] {
-                                Node::ValueParam {
-                                    name: Some(name), ..
-                                }
-                                | Node::StructDeclParam { name, .. } => *name,
-                                a => {
-                                    self.errors.push(CompileError::Node(
-                                        format!(
-                                            "Cannot perform member access as this field's name (at {:?}) could not be found. Node type: {:?}",
-                                            &self.ranges[field],
-                                            a.ty()
-                                        ),
-                                        id,
-                                    ));
-                                    return true;
-                                }
-                            };
-                            let field_name_sym = self.get_symbol(field_name);
-
-                            if field_name_sym == member_name_sym {
-                                self.match_types(id, field);
-                                found = true;
-                                break;
-                            }
-                        }
-
-                        if !found {
+                        if params.borrow().is_empty() {
                             self.errors.push(CompileError::Node(
                                 "Could not find member in fields".to_string(),
                                 member,
                             ));
                         }
+
+                        let scope = self.node_scopes[params.borrow()[0]];
+
+                        match &self.nodes[member] {
+                            Node::Symbol(member_name_sym) => {
+                                match self.scopes[scope].entries.get(member_name_sym) {
+                                    Some(&found) => {
+                                        self.match_types(id, found);
+
+                                        // If we found something good, replace the member access with it.
+                                        // This is particularly useful since we could be replacing with an entire transparency tree
+                                        self.nodes[member] = self.nodes[found].clone();
+                                    }
+                                    None => {
+                                        self.defer_on(&[id], CompileError::Node(
+                                            format!("Could not find member {} in scope {}, which only contains {:?}", self.string_interner.resolve(member_name_sym.0).unwrap(), scope.0, self.debug_scope(scope)),
+                                            member,
+                                        ));
+                                        return false;
+                                    }
+                                }
+                            }
+                            Node::StructDeclParam { .. }
+                            | Node::EnumDeclParam { .. }
+                            | Node::MemberAccess { .. } => {
+                                self.match_types(id, member);
+                            }
+                            _ => {
+                                self.deferreds.push(member);
+                                self.deferreds.push(id);
+
+                                return false;
+                            }
+                        }
+
+                        // let member_name_sym = self.get_symbol(member);
+                        //
+                        // let field_ids = params.clone();
+                        // let mut found = false;
+                        // for &field in field_ids.borrow().iter() {
+                        //     let field_name = match &self.nodes[field] {
+                        //         Node::ValueParam {
+                        //             name: Some(name), ..
+                        //         }
+                        //         | Node::StructDeclParam { name, .. } => *name,
+                        //         a => {
+                        //             self.errors.push(CompileError::Node(
+                        //                 format!(
+                        //                     "Cannot perform member access as this field's name (at {:?}) could not be found. Node type: {:?}",
+                        //                     &self.ranges[field],
+                        //                     a.ty()
+                        //                 ),
+                        //                 id,
+                        //             ));
+                        //             return true;
+                        //         }
+                        //     };
+                        //     let field_name_sym = self.get_symbol(field_name);
+                        //
+                        //     if field_name_sym == member_name_sym {
+                        //         self.match_types(id, field);
+                        //         found = true;
+                        //         break;
+                        //     }
+                        // }
+                        //
+                        // if !found {
+                        //     self.errors.push(CompileError::Node(
+                        //         "Could not find member in fields".to_string(),
+                        //         member,
+                        //     ));
+                        // }
                     }
                     Type::Array(array_ty, len) => {
                         let member_name_sym = self.get_symbol(member);
@@ -1345,7 +1385,7 @@ impl Context {
                             return false;
                         }
 
-                        let Type::Enum { params, .. } = expr_ty else { 
+                        let Type::Enum { params, .. } = expr_ty else {
                             self.errors.push(CompileError::Node(
                                 format!(
                                     "Cannot use let if on non-enum type {:?}",
@@ -1569,7 +1609,7 @@ impl Context {
             }
             Node::TypeInfo(ty) => {
                 self.assign_type(ty);
-                self.types.insert(id, Type::TypeInfo);
+                self.match_types(id, self.type_info_decl.unwrap());
             }
             Node::For {
                 iterable,
@@ -1815,8 +1855,8 @@ impl Context {
                 );
 
                 self.nodes[id] = Node::StaticMemberAccess {
-                    value: value,
-                    member: member,
+                    value,
+                    member,
                     resolved: Some(StaticMemberResolution::EnumConstructor {
                         base: value,
                         index: index as _,
@@ -1999,7 +2039,7 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    fn assign_type_symbol(&mut self, sym: Sym, id: NodeId) {
+    fn assign_type_symbol(&mut self, sym: Sym, id: NodeId) -> bool {
         let resolved = self.scope_get(sym, id);
 
         match resolved {
@@ -2010,12 +2050,18 @@ impl Context {
                 if self.polymorph_sources.contains(&resolved) {
                     self.polymorph_sources.insert(id);
                 }
+
+                return true;
             }
             None => {
+                if id.0 == 233 {
+                    println!("WE GOT 233!!");
+                }
                 self.defer_on(
                     &[id],
-                    CompileError::Node("Symbol not found".to_string(), id),
+                    CompileError::Node(format!("Symbol not found: {}", id.0), id),
                 );
+                return false;
             }
         }
     }
@@ -2120,7 +2166,6 @@ impl Context {
                 self.assign_type(ty);
             }
             Type::Empty
-            | Type::TypeInfo
             | Type::IntLiteral
             | Type::I8
             | Type::I16
@@ -2309,7 +2354,6 @@ impl Context {
                     &[id],
                     CompileError::Node(format!("Could not infer type of for called function"), id),
                 );
-
                 return false;
             }
             ty => {
@@ -2487,11 +2531,23 @@ impl Context {
         }
 
         // Only structs are eligible for being transparent for now
-        let struct_decl = match param_ty {
+        let scope = match param_ty {
             Type::Struct {
                 decl: Some(struct_decl),
                 ..
-            } => struct_decl,
+            } => {
+                let Node::StructDefinition { scope, .. } = self.nodes[struct_decl].clone() else {
+                    unreachable!()
+                };
+                scope
+            }
+            Type::Struct { params, .. } => {
+                if params.borrow().is_empty() {
+                    // If there are no params then there's nothing to insert
+                    return true;
+                }
+                self.node_scopes[params.borrow()[0]]
+            }
             Type::Infer(_) => {
                 self.defer_on(
                     &[param],
@@ -2509,10 +2565,6 @@ impl Context {
                 ));
                 return true;
             }
-        };
-
-        let Node::StructDefinition { scope, .. } = self.nodes[struct_decl].clone() else {
-            unreachable!()
         };
 
         // Insert everything from that struct's scope into this scope.

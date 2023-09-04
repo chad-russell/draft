@@ -134,7 +134,7 @@ impl Context {
         if self.scopes[scope_id].implicit_entries.contains_key(&sym) {
             self.errors.push(CompileError::Node(
                 format!(
-                    "Duplicate symbol definition '{}'",
+                    "Duplicate implicit symbol definition '{}'",
                     self.string_interner.resolve(sym.0).unwrap()
                 ),
                 id,

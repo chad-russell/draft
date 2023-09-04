@@ -24,8 +24,6 @@ use crate::{
     Node, NodeId, Op, StaticMemberResolution, Sym, Type,
 };
 
-const TYPE_INFO_SIZE_BYTES: u32 = 64;
-
 #[derive(Clone, Copy, Debug)]
 pub enum Value {
     Func(FuncId),              // A function id, can use this to get to a function pointer
@@ -147,19 +145,19 @@ impl Context {
             Type::I64 => {
                 // Write the tag, skip the value as it's never used anyway, and this is read-only memory
                 gb.write_u64(5);
-                gb.extend_bytes_to_length(TYPE_INFO_SIZE_BYTES as usize);
+                gb.extend_bytes_to_length(self.type_info_size());
                 self.gb_finalize(gb, Some(id));
             }
             Type::I32 => {
                 // Write the tag, skip the value as it's never used anyway, and this is read-only memory
                 gb.write_u64(4);
-                gb.extend_bytes_to_length(TYPE_INFO_SIZE_BYTES as usize);
+                gb.extend_bytes_to_length(self.type_info_size());
                 self.gb_finalize(gb, Some(id));
             }
             Type::Pointer(pid) => {
                 // Write the tag
                 gb.write_u64(16);
-                gb.extend_bytes_to_length(TYPE_INFO_SIZE_BYTES as usize);
+                gb.extend_bytes_to_length(self.type_info_size());
 
                 // Write the value. This is a pointer to the type info of the pointed-to type
                 self.gb_write_type_info_pointer(&mut gb, pid)?;
@@ -247,7 +245,7 @@ impl Context {
                     gb.write_u64(params.borrow().len() as u64);
                 }
 
-                gb.extend_bytes_to_length(TYPE_INFO_SIZE_BYTES as usize);
+                gb.extend_bytes_to_length(self.type_info_size());
 
                 self.gb_finalize(gb, Some(id));
             }
@@ -255,6 +253,12 @@ impl Context {
         }
 
         Ok(())
+    }
+
+    #[instrument(skip_all)]
+    #[inline]
+    pub fn type_info_size(&self) -> usize {
+        self.id_type_size(self.type_info_decl.unwrap()) as usize
     }
 
     #[instrument(skip_all)]
@@ -399,7 +403,6 @@ impl Context {
             Type::Pointer(_)
             | Type::Func { .. }
             | Type::Struct { .. }
-            | Type::TypeInfo { .. }
             | Type::Enum { .. }
             | Type::Array(_, _)
             | Type::String => self.get_pointer_type(),
@@ -456,7 +459,6 @@ impl Context {
             }
             Type::Array(_, ArrayLen::None) | Type::String => 16,
             Type::EnumNoneType | Type::Empty => 0,
-            Type::TypeInfo => TYPE_INFO_SIZE_BYTES,
             _ => todo!("get_type_size for {:?}", ty),
         }
     }
@@ -673,6 +675,7 @@ struct FunctionCompileContext<'a> {
     pub global_str_ptr: Option<GlobalValue>,
     pub blocks: Vec<(Option<Sym>, Block)>,
     pub current_block: CraneliftBlock,
+    pub current_fn_block: CraneliftBlock,
 }
 
 impl<'a> FunctionCompileContext<'a> {
@@ -806,7 +809,7 @@ impl<'a> FunctionCompileContext<'a> {
                 Ok(())
             }
             Node::FnDeclParam { index, .. } => {
-                let params = self.builder.block_params(self.current_block);
+                let params = self.builder.block_params(self.current_fn_block);
                 let param_value = params[index as usize];
 
                 if self.ctx.id_is_aggregate_type(id) {
@@ -2130,6 +2133,7 @@ impl<'a> ToplevelCompileContext<'a> {
                     global_str_ptr: None,
                     blocks: Default::default(),
                     current_block: ebb,
+                    current_fn_block: ebb,
                 };
 
                 for &stmt in stmts.borrow().iter() {
