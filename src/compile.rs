@@ -637,10 +637,11 @@ pub fn print_str(s: *const u8, len: i64) {
     });
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum UnrolledDot {
     Symbol(NodeId),
     ArrayIndex(NodeId),
+    Call(IdVec),
 }
 
 struct ToplevelCompileContext<'a> {
@@ -1006,7 +1007,7 @@ impl<'a> FunctionCompileContext<'a> {
                         a_val = self.load(a_ty, a_val, 0);
                     }
 
-                    let b = unrolled[cur];
+                    let b = unrolled[cur].clone();
 
                     let mut pointiness = 0;
                     while let Type::Pointer(inner) = a_ty {
@@ -1052,6 +1053,69 @@ impl<'a> FunctionCompileContext<'a> {
                             let idx_value = self.builder.ins().imul(idx_value, ty_size);
                             a_val = self.builder.ins().iadd(array_ptr_val, idx_value);
                             a_ty = array_ty;
+                        }
+                        UnrolledDot::Call(params) => {
+                            for p in params.borrow().iter() {
+                                self.compile_id(*p)?;
+                            }
+
+                            let param_ids = params.clone();
+                            let mut param_values = Vec::new();
+                            for &param in param_ids.borrow().iter() {
+                                self.compile_id(param)?;
+                                param_values.push(self.id_value(param));
+                            }
+
+                            // todo(chad): direct call?
+                            let sig_ref = {
+                                let func_ty = a_ty.clone();
+                                let return_ty = match func_ty {
+                                    Type::Func {
+                                        return_ty: Some(return_ty),
+                                        ..
+                                    } => Some(return_ty),
+                                    _ => None,
+                                };
+
+                                let return_size =
+                                    return_ty.map(|rt| self.ctx.id_type_size(rt)).unwrap_or(0);
+
+                                let mut sig = self.ctx.module.make_signature();
+                                for param in param_ids.borrow().iter() {
+                                    sig.params
+                                        .push(AbiParam::new(self.ctx.id_cranelift_type(*param)));
+                                }
+
+                                if return_size > 0 {
+                                    sig.returns.push(AbiParam::new(
+                                        self.ctx.id_cranelift_type(return_ty.unwrap()),
+                                    ));
+                                }
+
+                                sig
+                            };
+                            let sig = self.builder.import_signature(sig_ref);
+
+                            let call_inst =
+                                self.builder.ins().call_indirect(sig, a_val, &param_values);
+
+                            if self
+                                .ctx
+                                .types
+                                .get(&id)
+                                .map(|t| !matches!(t, Type::Infer(_)))
+                                .unwrap_or_default()
+                            {
+                                a_val = self.builder.func.dfg.first_result(call_inst);
+                            } else {
+                                todo!()
+                            }
+
+                            let Type::Func { return_ty, .. } = a_ty.clone() else {
+                                todo!()
+                            };
+
+                            a_ty = self.ctx.get_type(return_ty.unwrap());
                         }
                     }
 
@@ -1715,6 +1779,10 @@ impl<'a> FunctionCompileContext<'a> {
                 self.unroll_member_access(array, unrolled)?;
                 unrolled.push(UnrolledDot::ArrayIndex(index))
             }
+            Node::Call { func, params } => {
+                self.unroll_member_access(func, unrolled)?;
+                unrolled.push(UnrolledDot::Call(params));
+            }
             a => todo!("Unroll member access for value node {:?}", a),
         }
 
@@ -1807,6 +1875,14 @@ impl<'a> FunctionCompileContext<'a> {
 
         while let Type::Pointer(inner) = value_ty {
             value_ty = self.ctx.get_type(inner);
+        }
+
+        while let Type::Func {
+            return_ty: Some(return_ty),
+            ..
+        } = value_ty
+        {
+            value_ty = self.ctx.get_type(return_ty);
         }
 
         if let Type::Array(_, _) | Type::String = value_ty {

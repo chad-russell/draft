@@ -119,6 +119,7 @@ pub struct Context {
 
     pub polymorph_copies: SecondarySet,
     pub completes: SecondarySet,
+    pub transparent_deferreds: SecondarySet,
     pub circular_dependency_nodes: SecondarySet,
     pub circular_concrete_types: SecondarySet,
     pub impls: SecondarySet,
@@ -167,6 +168,7 @@ impl Context {
             type_matches: Default::default(),
             type_array_reverse_map: Default::default(),
             completes: Default::default(),
+            transparent_deferreds: Default::default(),
             topo: Default::default(),
             circular_dependency_nodes: Default::default(),
             circular_concrete_types: Default::default(),
@@ -225,6 +227,7 @@ impl Context {
         self.type_matches.clear();
         self.type_array_reverse_map.clear();
         self.completes.clear();
+        self.transparent_deferreds.clear();
         self.topo.clear();
         self.circular_dependency_nodes.clear();
         self.circular_concrete_types.clear();

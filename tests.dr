@@ -195,56 +195,56 @@ fn test_interfaces() i64 {
     return 0;
 }
 
-// fn test_for_array() i64 {
-    // let arr: [_]_T = [_{x: 1i64, y: 1.1f64}, _{2, 2.2}, _{3, 3.3}];
+fn test_for_array() i64 {
+    let arr: [_]_T = [_{x: 1i64, y: 1.1f64}, _{2, 2.2}, _{3, 3.3}];
 
-    // for val in arr {
-        // val.x = 999;
-    // }
+    for val in arr {
+        val.x = 999;
+    }
 
-    // for val in arr {
-        // print_i64(val.x);
-        // print_f64(val.y);
-    // }
+    for val in arr {
+        print_i64(val.x);
+        print_f64(val.y);
+    }
 
-    // return 0;
-// }
+    return 0;
+}
 
-// fn test_for_dynamic_array() i64 {
-    // let arr: []_T = [_{x: 1i64, y: 1.1f64}, _{2, 2.2}, _{3, 3.3}] as []T;
+fn test_for_dynamic_array() i64 {
+    let arr: []_T = [_{x: 1i64, y: 1.1f64}, _{2, 2.2}, _{3, 3.3}] as []T;
 
-    // for val in arr {
-        // val.x = 999;
-    // }
+    for val in arr {
+        val.x = 999;
+    }
 
-    // for val in arr {
-        // print_i64(val.x);
-        // print_f64(val.y);
-    // }
+    for val in arr {
+        print_i64(val.x);
+        print_f64(val.y);
+    }
 
-    // return 0;
-// }
+    return 0;
+}
 
-// fn test_for_array_manual() i64 {
-    // let datas = &_{
-        // d1: _{x: 1i64, y: 1.1f64}, 
-        // d2: _{2i64, 2.2f64}, 
-        // d3: _{3i64, 3.3f64},
-    // };
+fn test_for_array_manual() i64 {
+    let datas = &_{
+        d1: _{x: 1i64, y: 1.1f64}, 
+        d2: _{2i64, 2.2f64}, 
+        d3: _{3i64, 3.3f64},
+    };
 
-    // let arr: []struct{x: i64, y: f64} = _{ data: #cast(*_) datas, len: 3i64 } as []_;
+    let arr: []struct{x: i64, y: f64} = _{ data: #cast(*_) datas, len: 3i64 } as []_;
 
-    // for val in arr {
-        // val.x = 999;
-    // }
+    for val in arr {
+        val.x = 999;
+    }
 
-    // for val in arr {
-        // print_i64(val.x);
-        // print_f64(val.y);
-    // }
+    for val in arr {
+        print_i64(val.x);
+        print_f64(val.y);
+    }
 
-    // return 0;
-// }
+    return 0;
+}
 
 fn add_one(n: i64) i64 {
     return n + 1;
@@ -491,6 +491,24 @@ fn test_if_let() {
     return;
 }
 
+fn transparent_polymorph() {
+    struct Foo {
+        x: i64, 
+       y: i64,
+    }
+
+    enum Option {
+        #transparent Some: _T!,
+        None: i64,
+    }
+
+    let #transparent o = Option::Some(Foo { 2, 3 });
+
+    x |> print_i64;
+
+    return;
+}
+
 fn main() i64 {
     {
         let te1 = 3i64;
@@ -595,11 +613,11 @@ fn main() i64 {
     
     test_interfaces();
     
-    // test_for_array();
+    test_for_array();
 
-    // test_for_dynamic_array();
+    test_for_dynamic_array();
 
-    // test_for_array_manual();
+    test_for_array_manual();
     
     test_threading();
     
@@ -618,6 +636,8 @@ fn main() i64 {
     test_propagate();
 
     test_if_let();
+
+    transparent_polymorph();
 
     return 0;
 }

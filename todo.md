@@ -43,7 +43,7 @@
 - [x] arrays assignable to [] type
 - [x] pipe/threading/ufcs operator
     - [x] threading operator can choose where the argument gets threaded into
-- [-] #transparent
+- [x] #transparent
     - [x] keyword on struct members
     - [x] keyword on let stmts
     - [x] keyword on fn parameters
@@ -52,7 +52,6 @@
     - [x] unnamed struct types can be transparent
     - [x] functions can be transparent
     - [x] enums can be transparent
-    - [ ] arrays can be transparent (??)
 - [x] arrow operator
 - [x] strings
     - [x] store in program's data segment
@@ -66,8 +65,8 @@
     - [x] `break` can reference labels
     - [x] `continue` can reference labels
 - [x] continue
-- [-] any / #astof(...) / type info stuff
-- [ ] pattern matching (on enums only at first, very simple single-depth match)
+- [x] any / #astof(...) / type info stuff
+- [-] pattern matching (on enums only at first, very simple single-depth match)
     - [ ] `match`
     - [x] `if let`
 - [ ] type alignment

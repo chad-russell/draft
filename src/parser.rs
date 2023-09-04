@@ -2541,6 +2541,8 @@ impl Context {
 
     #[instrument(skip_all)]
     pub fn copy_polymorph(&mut self, id: NodeId, target: ParseTarget) -> DraftResult<NodeId> {
+        // println!("copying polymorph");
+
         let id = match self.nodes[id] {
             Node::Symbol(sym) => self.scope_get(sym, id).unwrap(),
             _ => id,

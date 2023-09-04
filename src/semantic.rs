@@ -278,7 +278,13 @@ impl Context {
                             index: existing_index,
                         };
                     }
-                    a => todo!("Expected named param, got {}", a.ty()),
+                    _ => {
+                        self.nodes[id_to_push] = Node::ValueParam {
+                            name: None,
+                            value: existing_value,
+                            index: existing_index,
+                        }
+                    }
                 }
 
                 rearranged_given.push(id_to_push);
@@ -1046,8 +1052,7 @@ impl Context {
                 // don't directly codegen a polymorph, wait until it's copied first
                 if self.polymorph_sources.contains(&id) {
                     return true;
-                }
-
+                };
                 for &param in params.borrow().iter() {
                     if let Node::EnumDeclParam { ty: None, .. } = self.nodes[param] {
                         self.types.insert(param, Type::EnumNoneType);
@@ -1060,12 +1065,25 @@ impl Context {
                     id,
                     Type::Enum {
                         decl: Some(id),
-                        params,
+                        params: params.clone(),
                         scope: Some(scope),
                     },
                 );
 
                 self.match_types(id, name);
+
+                let mut should_defer = false;
+                for param in params.borrow().iter() {
+                    if !self.types.contains_key(param) {
+                        should_defer = true;
+                        self.deferreds.push(*param);
+                    }
+                }
+
+                if should_defer {
+                    self.deferreds.push(id);
+                    return false;
+                }
             }
             Node::StructLiteral { name, params } => {
                 if let Some(name) = name {
@@ -1159,6 +1177,51 @@ impl Context {
 
                                 return false;
                             }
+                        }
+                    }
+                    Type::Struct {
+                        decl: None, params, ..
+                    }
+                    | Type::Enum {
+                        decl: None, params, ..
+                    } => {
+                        let member_name_sym = self.get_symbol(member);
+
+                        let field_ids = params.clone();
+                        let mut found = false;
+                        for &field in field_ids.borrow().iter() {
+                            let field_name = match &self.nodes[field] {
+                                Node::ValueParam {
+                                    name: Some(name), ..
+                                }
+                                | Node::StructDeclParam { name, .. } => *name,
+                                Node::EnumDeclParam { name, .. } => *name,
+                                a => {
+                                    self.defer_on(&[id], CompileError::Node(
+                                        format!(
+                                            "Cannot perform member access as this field's name (at {:?}) could not be found. Node type: {:?}",
+                                            &self.ranges[field],
+                                            a.ty()
+                                        ),
+                                        id,
+                                    ));
+                                    return false;
+                                }
+                            };
+                            let field_name_sym = self.get_symbol(field_name);
+
+                            if field_name_sym == member_name_sym {
+                                self.match_types(id, field);
+                                found = true;
+                                break;
+                            }
+                        }
+
+                        if !found {
+                            self.errors.push(CompileError::Node(
+                                "Could not find member in fields".to_string(),
+                                member,
+                            ));
                         }
                     }
                     Type::Array(array_ty, len) => {
@@ -1898,10 +1961,15 @@ impl Context {
         if transparent {
             if !self.types.contains_key(&id) {
                 self.deferreds.push(id);
+                self.transparent_deferreds.insert(id);
                 return Some(false);
             }
 
-            self.propagate_transparency(id, name, self.node_scopes[id]);
+            self.transparent_deferreds.remove(&id);
+
+            if !self.propagate_transparency(id, name, self.node_scopes[id]) {
+                return Some(false);
+            }
         }
 
         None
@@ -1946,10 +2014,15 @@ impl Context {
         if transparent {
             if !self.types.contains_key(&id) {
                 self.deferreds.push(id);
+                self.transparent_deferreds.insert(id);
                 return Some(false);
             }
 
-            self.propagate_transparency(id, name, self.node_scopes[id]);
+            self.transparent_deferreds.remove(&id);
+
+            if !self.propagate_transparency(id, name, self.node_scopes[id]) {
+                return Some(false);
+            }
         }
 
         None
@@ -1981,10 +2054,15 @@ impl Context {
         if transparent {
             if !self.types.contains_key(&id) {
                 self.deferreds.push(id);
+                self.transparent_deferreds.insert(id);
                 return Some(false);
             }
 
-            self.propagate_transparency(id, name, self.node_scopes[id]);
+            self.transparent_deferreds.remove(&id);
+
+            if !self.propagate_transparency(id, name, self.node_scopes[id]) {
+                return Some(false);
+            }
         }
 
         None
@@ -2025,10 +2103,15 @@ impl Context {
         if transparent {
             if !self.types.contains_key(&id) {
                 self.deferreds.push(id);
+                self.transparent_deferreds.insert(id);
                 return Some(false);
             }
 
-            self.propagate_transparency(id, name, self.node_scopes[id]);
+            self.transparent_deferreds.remove(&id);
+
+            if !self.propagate_transparency(id, name, self.node_scopes[id]) {
+                return Some(false);
+            }
         }
 
         None
@@ -2252,7 +2335,9 @@ impl Context {
                 return Some(false);
             }
 
-            self.propagate_transparency(id, id, self.node_scopes[id]);
+            if !self.propagate_transparency(id, id, self.node_scopes[id]) {
+                return Some(false);
+            }
         }
 
         if !self.topo.contains(&id) {
@@ -2432,7 +2517,12 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    fn propagate_transparency(&mut self, type_id: NodeId, mut name: NodeId, scope: ScopeId) {
+    fn propagate_transparency(
+        &mut self,
+        type_id: NodeId,
+        mut name: NodeId,
+        scope: ScopeId,
+    ) -> bool {
         let mut ty = self.get_type(type_id);
 
         let mut should_deep_copy = false;
@@ -2455,17 +2545,29 @@ impl Context {
         }
 
         let (Type::Struct {
-            scope: Some(struct_scope), ..
+            scope: Some(struct_scope),
+            params,
+            ..
         } | Type::Enum {
-            scope: Some(struct_scope), ..
+            scope: Some(struct_scope),
+            params,
+            ..
          }) = ty
         else {
             self.errors.push(CompileError::Node(
                 format!("Type not eligible for transparency: {:?}", ty),
                 name,
             ));
-            return;
+            return true;
         };
+
+        for param in params.borrow().iter() {
+            if self.transparent_deferreds.contains(param) {
+                self.deferreds.push(*param);
+                self.deferreds.push(type_id);
+                return false;
+            }
+        }
 
         // todo(chad): @clone
         for (entry_name, entry) in self.scopes[struct_scope].entries.clone() {
@@ -2486,6 +2588,8 @@ impl Context {
 
             self.scope_insert_into_scope_id(entry_name, transparent_member_access, scope);
         }
+
+        return true;
     }
 
     #[instrument(skip_all)]

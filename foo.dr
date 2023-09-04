@@ -1,36 +1,24 @@
 extern print_i64(n: i64);
 
 struct Foo {
-    x: i64, 
+    x: i64,
     y: i64,
 }
 
-struct Bar {
-    b: i64,
-    #transparent foo: Foo,
+struct MyThing {
+    #transparent get_foo: fn() Foo,
 }
 
-struct Option {
-    #transparent Some: _T!,
-    None: i64,
-}
-
-fn unwrap_or(o: Option!(T: _T!), default: T) T {
-    if let Some(unwrapped) = o {
-        return unwrapped;
-    } else {
-        return default;
-    }
+fn gf() _ {
+    return Foo { 3, 4 };
 }
 
 fn main() i64 {
-    // let #transparent s = Option::Some(Bar { 3, _{ 4, 5 } });
-    let #transparent s = Option {
-        Some: Bar { 3, _{ 4, 5 } },
-        None: 3,
+    let mt = MyThing {
+        get_foo: gf,
     };
 
-    b |> print_i64;
+    print_i64(mt.x);
 
     return 0;
 }
