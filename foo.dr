@@ -10,9 +10,9 @@ struct Bar {
     #transparent foo: Foo,
 }
 
-enum Option {
+struct Option {
     #transparent Some: _T!,
-    None,
+    None: i64,
 }
 
 fn unwrap_or(o: Option!(T: _T!), default: T) T {
@@ -24,7 +24,11 @@ fn unwrap_or(o: Option!(T: _T!), default: T) T {
 }
 
 fn main() i64 {
-    let #transparent s = Option::Some(Bar { 3, _{ 4, 5 } });
+    // let #transparent s = Option::Some(Bar { 3, _{ 4, 5 } });
+    let #transparent s = Option {
+        Some: Bar { 3, _{ 4, 5 } },
+        None: 3,
+    };
 
     b |> print_i64;
 
