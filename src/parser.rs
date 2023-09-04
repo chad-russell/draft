@@ -2302,15 +2302,21 @@ impl<'a, W: Source> Parser<'a, W> {
                 self.expect(Token::LCurly)?;
 
                 let pushed_scope = self.ctx.push_scope();
+                let struct_scope = self.ctx.top_scope;
 
                 let params = self.parse_decl_params(DeclParamParseType::Struct)?;
                 let range = self.expect_range(range.start, Token::RCurly)?;
 
                 self.ctx.pop_scope(pushed_scope);
 
-                let id = self
-                    .ctx
-                    .push_node(range, Node::Type(Type::Struct { params, decl: None }));
+                let id = self.ctx.push_node(
+                    range,
+                    Node::Type(Type::Struct {
+                        params,
+                        decl: Some(NodeId(self.ctx.nodes.len())),
+                        scope: Some(struct_scope),
+                    }),
+                );
 
                 Ok(id)
             }
@@ -2321,15 +2327,21 @@ impl<'a, W: Source> Parser<'a, W> {
                 self.expect(Token::LCurly)?;
 
                 let pushed_scope = self.ctx.push_scope();
+                let enum_scope = self.ctx.top_scope;
 
                 let params = self.parse_decl_params(DeclParamParseType::Enum)?;
                 let range = self.expect_range(range.start, Token::RCurly)?;
 
                 self.ctx.pop_scope(pushed_scope);
 
-                Ok(self
-                    .ctx
-                    .push_node(range, Node::Type(Type::Enum { decl: None, params })))
+                Ok(self.ctx.push_node(
+                    range,
+                    Node::Type(Type::Enum {
+                        decl: Some(NodeId(self.ctx.nodes.len())),
+                        params,
+                        scope: Some(enum_scope),
+                    }),
+                ))
             }
             Token::LSquare => {
                 let start = self.source_info.top.range.start;

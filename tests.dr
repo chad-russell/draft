@@ -345,6 +345,7 @@ fn test_transparent() {
 
     let b = Bar { 33, &Foo { 1, 2 } };
     (b.foo.x + 20) |> print_i64;
+    (b.x + 20) |> print_i64;
     (x + 20) |> print_i64;
 
     return;

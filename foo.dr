@@ -1,8 +1,15 @@
-struct Foo_Vtable {
-    first: fn(this: *i64) i64,
-    second: fn(this: *i64) i64,
+extern print_i64(n: i64);
+
+struct Foo {
+    x: i64,
+    y: i64,
 }
 
 fn main() i64 {
+    let s: struct { a: i64, #transparent f: Foo } = _{ a: 1, f: _{ x: 2, y: 3 } };
+    let g = s;
+
+    print_i64(g.a + g.x + g.y);
+
     return 0;
 }

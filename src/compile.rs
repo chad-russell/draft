@@ -164,7 +164,7 @@ impl Context {
 
                 self.gb_finalize(gb, Some(id));
             }
-            Type::Struct { params, decl } => {
+            Type::Struct { params, decl, .. } => {
                 // Write the tag
                 gb.write_u64(14);
 
