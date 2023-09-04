@@ -7,9 +7,9 @@ struct Foo {
 
 fn main() i64 {
     let s: struct { a: i64, #transparent f: Foo } = _{ a: 1, f: _{ x: 2, y: 3 } };
-    let g = s;
+    // let g = s;
 
-    print_i64(g.a + g.x + g.y);
+    // print_i64(g.a + g.x + g.y);
 
     return 0;
 }

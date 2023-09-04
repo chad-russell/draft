@@ -538,6 +538,7 @@ impl Context {
                             }
 
                             for (f1, f2) in f1.borrow().iter().zip(f2.borrow().iter()) {
+                                dbg!(self.nodes[*f1].ty(), self.nodes[*f2].ty());
                                 self.match_types(*f1, *f2);
                             }
                         }
