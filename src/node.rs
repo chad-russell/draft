@@ -104,6 +104,7 @@ pub enum Node {
     EnumDeclParam {
         name: NodeId,
         ty: Option<NodeId>,
+        transparent: bool,
     },
     FnDeclParam {
         name: NodeId,

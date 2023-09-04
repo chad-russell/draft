@@ -2166,7 +2166,7 @@ impl<'a> ToplevelCompileContext<'a> {
                             todo!("{:?}", self.ctx.nodes[base])
                         };
                         let param = params.borrow()[index as usize];
-                        let Node::EnumDeclParam { name, ty } = self.ctx.nodes[param] else {
+                        let Node::EnumDeclParam { name, ty, .. } = self.ctx.nodes[param] else {
                             todo!()
                         };
 

@@ -100,17 +100,6 @@ pub struct TypeMatch {
     pub ids: Vec<NodeId>,
 }
 
-#[derive(Default, Debug)]
-pub struct UnificationData {
-    pub future_matches: Vec<(NodeId, NodeId)>,
-}
-
-impl UnificationData {
-    pub fn reset(&mut self) {
-        self.future_matches.clear();
-    }
-}
-
 #[derive(Debug)]
 pub struct AddressableMatch {
     pub changed: bool,
@@ -121,8 +110,6 @@ pub struct AddressableMatch {
 impl Context {
     #[instrument(skip_all)]
     pub fn unify_types(&mut self) {
-        self.unification_data.reset();
-
         for uid in 0..self.type_matches.len() {
             if !self.type_matches[uid].changed {
                 continue;
@@ -135,13 +122,32 @@ impl Context {
             }
 
             for &id in self.type_matches[uid].ids.iter() {
+                if let (
+                    Type::Struct {
+                        params: sparams, ..
+                    }
+                    | Type::Enum {
+                        params: sparams, ..
+                    },
+                    Type::Struct { params, .. } | Type::Enum { params, .. },
+                ) = (most_specific_ty.clone(), self.get_type(id))
+                {
+                    for (sparam, param) in sparams.borrow().iter().zip(params.borrow().iter()) {
+                        let Node::StructDeclParam { transparent: stransparent, .. } =
+                            self.nodes[*sparam].clone() else { continue };
+                        let Node::StructDeclParam { transparent, .. } = self.nodes[*param].clone() else { continue };
+                        if stransparent && !transparent {
+                            self.errors.push(CompileError::Node2(
+                                "Could not match types: struct fields differ in transparency"
+                                    .to_string(),
+                                *sparam,
+                                *param,
+                            ));
+                        }
+                    }
+                }
                 self.types.insert(id, most_specific_ty.clone());
             }
-        }
-
-        while !self.unification_data.future_matches.is_empty() {
-            let (id1, id2) = self.unification_data.future_matches.pop().unwrap();
-            self.match_types(id1, id2);
         }
     }
 
@@ -162,8 +168,18 @@ impl Context {
                     decl: d1,
                     scope: s1,
                     ..
+                }
+                | Type::Enum {
+                    decl: d1,
+                    scope: s1,
+                    ..
                 },
                 Type::Struct {
+                    decl: d2,
+                    scope: s2,
+                    ..
+                }
+                | Type::Enum {
                     decl: d2,
                     scope: s2,
                     ..
@@ -189,7 +205,6 @@ impl Context {
             // For aggregate types, the type matcher should have already detected a mismatch
             // so it doesn't really matter which is chosen
             (Type::Func { .. }, Type::Func { .. })
-            | (Type::Enum { .. }, Type::Enum { .. })
             | (Type::Pointer(_), Type::Pointer(_))
             | (Type::Array(_, _), Type::Array(_, _)) => first,
 
@@ -538,7 +553,6 @@ impl Context {
                             }
 
                             for (f1, f2) in f1.borrow().iter().zip(f2.borrow().iter()) {
-                                dbg!(self.nodes[*f1].ty(), self.nodes[*f2].ty());
                                 self.match_types(*f1, *f2);
                             }
                         }
@@ -649,6 +663,11 @@ impl Context {
         }
 
         if let Type::Struct {
+            decl: Some(_),
+            params,
+            ..
+        }
+        | Type::Enum {
             decl: Some(_),
             params,
             ..
@@ -852,6 +871,8 @@ impl Context {
         if self.assign_type_inner(id) {
             self.completes.insert(id);
         }
+
+        // self.unify_types();
     }
 
     #[instrument(skip_all)]
@@ -912,10 +933,21 @@ impl Context {
                 transparent,
                 ..
             } => {
-                self.assign_type_struct_decl_param(id, name, ty, default, transparent);
+                if let Some(value) =
+                    self.assign_type_struct_decl_param(id, name, ty, default, transparent)
+                {
+                    return value;
+                }
             }
-            Node::EnumDeclParam { ty, .. } => {
-                self.assign_type_enum_decl_param(ty, id);
+            Node::EnumDeclParam {
+                name,
+                ty,
+                transparent,
+                ..
+            } => {
+                if let Some(value) = self.assign_type_enum_decl_param(id, name, ty, transparent) {
+                    return value;
+                }
             }
             Node::ValueParam { name, value, .. } => {
                 self.assign_type_value_param(value, id, name);
@@ -1093,6 +1125,9 @@ impl Context {
                 match value_ty {
                     Type::Struct {
                         scope: Some(scope), ..
+                    }
+                    | Type::Enum {
+                        scope: Some(scope), ..
                     } => {
                         match &self.nodes[member] {
                             Node::Symbol(member_name_sym) => {
@@ -1126,51 +1161,6 @@ impl Context {
                             }
                         }
                     }
-                    // Type::Struct {
-                    //     decl: Some(decl), ..
-                    // }
-                    // | Type::Enum {
-                    //     decl: Some(decl), ..
-                    // } => {
-                    //     let (Node::StructDefinition { scope, .. } | Node::EnumDefinition { scope, .. }) = self.nodes[decl] else {
-                    //         todo!(
-                    //             "Expected Node::StructDefinition or Node::EnumDefinition, got {:?}",
-                    //             &self.nodes[decl]
-                    //         );
-                    //     };
-                    //
-                    //     match &self.nodes[member] {
-                    //         Node::Symbol(member_name_sym) => {
-                    //             match self.scopes[scope].entries.get(member_name_sym) {
-                    //                 Some(&found) => {
-                    //                     self.match_types(id, found);
-                    //
-                    //                     // If we found something good, replace the member access with it.
-                    //                     // This is particularly useful since we could be replacing with an entire transparency tree
-                    //                     self.nodes[member] = self.nodes[found].clone();
-                    //                 }
-                    //                 None => {
-                    //                     self.defer_on(&[id], CompileError::Node(
-                    //                         format!("Could not find member {} in scope {}, which only contains {:?}", self.string_interner.resolve(member_name_sym.0).unwrap(), scope.0, self.debug_scope(scope)),
-                    //                         member,
-                    //                     ));
-                    //                     return false;
-                    //                 }
-                    //             }
-                    //         }
-                    //         Node::StructDeclParam { .. }
-                    //         | Node::EnumDeclParam { .. }
-                    //         | Node::MemberAccess { .. } => {
-                    //             self.match_types(id, member);
-                    //         }
-                    //         _ => {
-                    //             self.deferreds.push(member);
-                    //             self.deferreds.push(id);
-                    //
-                    //             return false;
-                    //         }
-                    //     }
-                    // }
                     Type::Array(array_ty, len) => {
                         let member_name_sym = self.get_symbol(member);
 
@@ -1371,7 +1361,8 @@ impl Context {
                         };
                         let mut found = false;
                         for &param in params.borrow().iter() {
-                            if let Node::EnumDeclParam { name, ty } = self.nodes[param].clone() {
+                            if let Node::EnumDeclParam { name, ty, .. } = self.nodes[param].clone()
+                            {
                                 let name_sym = self.get_symbol(name);
                                 if name_sym == tag_sym {
                                     found = true;
@@ -1799,7 +1790,7 @@ impl Context {
             self.assign_type(field);
 
             let (field_name, is_none_type) = match &self.nodes[field] {
-                Node::EnumDeclParam { name, ty } => (*name, ty.is_none()),
+                Node::EnumDeclParam { name, ty, .. } => (*name, ty.is_none()),
                 _ => {
                     self.errors.push(CompileError::Node(
                                         format!(
@@ -1936,14 +1927,32 @@ impl Context {
     }
 
     #[instrument(skip_all)]
-    fn assign_type_enum_decl_param(&mut self, ty: Option<NodeId>, id: NodeId) {
+    fn assign_type_enum_decl_param(
+        &mut self,
+        id: NodeId,
+        name: NodeId,
+        ty: Option<NodeId>,
+        transparent: bool,
+    ) -> Option<bool> {
         if let Some(ty) = ty {
             self.assign_type(ty);
         }
 
         if let Some(ty) = ty {
+            self.check_not_unspecified_polymorph(ty);
             self.match_types(id, ty);
         }
+
+        if transparent {
+            if !self.types.contains_key(&id) {
+                self.deferreds.push(id);
+                return Some(false);
+            }
+
+            self.propagate_transparency(id, name, self.node_scopes[id]);
+        }
+
+        None
     }
 
     #[instrument(skip_all)]
@@ -2041,9 +2050,6 @@ impl Context {
                 return true;
             }
             None => {
-                if id.0 == 233 {
-                    println!("WE GOT 233!!");
-                }
                 self.defer_on(
                     &[id],
                     CompileError::Node(format!("Symbol not found: {}", id.0), id),
@@ -2128,16 +2134,7 @@ impl Context {
                     self.assign_type(input_ty);
                 }
             }
-            Type::Struct { params, decl, .. } => {
-                if let Some(decl) = decl {
-                    self.assign_type(decl);
-                }
-
-                for &field in params.borrow().iter() {
-                    self.assign_type(field);
-                }
-            }
-            Type::Enum { decl, params, .. } => {
+            Type::Struct { params, decl, .. } | Type::Enum { params, decl, .. } => {
                 if let Some(decl) = decl {
                     self.assign_type(decl);
                 }
@@ -2457,9 +2454,11 @@ impl Context {
             ty = self.types[&base_ty].clone();
         }
 
-        let Type::Struct {
+        let (Type::Struct {
             scope: Some(struct_scope), ..
-        } = ty
+        } | Type::Enum {
+            scope: Some(struct_scope), ..
+         }) = ty
         else {
             self.errors.push(CompileError::Node(
                 format!("Type not eligible for transparency: {:?}", ty),
@@ -2488,80 +2487,6 @@ impl Context {
             self.scope_insert_into_scope_id(entry_name, transparent_member_access, scope);
         }
     }
-
-    // #[instrument(skip_all)]
-    // pub fn insert_transparent_members(
-    //     &mut self,
-    //     param: NodeId,
-    //     scope_map: &mut BTreeMap<Sym, NodeId>,
-    // ) -> bool {
-    //     let mut param_ty = self.get_type(param);
-
-    //     let Node::StructDeclParam { transparent, .. } = self.nodes[param] else {
-    //         unreachable!()
-    //     };
-
-    //     if !transparent {
-    //         return true;
-    //     }
-
-    //     while let Type::Pointer(pt) = param_ty {
-    //         param_ty = self.get_type(pt);
-    //     }
-
-    //     // Only structs are eligible for being transparent for now
-    //     let scope = match param_ty {
-    //         Type::Struct {
-    //             decl: Some(struct_decl),
-    //             ..
-    //         } => {
-    //             let Node::StructDefinition { scope, .. } = self.nodes[struct_decl].clone() else {
-    //                 unreachable!()
-    //             };
-    //             scope
-    //         }
-    //         Type::Struct {
-    //             scope: Some(scope), ..
-    //         } => scope,
-    //         Type::Infer(_) => {
-    //             self.defer_on(
-    //                 &[param],
-    //                 CompileError::Node(
-    //                     format!("Only named structs can be transparent: not {:?}", param_ty),
-    //                     param,
-    //                 ),
-    //             );
-    //             return false;
-    //         }
-    //         _ => {
-    //             self.errors.push(CompileError::Node(
-    //                 format!("Only named structs can be transparent: not {:?}", param_ty),
-    //                 param,
-    //             ));
-    //             return true;
-    //         }
-    //     };
-
-    //     // Insert everything from that struct's scope into this scope.
-    //     // Since we've already verified type-checking has passed for the param,
-    //     // everything that needs to be recursively pulled in should already be in scope
-    //     // todo(chad): @clone
-    //     for (k, v) in self.scopes[scope].entries.clone() {
-    //         let transparent_member_access = self.push_node(
-    //             self.ranges[param],
-    //             Node::MemberAccess {
-    //                 value: param,
-    //                 member: v,
-    //             },
-    //         );
-
-    //         self.assign_type(transparent_member_access);
-
-    //         scope_map.insert(k, transparent_member_access);
-    //     }
-
-    //     return true;
-    // }
 
     #[instrument(skip_all)]
     pub fn deep_copy_node(&mut self, id: NodeId) -> NodeId {
@@ -2642,7 +2567,11 @@ impl Context {
                 index: _,
                 transparent: _,
             } => todo!(),
-            Node::EnumDeclParam { name: _, ty: _ } => todo!(),
+            Node::EnumDeclParam {
+                name: _,
+                ty: _,
+                transparent: _,
+            } => todo!(),
             Node::FnDeclParam {
                 name: _,
                 ty: _,

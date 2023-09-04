@@ -11,7 +11,7 @@ use tracing::instrument;
 use crate::{
     AddressableMatch, Args, CompileError, EmptyDraftResult, Location, Node, NodeId, Range,
     RopeySource, Scope, ScopeId, Scopes, Source, SourceInfo, StaticStrSource, Sym, Type, TypeMatch,
-    UnificationData, Value,
+    Value,
 };
 
 #[derive(Clone)]
@@ -105,7 +105,6 @@ pub struct Context {
     pub type_matches: Vec<TypeMatch>,
     pub type_array_reverse_map: SecondaryMap<usize>,
     pub topo: Vec<NodeId>,
-    pub unification_data: UnificationData,
     pub deferreds: Vec<NodeId>,
     pub addressable_matches: Vec<AddressableMatch>,
     pub addressable_array_reverse_map: SecondaryMap<usize>,
@@ -172,7 +171,6 @@ impl Context {
             circular_dependency_nodes: Default::default(),
             circular_concrete_types: Default::default(),
             impls: Default::default(),
-            unification_data: Default::default(),
             deferreds: Default::default(),
             addressable_matches: Default::default(),
             addressable_array_reverse_map: Default::default(),
@@ -231,7 +229,6 @@ impl Context {
         self.circular_dependency_nodes.clear();
         self.circular_concrete_types.clear();
         self.impls.clear();
-        self.unification_data.reset();
         self.deferreds.clear();
         self.in_assign_lhs = false;
 

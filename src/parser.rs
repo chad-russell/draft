@@ -970,7 +970,11 @@ impl<'a, W: Source> Parser<'a, W> {
                             range,
                         ));
                     }
-                    Node::EnumDeclParam { name, ty }
+                    Node::EnumDeclParam {
+                        name,
+                        ty,
+                        transparent,
+                    }
                 }
             };
 
@@ -2312,8 +2316,9 @@ impl<'a, W: Source> Parser<'a, W> {
                 let id = self.ctx.push_node(
                     range,
                     Node::Type(Type::Struct {
+                        decl: None,
+                        // decl: Some(NodeId(self.ctx.nodes.len())),
                         params,
-                        decl: Some(NodeId(self.ctx.nodes.len())),
                         scope: Some(struct_scope),
                     }),
                 );
@@ -2337,7 +2342,8 @@ impl<'a, W: Source> Parser<'a, W> {
                 Ok(self.ctx.push_node(
                     range,
                     Node::Type(Type::Enum {
-                        decl: Some(NodeId(self.ctx.nodes.len())),
+                        decl: None,
+                        // decl: Some(NodeId(self.ctx.nodes.len())),
                         params,
                         scope: Some(enum_scope),
                     }),
