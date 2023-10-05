@@ -4,10 +4,12 @@
     let a: [3]i64 = [1, 2, 3]; 
     a::len + a[0] |> print_i64;
     ```
-- [ ] putting `continue` or `break` where they don't belong causes errors. Need to catch this at semantic analysis time
-- [ ] having statements after a `return`, `continue` or `break` shouldn't cause a compile error
-- [ ] semantic checking for referencing in a nonexistent label
-- [ ] semantic checking for putting `continue` or `break` in the wrong context
+    - this is a type inference issue, combined with precedence. The precedence interprets this as `a::len + (a[0] |> print_i64)`,
+    and because the `print_i64` call has return type unassigned, it is automatically infers it (incorrectly) as i64.
+- [x] putting `continue` or `break` where they don't belong causes errors. Need to catch this at semantic analysis time
+- [x] having statements after a `return`, `continue` or `break` shouldn't cause a compile error
+- [x] semantic checking for putting `return`, `continue` or `break` in the wrong context
+- [x] semantic checking for referencing in a nonexistent label
 
 # Features
 - [x] test returning structs from a function
@@ -67,8 +69,14 @@
 - [x] continue
 - [x] any / #astof(...) / type info stuff
 - [-] pattern matching (on enums only at first, very simple single-depth match)
-    - [ ] `match`
+    - [x] `match`
+        - [ ] underscore for catch-all case
     - [x] `if let`
+- [ ] stack allocation should work the same way as any other allocation, and produce a pointer. If a struct is put on the stack, 
+      why should it not be a pointer, and copy, but if it's allocated through an arena it's suddenly a pointer and a reference?
+    - [ ] `let f: Foo = #{ 3, 4 };`
+    - [ ] `let f: Foo = #{ 3, 4 } @ arena!; fn arena() -> *_T! { ... }`
+        - literally shorthand for `let f: *Foo = arena!(); *f = #{ 3, 4 };`
 - [ ] type alignment
 - [ ] enum discriminant type should be variable, based on how many members there are (but still alignment comes into play, so often we'll have a small type but also enough padding to make it not really matter)
 - [ ] defer
@@ -89,7 +97,7 @@
 - [ ] #this (??)
 
 # Testing
-- [ ] Write rust tests which test compile errors
+- [ ] Write rust tests which check for compile errors
 
 # Performance
 - [x] investigate performance hit of using Box/Rc instead of the IdVec convention (it was about 10-15%)

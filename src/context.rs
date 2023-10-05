@@ -90,8 +90,17 @@ pub struct Context {
     // stack of returns - pushed when entering parsing a function, popped when exiting
     pub returns: Vec<Vec<NodeId>>,
 
-    // stack of breaks - pushed when entering parsing a break block, popped when exiting
+    // stack of breaks - pushed when entering parsing a break-able block, popped when exiting
     pub breaks: Vec<Vec<NodeId>>,
+
+    // stack of break labels - pushed when doing semantic analysis on a break-able block with a label, popped when exiting
+    pub break_labels: Vec<Option<Sym>>,
+
+    // stack of continues - pushed when entering parsing a continue-able block, popped when exiting
+    pub continues: Vec<Vec<NodeId>>,
+    //
+    // stack of continue labels - pushed when doing semantic analysis on a continue-able block with a label, popped when exiting
+    pub continue_labels: Vec<Option<Sym>>,
 
     pub scopes: Scopes,
     pub top_scope: ScopeId,
@@ -155,6 +164,9 @@ impl Context {
 
             returns: Default::default(),
             breaks: Default::default(),
+            break_labels: Default::default(),
+            continues: Default::default(),
+            continue_labels: Default::default(),
 
             scopes: Scopes::new(vec![Scope::new_top()]),
             top_scope: ScopeId(0),
@@ -213,6 +225,7 @@ impl Context {
         self.polymorph_copies.clear();
         self.returns.clear();
         self.breaks.clear();
+        self.continues.clear();
 
         self.scopes.clear();
         self.scopes.push(Scope::new_top());

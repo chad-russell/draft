@@ -128,7 +128,9 @@ impl Context {
     #[instrument(skip_all)]
     pub fn insert_type_infos_into_global_data(&mut self) -> EmptyDraftResult {
         for node_id in 0..self.nodes.len() {
-            let Node::TypeInfo(id) = self.nodes[NodeId(node_id)] else { continue; };
+            let Node::TypeInfo(id) = self.nodes[NodeId(node_id)] else {
+                continue;
+            };
             self.insert_type_info_into_global_data(id)?
         }
 
@@ -215,7 +217,13 @@ impl Context {
                             // TypeInfoParam
                             // Name (string)
                             {
-                                let (Node::StructDeclParam { name, ..} | Node::ValueParam { name: Some(name), .. }) = self.nodes[*param].clone() else { todo!("{:?}", self.nodes[*param].clone()) };
+                                let (Node::StructDeclParam { name, .. }
+                                | Node::ValueParam {
+                                    name: Some(name), ..
+                                }) = self.nodes[*param].clone()
+                                else {
+                                    todo!("{:?}", self.nodes[*param].clone())
+                                };
                                 let name = self.nodes[name].as_symbol().unwrap();
 
                                 // Write the pointer
@@ -1255,7 +1263,9 @@ impl<'a> FunctionCompileContext<'a> {
                         let tag_sym = self.ctx.get_symbol(tag);
 
                         let expr_ty = self.ctx.get_type(expr);
-                        let Type::Enum { params, .. } = expr_ty else { unreachable!() };
+                        let Type::Enum { params, .. } = expr_ty else {
+                            unreachable!()
+                        };
                         let mut param_index = -1;
                         for (idx, &param) in params.borrow().iter().enumerate() {
                             if let Node::EnumDeclParam { name, .. } = self.ctx.nodes[param].clone()
@@ -1750,6 +1760,110 @@ impl<'a> FunctionCompileContext<'a> {
                 self.ctx.values.insert(id, Value::Reference(ptr));
 
                 Ok(())
+            }
+            Node::Match { value, cases } => {
+                self.compile_id(value)?;
+
+                let saved_break_addr = self.break_addr;
+
+                // Make a stack slot for the result of the block
+                let slot_size = self.ctx.id_type_size(id);
+                if slot_size > 0 {
+                    let slot = self.builder.create_sized_stack_slot(StackSlotData {
+                        kind: StackSlotKind::ExplicitSlot,
+                        size: slot_size,
+                    });
+
+                    let value = Value::StackSlot(slot);
+                    self.ctx.values.insert(id, value);
+
+                    self.break_addr = Some(value);
+                }
+
+                for case in cases.borrow().iter() {
+                    let Node::MatchCase {
+                        tag,
+                        alias,
+                        block,
+                        block_label,
+                    } = self.ctx.nodes[*case]
+                    else {
+                        unreachable!()
+                    };
+
+                    let tag_sym = match self.ctx.nodes[tag] {
+                        Node::Symbol(sym) => sym,
+                        Node::EnumDeclParam { name, .. } => self.ctx.get_symbol(name),
+                        _ => todo!(),
+                    };
+
+                    let value_ty = self.ctx.get_type(value);
+                    let Type::Enum { params, .. } = value_ty else {
+                        unreachable!()
+                    };
+                    let mut param_index = -1;
+                    for (idx, &param) in params.borrow().iter().enumerate() {
+                        if let Node::EnumDeclParam { name, .. } = self.ctx.nodes[param].clone() {
+                            let name_sym = self.ctx.get_symbol(name);
+                            if name_sym == tag_sym {
+                                param_index = idx as i64;
+                                break;
+                            }
+                        } else {
+                            todo!()
+                        };
+                    }
+
+                    // Assign the value to the alias in case the branch is taken.
+                    if let Some(alias) = alias {
+                        let tag_offset = self.ctx.enum_tag_size();
+                        let enum_value_ptr = self.id_value(value);
+                        let enum_value_ptr = self
+                            .builder
+                            .ins()
+                            .iadd_imm(enum_value_ptr, tag_offset as i64);
+                        let enum_value_ptr = Value::Reference(enum_value_ptr);
+                        self.ctx.values.insert(alias, enum_value_ptr);
+                    }
+
+                    // Get the tag value of expr
+                    let expr_value = self.id_value(value);
+                    let tag_value = self.load(types::I64, expr_value, 0);
+
+                    // Compare against param_index
+                    let cond_value =
+                        self.builder
+                            .ins()
+                            .icmp_imm(IntCC::Equal, tag_value, param_index);
+
+                    let then_ebb = self.builder.create_block();
+                    let merge_ebb = self.builder.create_block();
+
+                    self.blocks.push((block_label, Block::Break(merge_ebb)));
+
+                    self.builder
+                        .ins()
+                        .brif(cond_value, then_ebb, &[], merge_ebb, &[]);
+
+                    self.builder.switch_to_block(then_ebb);
+                    self.compile_id(block)?;
+
+                    if !self.exited_blocks.contains(&self.current_block) {
+                        self.builder.ins().jump(merge_ebb, &[]);
+                    }
+
+                    self.builder.switch_to_block(merge_ebb);
+
+                    self.blocks.pop();
+                    self.blocks.pop();
+                }
+
+                self.break_addr = saved_break_addr;
+
+                Ok(())
+            }
+            Node::MatchCase { .. } => {
+                unreachable!("Should have already been handled when compiling 'Match'")
             }
             Node::FnDefinition { .. }
             | Node::StructDefinition { .. }

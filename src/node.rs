@@ -172,6 +172,16 @@ pub enum Node {
         else_block: NodeElse,
         else_label: Option<Sym>,
     },
+    Match {
+        value: NodeId,
+        cases: IdVec,
+    },
+    MatchCase {
+        tag: NodeId,
+        alias: Option<NodeId>,
+        block: NodeId,
+        block_label: Option<Sym>,
+    },
     For {
         label: NodeId,
         iterable: NodeId,
@@ -239,6 +249,8 @@ impl Node {
             Node::Deref(_) => "Deref".to_string(),
             Node::If { .. } => "If".to_string(),
             Node::For { .. } => "For".to_string(),
+            Node::Match { .. } => "Match".to_string(),
+            Node::MatchCase { .. } => "MatchCase".to_string(),
             Node::While { .. } => "While".to_string(),
             Node::ArrayLiteral { .. } => "ArrayLiteral".to_string(),
             Node::ArrayAccess { .. } => "ArrayAccess".to_string(),

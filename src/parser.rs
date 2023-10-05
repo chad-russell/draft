@@ -145,6 +145,7 @@ pub enum Token {
     Let,
     If,
     Else,
+    Match,
     For,
     While,
     In,
@@ -400,6 +401,9 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
         if self.source_info.prefix_keyword("while", Token::While) {
+            return;
+        }
+        if self.source_info.prefix_keyword("match", Token::Match) {
             return;
         }
         if self.source_info.prefix_keyword("in", Token::In) {
@@ -1260,7 +1264,8 @@ impl<'a, W: Source> Parser<'a, W> {
                 | Token::LabelSymbol(_)
                 | Token::True
                 | Token::False
-                | Token::If => {
+                | Token::If
+                | Token::Match => {
                     if !parsing_expr {
                         break;
                     }
@@ -1491,6 +1496,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 Ok(id)
             }
             Token::If => self.parse_if(),
+            Token::Match => self.parse_match(),
             Token::IntegerLiteral(_, _) | Token::FloatLiteral(_, _) => self.parse_numeric_literal(),
             Token::StringLiteral(sym) => {
                 self.pop();
@@ -1966,7 +1972,9 @@ impl<'a, W: Source> Parser<'a, W> {
         let (cond, alias_sym, alias_id, implicit) = if self.source_info.top.tok == Token::Let {
             let (ifcond, implicit) = self.parse_if_let()?;
 
-            let IfCond::Let { alias, .. } = ifcond else { unreachable!() };
+            let IfCond::Let { alias, .. } = ifcond else {
+                unreachable!()
+            };
             if let Some(alias) = alias {
                 let alias_sym = self.ctx.nodes[alias].as_symbol().unwrap();
                 (ifcond, Some(alias_sym), Some(alias), implicit)
@@ -1989,7 +1997,9 @@ impl<'a, W: Source> Parser<'a, W> {
 
         // todo(chad): @performance
         if let (Some(alias_sym), Some(alias_id)) = (alias_sym, alias_id) {
-            let Node::Block { stmts, .. } = self.ctx.nodes[then_block].clone() else { unreachable!() };
+            let Node::Block { stmts, .. } = self.ctx.nodes[then_block].clone() else {
+                unreachable!()
+            };
 
             let stmts = stmts.borrow();
             if let Some(first_stmt) = stmts.first() {
@@ -2044,6 +2054,86 @@ impl<'a, W: Source> Parser<'a, W> {
                 then_label,
                 else_block,
                 else_label,
+            },
+        ))
+    }
+
+    #[instrument(skip_all)]
+    pub fn parse_match(&mut self) -> DraftResult<NodeId> {
+        let start = self.source_info.top.range.start;
+
+        self.pop(); // `match`
+
+        let value = self.parse_expression(false)?;
+
+        self.expect(Token::LCurly)?;
+
+        let mut cases = Vec::new();
+        while self.source_info.top.tok != Token::RCurly {
+            let case = self.parse_match_case(value)?;
+            cases.push(case);
+        }
+
+        let range = self.expect_range(start, Token::RCurly)?;
+
+        let cases = self.ctx.push_id_vec(cases);
+
+        Ok(self.ctx.push_node(range, Node::Match { value, cases }))
+    }
+
+    #[instrument(skip_all)]
+    pub fn parse_match_case(&mut self, match_target: NodeId) -> DraftResult<NodeId> {
+        let start = self.source_info.top.range.start;
+
+        let tag = self.parse_symbol()?;
+        let alias = if self.source_info.top.tok == Token::LParen {
+            self.pop(); // `(`
+            let alias = self.parse_expression(false)?;
+            self.expect(Token::RParen)?; // `)`
+            Some(alias)
+        } else {
+            None
+        };
+
+        self.expect(Token::Colon)?;
+
+        let block_label = if let Token::LabelSymbol(sym) = self.source_info.top.tok {
+            self.pop(); // `a
+            Some(sym)
+        } else {
+            None
+        };
+
+        let block = self.parse_block(false)?;
+
+        if let Some(alias) = alias {
+            let Node::Block { stmts, .. } = self.ctx.nodes[block].clone() else {
+                unreachable!()
+            };
+
+            if let Some(first_stmt) = stmts.clone().borrow().first() {
+                let block_scope = self.ctx.node_scopes[first_stmt];
+
+                let alias_sym = self.ctx.nodes[alias].as_symbol().unwrap();
+                let alias_resolve = self.ctx.push_node(
+                    self.ctx.ranges[alias],
+                    Node::MemberAccess {
+                        value: match_target,
+                        member: tag,
+                    },
+                );
+                self.ctx
+                    .scope_insert_into_scope_id(alias_sym, alias_resolve, block_scope);
+            }
+        }
+
+        Ok(self.ctx.push_node(
+            Range::new(start, self.ctx.ranges[block].end, self.source_info.path),
+            Node::MatchCase {
+                tag,
+                alias,
+                block,
+                block_label,
             },
         ))
     }
@@ -2156,7 +2246,17 @@ impl<'a, W: Source> Parser<'a, W> {
                 let range = self.expect_range(start, Token::Semicolon)?;
 
                 let res_id = self.ctx.push_node(range, Node::Break(expr, name));
-                self.ctx.breaks.last_mut().unwrap().push(res_id);
+
+                match self.ctx.breaks.last_mut() {
+                    Some(br) => br.push(res_id),
+                    None => {
+                        self.ctx.errors.push(CompileError::Node(
+                            "Break stmt outside a break-able block".to_string(),
+                            res_id,
+                        ));
+                    }
+                }
+
                 Ok(res_id)
             }
             Token::Continue => {
@@ -2175,6 +2275,7 @@ impl<'a, W: Source> Parser<'a, W> {
             }
             Token::Let => self.parse_let(),
             Token::If => self.parse_if(),
+            Token::Match => self.parse_match(),
             Token::For => self.parse_for(),
             Token::While => self.parse_while(),
             Token::Struct => self.parse_struct_declaration(),
@@ -2531,7 +2632,6 @@ impl Context {
 
         let mut a = 0;
         while parser.source_info.top.tok != Token::Eof && a < 250_000 {
-            println!("{:?}", parser.source_info.top);
             parser.pop();
             a += 1;
         }

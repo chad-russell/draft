@@ -133,9 +133,17 @@ impl Context {
                 ) = (most_specific_ty.clone(), self.get_type(id))
                 {
                     for (sparam, param) in sparams.borrow().iter().zip(params.borrow().iter()) {
-                        let Node::StructDeclParam { transparent: stransparent, .. } =
-                            self.nodes[*sparam].clone() else { continue };
-                        let Node::StructDeclParam { transparent, .. } = self.nodes[*param].clone() else { continue };
+                        let Node::StructDeclParam {
+                            transparent: stransparent,
+                            ..
+                        } = self.nodes[*sparam].clone()
+                        else {
+                            continue;
+                        };
+                        let Node::StructDeclParam { transparent, .. } = self.nodes[*param].clone()
+                        else {
+                            continue;
+                        };
                         if stransparent && !transparent {
                             self.errors.push(CompileError::Node2(
                                 "Could not match types: struct fields differ in transparency"
@@ -892,11 +900,16 @@ impl Context {
                 transparent,
                 ..
             } => {
+                self.returns.push(Vec::new());
+
                 if let Some(value) =
                     self.assign_type_fn(id, return_ty, params, stmts, returns, transparent)
                 {
+                    self.returns.pop();
                     return value;
                 }
+
+                self.returns.pop();
             }
             Node::Extern {
                 params, return_ty, ..
@@ -1394,7 +1407,8 @@ impl Context {
                 cond,
                 then_block,
                 else_block,
-                ..
+                then_label,
+                else_label,
             } => {
                 match cond {
                     IfCond::Expr(cond) => {
@@ -1414,10 +1428,7 @@ impl Context {
 
                         let Type::Enum { params, .. } = expr_ty else {
                             self.errors.push(CompileError::Node(
-                                format!(
-                                    "Cannot use let if on non-enum type {:?}",
-                                    expr_ty
-                                ),
+                                format!("Cannot use let if on non-enum type {:?}", expr_ty),
                                 expr,
                             ));
                             return true;
@@ -1462,11 +1473,18 @@ impl Context {
                     }
                 }
 
+                self.push_break(then_label);
+                self.returns.push(Vec::new());
+
                 self.assign_type(then_block);
                 self.match_types(id, then_block);
 
+                self.pop_break();
+                self.returns.last_mut().unwrap().clear();
+
                 match else_block {
                     NodeElse::Block(else_block) => {
+                        self.push_break(else_label);
                         self.assign_type(else_block);
                         self.match_types(id, else_block);
                     }
@@ -1479,21 +1497,140 @@ impl Context {
                         self.types.insert(id, Type::Empty);
                     }
                 }
+
+                self.pop_break();
+                self.returns.pop();
             }
-            Node::Break(r, _) => match r {
-                Some(r) => {
-                    self.assign_type(r);
-                    self.match_types(id, r);
+            Node::Match { value, cases } => {
+                self.assign_type(value);
+
+                for c in cases.borrow().iter() {
+                    let Node::MatchCase {
+                        block, block_label, ..
+                    } = self.nodes[*c].clone()
+                    else {
+                        unreachable!()
+                    };
+
+                    self.push_break(block_label);
+
+                    self.assign_type(block);
+
+                    self.pop_break();
+                    self.returns.last_mut().unwrap().clear();
+
+                    self.match_types(id, block);
                 }
-                None => {
-                    self.types.insert(id, Type::Empty);
+
+                if let Type::Infer(_) = self.get_type(value) {
+                    self.deferreds.push(id);
+                    return false;
                 }
-            },
-            Node::Continue(_) => {
+
+                let Type::Enum { params, .. } = self.get_type(value) else {
+                    self.errors.push(CompileError::Node(
+                        "Cannot match on non-enum type".to_string(),
+                        value,
+                    ));
+                    return true;
+                };
+
+                for p in params.borrow().iter() {
+                    let tag_to_search_for = match &self.nodes[*p] {
+                        Node::EnumDeclParam { name, .. } => *name,
+                        _ => todo!(),
+                    };
+                    let tag_to_search_for_sym = self.get_symbol(tag_to_search_for);
+
+                    let mut found = false;
+                    for c in cases.borrow().iter() {
+                        let Node::MatchCase { tag, .. } = self.nodes[*c].clone() else {
+                            unreachable!()
+                        };
+
+                        let tag_sym = match self.nodes[tag] {
+                            Node::Symbol(sym) => sym,
+                            Node::EnumDeclParam { name, .. } => self.get_symbol(name),
+                            _ => todo!(),
+                        };
+
+                        if tag_sym == tag_to_search_for_sym {
+                            found = true;
+                            break;
+                        }
+                    }
+
+                    if !found {
+                        self.errors.push(CompileError::Node(
+                            format!(
+                                "Could not find tag {} in match cases",
+                                self.string_interner
+                                    .resolve(tag_to_search_for_sym.0)
+                                    .unwrap(),
+                            ),
+                            value,
+                        ));
+                    }
+                }
+
+                // Check nothing was specified twice, by comparing the lengths of the params and cases
+                if params.borrow().len() != cases.borrow().len() {
+                    self.errors.push(CompileError::Node(
+                        "Match cases must specify all enum params exactly once".to_string(),
+                        value,
+                    ));
+                }
+            }
+            Node::MatchCase {
+                tag: _,
+                alias: _,
+                block: _,
+                block_label: _,
+            } => {
+                // Should have already been handled in the parent match node
+                unreachable!()
+            }
+            Node::Break(r, label) => {
+                self.ensure_break_label_exists(label, id);
+
+                match self.breaks.last_mut() {
+                    Some(r) => r.push(id),
+                    _ => {
+                        self.errors.push(CompileError::Node(
+                            "Break stmt outside of a breakable block!".to_string(),
+                            id,
+                        ));
+                        return true;
+                    }
+                }
+
+                match r {
+                    Some(r) => {
+                        self.assign_type(r);
+                        self.match_types(id, r);
+                    }
+                    None => {
+                        self.types.insert(id, Type::Empty);
+                    }
+                };
+            }
+            Node::Continue(label) => {
+                self.ensure_continue_label_exists(label, id);
                 self.types.insert(id, Type::Empty);
             }
-            Node::Block { stmts, breaks, .. } => {
+            Node::Block {
+                stmts,
+                breaks,
+                label,
+                is_standalone,
+                ..
+            } => {
+                if is_standalone {
+                    self.push_break(label);
+                }
+
                 for &stmt in stmts.clone().borrow().iter() {
+                    self.ensure_not_already_exited_block(stmt);
                     self.assign_type(stmt);
                 }
 
@@ -1506,6 +1643,10 @@ impl Context {
                 for &br in breaks.borrow().iter() {
                     self.assign_type(br);
                     self.match_types(id, br);
+                }
+
+                if is_standalone {
+                    self.pop_break();
                 }
             }
             Node::ArrayLiteral { members, ty } => {
@@ -1643,6 +1784,7 @@ impl Context {
                 iterable,
                 label,
                 block,
+                block_label,
                 ..
             } => {
                 self.assign_type(iterable);
@@ -1661,9 +1803,22 @@ impl Context {
                     _ => todo!(),
                 }
 
+                self.push_break(block_label);
+                self.push_continue(block_label);
+                self.returns.push(Vec::new());
+
                 self.assign_type(block);
+
+                self.pop_break();
+                self.pop_continue();
+                self.returns.pop();
             }
-            Node::While { cond, block, .. } => {
+            Node::While {
+                cond,
+                block,
+                block_label,
+                ..
+            } => {
                 self.assign_type(cond);
 
                 match self.get_type(cond) {
@@ -1675,7 +1830,15 @@ impl Context {
                     _ => todo!(),
                 }
 
+                self.push_break(block_label);
+                self.push_continue(block_label);
+                self.returns.push(Vec::new());
+
                 self.assign_type(block);
+
+                self.pop_break();
+                self.pop_continue();
+                self.returns.pop();
             }
             Node::ThreadingParamTarget => todo!(),
             Node::AsCast { value, ty, .. } => {
@@ -1839,6 +2002,79 @@ impl Context {
         return true;
     }
 
+    #[instrument(skip_all)]
+    fn push_break(&mut self, label: Option<Sym>) {
+        self.breaks.push(Vec::new());
+        self.break_labels.push(label);
+    }
+
+    #[instrument(skip_all)]
+    fn pop_break(&mut self) {
+        self.breaks.pop();
+        self.break_labels.pop();
+    }
+
+    #[instrument(skip_all)]
+    fn push_continue(&mut self, label: Option<Sym>) {
+        self.continues.push(Vec::new());
+        self.continue_labels.push(label);
+    }
+
+    #[instrument(skip_all)]
+    fn pop_continue(&mut self) {
+        self.continues.pop();
+        self.continue_labels.pop();
+    }
+
+    #[instrument(skip_all)]
+    fn ensure_continue_label_exists(&mut self, label: Option<Sym>, id: NodeId) {
+        if label.is_none() {
+            return;
+        }
+
+        if !self.continue_labels.contains(&label) {
+            self.errors.push(CompileError::Node(
+                format!(
+                    "Continue label {} does not exist",
+                    self.string_interner.resolve(label.unwrap().0).unwrap()
+                ),
+                id,
+            ));
+        }
+    }
+
+    #[instrument(skip_all)]
+    fn ensure_break_label_exists(&mut self, label: Option<Sym>, id: NodeId) {
+        if label.is_none() {
+            return;
+        }
+
+        if !self.break_labels.contains(&label) {
+            self.errors.push(CompileError::Node(
+                format!(
+                    "Break label {} does not exist",
+                    self.string_interner.resolve(label.unwrap().0).unwrap()
+                ),
+                id,
+            ));
+        }
+    }
+
+    #[instrument(skip_all)]
+    fn ensure_not_already_exited_block(&mut self, id: NodeId) {
+        let retlen = self.returns.last().map(|r| r.len()).unwrap_or(0);
+        let brlen = self.breaks.last().map(|r| r.len()).unwrap_or(0);
+        let contlen = self.continues.last().map(|r| r.len()).unwrap_or(0);
+
+        if retlen > 0 || brlen > 0 || contlen > 0 {
+            self.errors.push(CompileError::Node(
+                "Already exited this block".to_string(),
+                id,
+            ));
+        }
+    }
+
+    #[instrument(skip_all)]
     fn assign_type_static_member_access_enum(
         &mut self,
         params: IdVec,
@@ -2193,6 +2429,17 @@ impl Context {
 
     #[instrument(skip_all)]
     fn assign_type_return(&mut self, ret_id: Option<NodeId>, id: NodeId) {
+        match self.returns.last_mut() {
+            Some(r) => r.push(id),
+            _ => {
+                self.errors.push(CompileError::Node(
+                    "Return outside of a block!".to_string(),
+                    id,
+                ));
+                return;
+            }
+        }
+
         if let Some(ret_id) = ret_id {
             self.assign_type(ret_id);
             self.match_types(id, ret_id);
@@ -2299,6 +2546,7 @@ impl Context {
             },
         );
         for &stmt in stmts.borrow().iter() {
+            self.ensure_not_already_exited_block(stmt);
             self.assign_type(stmt);
         }
         for &ret_id in returns.borrow().iter() {
@@ -2548,11 +2796,12 @@ impl Context {
             scope: Some(struct_scope),
             params,
             ..
-        } | Type::Enum {
+        }
+        | Type::Enum {
             scope: Some(struct_scope),
             params,
             ..
-         }) = ty
+        }) = ty
         else {
             self.errors.push(CompileError::Node(
                 format!("Type not eligible for transparency: {:?}", ty),
@@ -2740,6 +2989,13 @@ impl Context {
             } => todo!(),
             Node::While {
                 cond: _,
+                block: _,
+                block_label: _,
+            } => todo!(),
+            Node::Match { value: _, cases: _ } => todo!(),
+            Node::MatchCase {
+                tag: _,
+                alias: _,
                 block: _,
                 block_label: _,
             } => todo!(),

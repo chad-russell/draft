@@ -1,24 +1,36 @@
 extern print_i64(n: i64);
+extern print_str(ch: *u8, len: i64);
 
-struct Foo {
-    x: i64,
-    y: i64,
+fn print_string(s: string) {
+    print_str(s.data, s.len);
+    return;
 }
 
-struct MyThing {
-    #transparent get_foo: fn() Foo,
-}
-
-fn gf() _ {
-    return Foo { 3, 4 };
+enum Option {
+    All,
+    Some: i64,
+    None,
 }
 
 fn main() i64 {
-    let mt = MyThing {
-        get_foo: gf,
+    // let a: [3]i64 = [1, 2, 3]; 
+    // a::len + print_i64(a[0]);
+
+    let o = Option::Some(3);
+    o = Option::None();
+
+    let r = match o {
+        Some(a): `a {
+            print_i64(a);
+            break `b 5;
+        }
+        _: {
+            print_string("None\n");
+            break 8;
+        }
     };
 
-    print_i64(mt.x);
+    print_i64(r);
 
     return 0;
 }
