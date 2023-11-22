@@ -1749,6 +1749,7 @@ impl<'a> FunctionCompileContext<'a> {
                     self.break_addr = Some(value);
                 }
 
+                let merge_ebb = self.builder.create_block();
                 for case in cases.borrow().iter() {
                     let Node::MatchCase {
                         tag,
@@ -1766,7 +1767,7 @@ impl<'a> FunctionCompileContext<'a> {
                     };
 
                     let then_ebb = self.builder.create_block();
-                    let merge_ebb = self.builder.create_block();
+                    let else_ebb = self.builder.create_block();
 
                     match tag {
                         MatchCaseTag::CatchAll => {
@@ -1828,7 +1829,7 @@ impl<'a> FunctionCompileContext<'a> {
 
                             self.builder
                                 .ins()
-                                .brif(cond_value, then_ebb, &[], merge_ebb, &[]);
+                                .brif(cond_value, then_ebb, &[], else_ebb, &[]);
 
                             self.builder.switch_to_block(then_ebb);
                             self.compile_id(block)?;
@@ -1836,10 +1837,10 @@ impl<'a> FunctionCompileContext<'a> {
                     }
 
                     if !self.exited_blocks.contains(&self.current_block) {
-                        self.builder.ins().jump(merge_ebb, &[]);
+                        self.builder.ins().jump(else_ebb, &[]);
                     }
 
-                    self.builder.switch_to_block(merge_ebb);
+                    self.builder.switch_to_block(else_ebb);
 
                     self.blocks.pop();
                     self.blocks.pop();
