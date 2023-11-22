@@ -1,10 +1,9 @@
 use std::{cell::RefCell, rc::Rc};
 
-use tracing::instrument;
-
 use crate::{
-    AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, IfCond, Node,
-    NodeElse, NodeId, NumericSpecification, Op, ParseTarget, ScopeId, StaticMemberResolution, Sym,
+    AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, IfCond, MatchCaseTag,
+    Node, NodeElse, NodeId, NumericSpecification, Op, ParseTarget, ScopeId, StaticMemberResolution,
+    Sym,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,7 +44,6 @@ pub enum Type {
 }
 
 impl Type {
-    #[instrument(name = "Type::is_basic", skip_all)]
     pub fn is_basic(&self) -> bool {
         matches!(
             &self,
@@ -64,7 +62,6 @@ impl Type {
         )
     }
 
-    #[instrument(name = "Type::is_int", skip_all)]
     pub fn is_int(&self) -> bool {
         matches!(
             &self,
@@ -80,7 +77,6 @@ impl Type {
         )
     }
 
-    #[instrument(name = "Type::is_float", skip_all)]
     pub fn is_float(&self) -> bool {
         matches!(&self, Type::FloatLiteral | Type::F32 | Type::F64)
     }
@@ -108,7 +104,6 @@ pub struct AddressableMatch {
 }
 
 impl Context {
-    #[instrument(skip_all)]
     pub fn unify_types(&mut self) {
         for uid in 0..self.type_matches.len() {
             if !self.type_matches[uid].changed {
@@ -159,7 +154,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     pub fn unify(&mut self, first: Type, second: Type, err_ids: (NodeId, NodeId)) -> Type {
         match (first.clone(), second.clone()) {
             (a, b) if a == b => a,
@@ -228,7 +222,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     pub fn rearrange_params(
         &mut self,
         given: &[NodeId],
@@ -391,13 +384,11 @@ impl Context {
         Ok(rearranged_given)
     }
 
-    #[instrument(skip_all)]
     pub fn match_types(&mut self, ty1: NodeId, ty2: NodeId) {
         self.handle_match_types(ty1, ty2);
         self.merge_type_matches(ty1, ty2);
     }
 
-    #[instrument(skip_all)]
     pub fn handle_match_types(&mut self, ty1: NodeId, ty2: NodeId) {
         if ty1 == ty2 {
             return;
@@ -634,7 +625,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     pub fn check_int_literal_type(&self, bt: Type) -> bool {
         matches!(
             bt,
@@ -650,22 +640,18 @@ impl Context {
         )
     }
 
-    #[instrument(skip_all)]
     pub fn check_float_literal_type(&self, bt: Type) -> bool {
         matches!(bt, Type::FloatLiteral | Type::F32 | Type::F64)
     }
 
-    #[instrument(skip_all)]
     pub fn get_type(&self, id: NodeId) -> Type {
         return self.types.get(&id).cloned().unwrap_or(Type::Infer(None));
     }
 
-    #[instrument(skip_all)]
     pub fn is_fully_concrete(&mut self, id: NodeId) -> bool {
         self.is_fully_concrete_ty(self.get_type(id))
     }
 
-    #[instrument(skip_all)]
     pub fn is_fully_concrete_ty(&mut self, ty: Type) -> bool {
         if let Type::Pointer(pt) = ty {
             if self.circular_concrete_types.contains(&pt) {
@@ -710,17 +696,14 @@ impl Context {
         )
     }
 
-    #[instrument(skip_all)]
     pub fn find_type_array_index(&self, id: NodeId) -> Option<usize> {
         self.type_array_reverse_map.get(&id).cloned()
     }
 
-    #[instrument(skip_all)]
     pub fn find_addressable_array_index(&self, id: NodeId) -> Option<usize> {
         self.addressable_array_reverse_map.get(&id).cloned()
     }
 
-    #[instrument(skip_all)]
     pub fn merge_type_matches(&mut self, ty1: NodeId, ty2: NodeId) {
         match (self.get_type(ty1), self.get_type(ty2)) {
             (Type::Infer(_), Type::Infer(_)) => (),
@@ -867,7 +850,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     pub fn assign_type(&mut self, id: NodeId) {
         if self.completes.contains(&id) {
             return;
@@ -889,7 +871,6 @@ impl Context {
         // self.unify_types();
     }
 
-    #[instrument(skip_all)]
     pub fn assign_type_inner(&mut self, id: NodeId) -> bool {
         match self.nodes[id].clone() {
             Node::FnDefinition {
@@ -1535,6 +1516,8 @@ impl Context {
                     return true;
                 };
 
+                let mut has_catch_all_case = false;
+
                 for p in params.borrow().iter() {
                     let tag_to_search_for = match &self.nodes[*p] {
                         Node::EnumDeclParam { name, .. } => *name,
@@ -1548,15 +1531,24 @@ impl Context {
                             unreachable!()
                         };
 
-                        let tag_sym = match self.nodes[tag] {
-                            Node::Symbol(sym) => sym,
-                            Node::EnumDeclParam { name, .. } => self.get_symbol(name),
-                            _ => todo!(),
-                        };
+                        match tag {
+                            MatchCaseTag::CatchAll => {
+                                found = true;
+                                has_catch_all_case = true;
+                                break;
+                            }
+                            MatchCaseTag::Node(tag) => {
+                                let tag_sym = match self.nodes[tag] {
+                                    Node::Symbol(sym) => sym,
+                                    Node::EnumDeclParam { name, .. } => self.get_symbol(name),
+                                    _ => todo!(),
+                                };
 
-                        if tag_sym == tag_to_search_for_sym {
-                            found = true;
-                            break;
+                                if tag_sym == tag_to_search_for_sym {
+                                    found = true;
+                                    break;
+                                }
+                            }
                         }
                     }
 
@@ -1573,12 +1565,14 @@ impl Context {
                     }
                 }
 
-                // Check nothing was specified twice, by comparing the lengths of the params and cases
-                if params.borrow().len() != cases.borrow().len() {
-                    self.errors.push(CompileError::Node(
-                        "Match cases must specify all enum params exactly once".to_string(),
-                        value,
-                    ));
+                if !has_catch_all_case {
+                    // Check nothing was specified twice, by comparing the lengths of the params and cases
+                    if params.borrow().len() != cases.borrow().len() {
+                        self.errors.push(CompileError::Node(
+                            "Match cases must specify all enum params exactly once".to_string(),
+                            value,
+                        ));
+                    }
                 }
             }
             Node::MatchCase {
@@ -2002,31 +1996,26 @@ impl Context {
         return true;
     }
 
-    #[instrument(skip_all)]
     fn push_break(&mut self, label: Option<Sym>) {
         self.breaks.push(Vec::new());
         self.break_labels.push(label);
     }
 
-    #[instrument(skip_all)]
     fn pop_break(&mut self) {
         self.breaks.pop();
         self.break_labels.pop();
     }
 
-    #[instrument(skip_all)]
     fn push_continue(&mut self, label: Option<Sym>) {
         self.continues.push(Vec::new());
         self.continue_labels.push(label);
     }
 
-    #[instrument(skip_all)]
     fn pop_continue(&mut self) {
         self.continues.pop();
         self.continue_labels.pop();
     }
 
-    #[instrument(skip_all)]
     fn ensure_continue_label_exists(&mut self, label: Option<Sym>, id: NodeId) {
         if label.is_none() {
             return;
@@ -2043,7 +2032,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     fn ensure_break_label_exists(&mut self, label: Option<Sym>, id: NodeId) {
         if label.is_none() {
             return;
@@ -2060,7 +2048,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     fn ensure_not_already_exited_block(&mut self, id: NodeId) {
         let retlen = self.returns.last().map(|r| r.len()).unwrap_or(0);
         let brlen = self.breaks.last().map(|r| r.len()).unwrap_or(0);
@@ -2074,7 +2061,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     fn assign_type_static_member_access_enum(
         &mut self,
         params: IdVec,
@@ -2146,7 +2132,6 @@ impl Context {
         return true;
     }
 
-    #[instrument(skip_all)]
     fn assign_type_float_literal(
         &mut self,
         spec: NumericSpecification,
@@ -2173,7 +2158,6 @@ impl Context {
         None
     }
 
-    #[instrument(skip_all)]
     fn assign_type_let(
         &mut self,
         id: NodeId,
@@ -2211,7 +2195,6 @@ impl Context {
         None
     }
 
-    #[instrument(skip_all)]
     fn debug_scope(&self, scope: ScopeId) -> Vec<String> {
         self.scopes[scope]
             .entries
@@ -2220,7 +2203,6 @@ impl Context {
             .collect::<Vec<_>>()
     }
 
-    #[instrument(skip_all)]
     fn assign_type_value_param(&mut self, value: NodeId, id: NodeId, name: Option<NodeId>) {
         self.assign_type(value);
         self.check_not_unspecified_polymorph(value);
@@ -2230,7 +2212,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     fn assign_type_enum_decl_param(
         &mut self,
         id: NodeId,
@@ -2264,7 +2245,6 @@ impl Context {
         None
     }
 
-    #[instrument(skip_all)]
     fn assign_type_struct_decl_param(
         &mut self,
         id: NodeId,
@@ -2304,7 +2284,6 @@ impl Context {
         None
     }
 
-    #[instrument(skip_all)]
     fn assign_type_fn_decl_param(
         &mut self,
         id: NodeId,
@@ -2353,7 +2332,6 @@ impl Context {
         None
     }
 
-    #[instrument(skip_all)]
     fn assign_type_symbol(&mut self, sym: Sym, id: NodeId) -> bool {
         let resolved = self.scope_get(sym, id);
 
@@ -2378,17 +2356,14 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     fn assign_type_string_literal(&mut self, id: NodeId) {
         self.types.insert(id, Type::String);
     }
 
-    #[instrument(skip_all)]
     fn assign_type_bool(&mut self, id: NodeId) {
         self.types.insert(id, Type::Bool);
     }
 
-    #[instrument(skip_all)]
     fn assign_type_int_literal(&mut self, spec: NumericSpecification, id: NodeId) {
         match spec {
             NumericSpecification::None => {
@@ -2427,7 +2402,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     fn assign_type_return(&mut self, ret_id: Option<NodeId>, id: NodeId) {
         match self.returns.last_mut() {
             Some(r) => r.push(id),
@@ -2446,7 +2420,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     fn assign_type_type(&mut self, id: NodeId, ty: Type) {
         self.types.insert(id, ty.clone());
 
@@ -2499,7 +2472,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     fn assign_type_extern(&mut self, return_ty: Option<NodeId>, params: IdVec, id: NodeId) {
         if let Some(return_ty) = return_ty {
             self.assign_type(return_ty);
@@ -2518,7 +2490,6 @@ impl Context {
         );
     }
 
-    #[instrument(skip_all)]
     fn assign_type_fn(
         &mut self,
         id: NodeId,
@@ -2595,7 +2566,6 @@ impl Context {
         None
     }
 
-    #[instrument(skip_all)]
     fn assign_type_inner_call(&mut self, id: NodeId, mut func: NodeId, params: IdVec) -> bool {
         self.assign_type(func);
 
@@ -2682,7 +2652,6 @@ impl Context {
         return true;
     }
 
-    #[instrument(skip_all)]
     fn match_params_to_named_struct(
         &mut self,
         params: IdVec,
@@ -2728,7 +2697,6 @@ impl Context {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     pub fn copy_polymorph_if_needed(&mut self, ty: NodeId) -> DraftResult<NodeId> {
         if let Some(&ty) = self.polymorph_sources.get(&ty) {
             let parse_target = match self.nodes[ty].clone() {
@@ -2744,7 +2712,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     pub fn check_not_unspecified_polymorph(&mut self, value: NodeId) {
         let mut base_value = value;
         let mut ty = self.get_type(value);
@@ -2764,7 +2731,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     fn propagate_transparency(
         &mut self,
         type_id: NodeId,
@@ -2841,7 +2807,6 @@ impl Context {
         return true;
     }
 
-    #[instrument(skip_all)]
     pub fn deep_copy_node(&mut self, id: NodeId) -> NodeId {
         let range = self.ranges[id];
 
@@ -3010,7 +2975,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     pub fn deep_copy_id_vec(&mut self, v: IdVec) -> IdVec {
         let v = v
             .borrow_mut()

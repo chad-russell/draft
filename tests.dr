@@ -137,18 +137,23 @@ fn vec_new() Vec! {
     return v;
 }
 
-fn vec_len(v: *Vec!(T: Vec!(T: f64))) i64 {
+fn double_vec_len(v: *Vec!(T: Vec!(T: f64))) i64 {
     return v.len;
 }
 
-fn test_vec_stuff_1() i64 { 
+fn test_vec_stuff_1() i64 {
     let v1 = vec_new();
     v1.data = &0.0f64;
 
     let v2 = Vec { data: &v1, len: 26 };
-    print_i64(vec_len(&v2));
+    print_i64(double_vec_len(&v2));
 
     return 0;
+}
+
+fn test_vec_stuff_2() { 
+    &Vec { data: &vec_new(), len: 26 } |> double_vec_len |> print_i64;
+    return;
 }
 
 // Declare the interafce itself
@@ -196,7 +201,7 @@ fn test_interfaces() i64 {
 }
 
 fn test_for_array() i64 {
-    let arr: [_]_T = [_{x: 1i64, y: 1.1f64}, _{2, 2.2}, _{3, 3.3}];
+    let arr: [_]_ = [_{x: 1, y: 1.1}, _{2, 2.2}, _{3, 3.3}];
 
     for val in arr {
         val.x = 999;
@@ -206,12 +211,14 @@ fn test_for_array() i64 {
         print_i64(val.x);
         print_f64(val.y);
     }
+
+    print_i64(arr::len);
 
     return 0;
 }
 
 fn test_for_dynamic_array() i64 {
-    let arr: []_T = [_{x: 1i64, y: 1.1f64}, _{2, 2.2}, _{3, 3.3}] as []T;
+    let arr: []_ = [_{x: 1, y: 1.1}, _{2, 2.2}, _{3, 3.3}] as []_;
 
     for val in arr {
         val.x = 999;
@@ -221,6 +228,8 @@ fn test_for_dynamic_array() i64 {
         print_i64(val.x);
         print_f64(val.y);
     }
+
+    print_i64(arr.len);
 
     return 0;
 }
@@ -416,17 +425,17 @@ fn test_arrow_threading() {
 }
 
 fn test_vtable_stuff1() i64 {
+    struct Foo {
+        x: i64,
+    }
+
     struct VTable {
         modify: fn(this: *_T!) *T,
         sum: fn(this: *T) i64,
     }
 
-    struct Foo {
-        x: i64,
-    }
-
     #transparent fn get_vtable() *VTable!(T: Foo) {
-        return heapify(VTable {
+        return VTable {
             modify: fn(this: *Foo) *Foo {
                 this.x = this.x + 1;
                 return this;
@@ -434,7 +443,7 @@ fn test_vtable_stuff1() i64 {
             sum: fn(this: *Foo) i64 {
                 return this.x;
             }
-        });
+        } |> heapify;
     }
 
     let f: Foo;
@@ -491,10 +500,28 @@ fn test_if_let() {
     return;
 }
 
+fn test_if_let2() {
+    let a: Option!(T: Option!(T: i64)) = Option::Some(Option::Some(3));
+    if let None = a {
+        print_string("ERROR\n");
+    } else if let Some(s) = a {
+        print_string("Found a match for some");
+        if let Some(ss) = s {
+            print_i64(ss);
+        } else {
+            print_string("ERROR\n");
+        }
+    } else {
+        print_string("ERROR\n");
+    }
+
+    return;
+}
+
 fn transparent_polymorph() {
     struct Foo {
         x: i64, 
-       y: i64,
+        y: i64,
     }
 
     enum Option {
@@ -610,6 +637,7 @@ fn main() i64 {
     print_i64(pstruct.a + pstruct.b);
     
     test_vec_stuff_1();
+    test_vec_stuff_2();
     
     test_interfaces();
     
@@ -632,6 +660,8 @@ fn main() i64 {
     test_transparent2();
 
     test_arrow_threading();
+
+    test_vtable_stuff1();
 
     test_propagate();
 

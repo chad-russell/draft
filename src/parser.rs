@@ -1,11 +1,10 @@
 use std::{cell::RefCell, rc::Rc};
 
 use string_interner::symbol::SymbolU32;
-use tracing::instrument;
 
 use crate::{
     ArrayLen, AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, IfCond,
-    Node, NodeElse, NodeId, Source, SourceInfo, StaticStrSource, Type,
+    MatchCaseTag, Node, NodeElse, NodeId, Source, SourceInfo, StaticStrSource, Type,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
@@ -37,7 +36,6 @@ pub struct Range {
 }
 
 impl Range {
-    #[instrument(name = "Range::new", skip_all)]
     pub fn new(start: Location, end: Location, source_path: &'static str) -> Self {
         Self {
             start,
@@ -46,7 +44,6 @@ impl Range {
         }
     }
 
-    #[instrument(name = "Range::spanning", skip_all)]
     pub fn spanning(start: Range, end: Range) -> Self {
         assert!(start.source_path == end.source_path);
 
@@ -69,7 +66,6 @@ impl Range {
         }
     }
 
-    #[instrument(name = "Range::contains", skip_all)]
     pub fn contains(&self, line: usize, col: usize) -> bool {
         if self.start.line < line && self.end.line > line {
             true
@@ -86,7 +82,6 @@ impl Range {
 }
 
 impl std::fmt::Debug for Range {
-    #[instrument(name = "Range::fmt", skip_all)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // write!(f, "{:?}-{:?}", self.start, self.end)
         write!(
@@ -208,7 +203,6 @@ impl Default for Lexeme {
     }
 }
 
-#[instrument(skip_all)]
 pub fn breaks_symbol(c: char) -> bool {
     c == ' '
         || c == '\t'
@@ -256,7 +250,6 @@ pub struct Parser<'a, W: Source> {
 }
 
 impl<'a, W: Source> Parser<'a, W> {
-    #[instrument(skip_all)]
     pub fn from_source(context: &'a mut Context, source_info: &'a mut SourceInfo<W>) -> Self {
         Self {
             source_info,
@@ -268,7 +261,6 @@ impl<'a, W: Source> Parser<'a, W> {
         }
     }
 
-    #[instrument(skip_all)]
     pub fn pop(&mut self) {
         self.source_info.eat_spaces();
 
@@ -710,7 +702,6 @@ impl<'a, W: Source> Parser<'a, W> {
         self.source_info.second = new_second;
     }
 
-    #[instrument(skip_all)]
     fn expect(&mut self, tok: Token) -> EmptyDraftResult {
         match self.source_info.top.tok {
             t if t == tok => {
@@ -725,7 +716,6 @@ impl<'a, W: Source> Parser<'a, W> {
         }
     }
 
-    #[instrument(skip_all)]
     fn expect_range(&mut self, start: Location, token: Token) -> DraftResult<Range> {
         let range = self
             .source_info
@@ -741,7 +731,6 @@ impl<'a, W: Source> Parser<'a, W> {
         }
     }
 
-    #[instrument(skip_all)]
     pub fn parse(&mut self) -> EmptyDraftResult {
         self.pop();
         self.pop();
@@ -754,7 +743,6 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     pub fn parse_top_level(&mut self) -> DraftResult<NodeId> {
         let tl = match self.source_info.top.tok {
             Token::Fn | Token::Transparent => self.parse_fn_definition(false),
@@ -774,7 +762,6 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(tl)
     }
 
-    #[instrument(skip_all)]
     fn parse_symbol(&mut self) -> DraftResult<NodeId> {
         let range = self.source_info.top.range;
         match self.source_info.top.tok {
@@ -789,7 +776,6 @@ impl<'a, W: Source> Parser<'a, W> {
         }
     }
 
-    #[instrument(skip_all)]
     fn parse_possibly_implicit_symbol(&mut self) -> DraftResult<(NodeId, bool)> {
         let range = self.source_info.top.range;
         match self.source_info.top.tok {
@@ -808,7 +794,6 @@ impl<'a, W: Source> Parser<'a, W> {
         }
     }
 
-    #[instrument(skip_all)]
     pub fn parse_poly_specialize(&mut self, sym: Sym) -> DraftResult<NodeId> {
         let mut range = self.source_info.top.range;
 
@@ -859,7 +844,6 @@ impl<'a, W: Source> Parser<'a, W> {
         ))
     }
 
-    #[instrument(skip_all)]
     pub fn parse_value_params(&mut self, for_threading_args: bool) -> DraftResult<IdVec> {
         let mut params = Vec::new();
 
@@ -905,7 +889,6 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(self.ctx.push_id_vec(params))
     }
 
-    #[instrument(skip_all)]
     fn parse_decl_params(&mut self, parse_type: DeclParamParseType) -> DraftResult<IdVec> {
         let mut params = Vec::new();
 
@@ -1003,7 +986,6 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(self.ctx.push_id_vec(params))
     }
 
-    #[instrument(skip_all)]
     pub fn parse_struct_declaration(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
@@ -1049,7 +1031,6 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(struct_node)
     }
 
-    #[instrument(skip_all)]
     pub fn parse_enum_definition(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
@@ -1099,7 +1080,6 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(enum_node)
     }
 
-    #[instrument(skip_all)]
     pub fn parse_fn_definition(&mut self, anonymous: bool) -> DraftResult<NodeId> {
         let old_polymorph_target = self.ctx.polymorph_target;
         self.ctx.polymorph_target = false;
@@ -1188,7 +1168,6 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(func)
     }
 
-    #[instrument(skip_all)]
     pub fn parse_extern(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
@@ -1227,7 +1206,6 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(id)
     }
 
-    #[instrument(skip_all)]
     pub fn parse_expression(&mut self, struct_literals_allowed: bool) -> DraftResult<NodeId> {
         let mut operators = Vec::<Op>::new();
         let mut output = Vec::new();
@@ -1360,7 +1338,6 @@ impl<'a, W: Source> Parser<'a, W> {
         }
     }
 
-    #[instrument(skip_all)]
     pub fn unroll_threading_call(&mut self, values: &mut Vec<UnrolledThread>) -> NodeId {
         let UnrolledThread::Node(inner_func_id) = values.pop().unwrap() else {
             panic!("Expected Node")
@@ -1471,7 +1448,6 @@ impl<'a, W: Source> Parser<'a, W> {
         )
     }
 
-    #[instrument(skip_all)]
     pub fn parse_expression_piece(
         &mut self,
         struct_literals_allowed: bool,
@@ -1810,7 +1786,6 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(value)
     }
 
-    #[instrument(skip_all)]
     fn parse_struct_literal(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
@@ -1833,7 +1808,6 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(struct_node)
     }
 
-    #[instrument(skip_all)]
     fn parse_numeric_literal(&mut self) -> DraftResult<NodeId> {
         match self.source_info.top.tok {
             Token::IntegerLiteral(i, s) => {
@@ -1853,7 +1827,6 @@ impl<'a, W: Source> Parser<'a, W> {
         }
     }
 
-    #[instrument(skip_all)]
     pub fn parse_let(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
@@ -1904,7 +1877,6 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(let_id)
     }
 
-    #[instrument(skip_all)]
     pub fn parse_block(&mut self, is_standalone: bool) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
@@ -1941,7 +1913,6 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(block_id)
     }
 
-    #[instrument(skip_all)]
     pub fn parse_if_let(&mut self) -> DraftResult<(IfCond, bool)> {
         self.pop(); // `let`
 
@@ -1963,7 +1934,6 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok((IfCond::Let { tag, alias, expr }, implicit))
     }
 
-    #[instrument(skip_all)]
     pub fn parse_if(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
@@ -2058,7 +2028,6 @@ impl<'a, W: Source> Parser<'a, W> {
         ))
     }
 
-    #[instrument(skip_all)]
     pub fn parse_match(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
@@ -2081,11 +2050,15 @@ impl<'a, W: Source> Parser<'a, W> {
         Ok(self.ctx.push_node(range, Node::Match { value, cases }))
     }
 
-    #[instrument(skip_all)]
     pub fn parse_match_case(&mut self, match_target: NodeId) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
-        let tag = self.parse_symbol()?;
+        let tag: MatchCaseTag = if self.source_info.top.tok == Token::Underscore {
+            self.pop(); // `_`
+            MatchCaseTag::CatchAll
+        } else {
+            MatchCaseTag::Node(self.parse_symbol()?)
+        };
         let alias = if self.source_info.top.tok == Token::LParen {
             self.pop(); // `(`
             let alias = self.parse_expression(false)?;
@@ -2114,6 +2087,10 @@ impl<'a, W: Source> Parser<'a, W> {
             if let Some(first_stmt) = stmts.clone().borrow().first() {
                 let block_scope = self.ctx.node_scopes[first_stmt];
 
+                let MatchCaseTag::Node(tag) = tag else {
+                    unreachable!()
+                };
+
                 let alias_sym = self.ctx.nodes[alias].as_symbol().unwrap();
                 let alias_resolve = self.ctx.push_node(
                     self.ctx.ranges[alias],
@@ -2138,7 +2115,6 @@ impl<'a, W: Source> Parser<'a, W> {
         ))
     }
 
-    #[instrument(skip_all)]
     pub fn parse_for(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
@@ -2176,7 +2152,6 @@ impl<'a, W: Source> Parser<'a, W> {
         ))
     }
 
-    #[instrument(skip_all)]
     pub fn parse_while(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
@@ -2207,7 +2182,6 @@ impl<'a, W: Source> Parser<'a, W> {
         ))
     }
 
-    #[instrument(skip_all)]
     pub fn parse_block_stmt(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
@@ -2312,7 +2286,6 @@ impl<'a, W: Source> Parser<'a, W> {
         r
     }
 
-    #[instrument(skip_all)]
     fn parse_type(&mut self) -> DraftResult<NodeId> {
         match self.source_info.top.tok {
             Token::Bool => {
@@ -2524,7 +2497,6 @@ impl<'a, W: Source> Parser<'a, W> {
         }
     }
 
-    #[instrument(skip_all)]
     fn shunting_unroll(
         &mut self,
         output: &mut Vec<Shunting>,
@@ -2558,7 +2530,6 @@ impl<'a, W: Source> Parser<'a, W> {
         }
     }
 
-    #[instrument(skip_all)]
     pub fn make_range_spanning(&self, start: NodeId, end: NodeId) -> Range {
         let start = self.ctx.ranges[start];
         let end = self.ctx.ranges[end];
@@ -2582,7 +2553,6 @@ impl Shunting {
 }
 
 impl Context {
-    #[instrument(skip_all)]
     pub fn parse_file(&mut self, file_name: &str) -> EmptyDraftResult {
         let mut source = self.make_source_info_from_file(file_name);
         let mut parser = Parser::from_source(self, &mut source);
@@ -2590,27 +2560,23 @@ impl Context {
         parser.parse()
     }
 
-    #[instrument(skip_all)]
     pub fn ropey_parse_file(&mut self, file_name: &str) -> EmptyDraftResult {
         let mut source = self.make_ropey_source_info_from_file(file_name);
         let mut parser = Parser::from_source(self, &mut source);
         parser.parse()
     }
 
-    #[instrument(skip_all)]
     pub fn parse_str(&mut self, source: &'static str) -> EmptyDraftResult {
         let mut source = SourceInfo::<StaticStrSource>::from_static_str(source);
         let mut parser = Parser::from_source(self, &mut source);
         parser.parse()
     }
 
-    #[instrument(skip_all)]
     pub fn parse_source<W: Source>(&mut self, source: &mut SourceInfo<W>) -> EmptyDraftResult {
         let mut parser = Parser::<W>::from_source(self, source);
         parser.parse()
     }
 
-    #[instrument(skip_all)]
     pub fn push_node(&mut self, range: Range, node: Node) -> NodeId {
         self.nodes.push(node);
         self.ranges.push(range);
@@ -2619,7 +2585,6 @@ impl Context {
         NodeId(self.nodes.len() - 1)
     }
 
-    #[instrument(skip_all)]
     pub fn push_id_vec(&mut self, vec: Vec<NodeId>) -> IdVec {
         Rc::new(RefCell::new(vec))
     }
@@ -2639,7 +2604,6 @@ impl Context {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     pub fn copy_polymorph(&mut self, id: NodeId, target: ParseTarget) -> DraftResult<NodeId> {
         // println!("copying polymorph");
 

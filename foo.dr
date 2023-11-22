@@ -17,15 +17,16 @@ fn main() i64 {
     // a::len + print_i64(a[0]);
 
     let o = Option::Some(3);
-    o = Option::None();
+    // o = Option::None();
 
     let r = match o {
-        Some(a): `a {
+        Some(a): {
+            print_string("Some\n");
             print_i64(a);
-            break `b 5;
+            break 5;
         }
         _: {
-            print_string("None\n");
+            print_string("Catch-all\n");
             break 8;
         }
     };

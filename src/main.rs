@@ -1,10 +1,6 @@
 use clap::Parser;
 use draft::*;
 
-use tracing::instrument;
-use tracing_subscriber::layer::SubscriberExt;
-
-#[instrument(skip_all)]
 fn run(context: &mut Context) -> EmptyDraftResult {
     let input = context.args.input.clone();
     context.parse_file(&input)?;
@@ -31,20 +27,8 @@ fn main() {
     let args = args::Args::parse();
     let mut context = Context::new(args);
 
-    if context.args.tracing {
-        tracing::subscriber::set_global_default(
-            tracing_subscriber::registry().with(tracing_tracy::TracyLayer::new()),
-        )
-        .expect("Failed to set tracing_tracy subscriber");
-
-        // loop {
-        run(&mut context).unwrap();
-        // context.reset();
-        // }
-    } else {
-        match run(&mut context) {
-            Ok(_) => {}
-            Err(e) => context.report_error(e),
-        }
+    match run(&mut context) {
+        Ok(_) => {}
+        Err(e) => context.report_error(e),
     }
 }

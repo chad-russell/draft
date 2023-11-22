@@ -41,6 +41,12 @@ pub enum AsCastStyle {
     StructToDynamicArray,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum MatchCaseTag {
+    Node(NodeId),
+    CatchAll,
+}
+
 pub type IdVec = Rc<RefCell<Vec<NodeId>>>;
 
 #[derive(Debug, Clone)]
@@ -177,7 +183,7 @@ pub enum Node {
         cases: IdVec,
     },
     MatchCase {
-        tag: NodeId,
+        tag: MatchCaseTag,
         alias: Option<NodeId>,
         block: NodeId,
         block_label: Option<Sym>,

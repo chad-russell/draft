@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::immediates::Imm64;
-use cranelift_codegen::ir::Block as CraneliftBlock;
+use cranelift_codegen::ir::{Block as CraneliftBlock, JumpTableData};
 use cranelift_codegen::ir::{FuncRef, GlobalValue, GlobalValueData, StackSlot};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 
@@ -17,11 +17,10 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{
     default_libcall_names, DataDescription, DataId, FuncId, Init, Linkage, Module,
 };
-use tracing::instrument;
 
 use crate::{
     ArrayLen, AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, IfCond,
-    Node, NodeId, Op, StaticMemberResolution, Sym, Type,
+    MatchCaseTag, Node, NodeId, Op, StaticMemberResolution, Sym, Type,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -39,12 +38,10 @@ pub struct GlobalBuilder {
 }
 
 impl GlobalBuilder {
-    #[instrument(skip_all)]
     pub fn write_u64(&mut self, n: u64) {
         self.bytes.extend(n.to_ne_bytes());
     }
 
-    #[instrument(skip_all)]
     pub fn extend_bytes_to_length(&mut self, len: usize) {
         while self.bytes.len() < len {
             self.bytes.push(0);
@@ -53,7 +50,6 @@ impl GlobalBuilder {
 }
 
 impl Context {
-    #[instrument(skip_all)]
     pub fn make_module() -> JITModule {
         let mut flags_builder = settings::builder();
         flags_builder.set("is_pic", "false").unwrap();
@@ -84,7 +80,6 @@ impl Context {
         JITModule::new(jit_builder)
     }
 
-    #[instrument(skip_all)]
     pub fn predeclare_string_constants(&mut self) -> EmptyDraftResult {
         let data_id = self
             .module
@@ -112,7 +107,6 @@ impl Context {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     pub fn predeclare_functions(&mut self) -> EmptyDraftResult {
         for t in self.topo.clone() {
             if !self.completes.contains(&t) {
@@ -125,7 +119,6 @@ impl Context {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     pub fn insert_type_infos_into_global_data(&mut self) -> EmptyDraftResult {
         for node_id in 0..self.nodes.len() {
             let Node::TypeInfo(id) = self.nodes[NodeId(node_id)] else {
@@ -137,7 +130,6 @@ impl Context {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     pub fn insert_type_info_into_global_data(&mut self, id: NodeId) -> EmptyDraftResult {
         let ty = self.types[&id].clone();
 
@@ -263,13 +255,11 @@ impl Context {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     #[inline]
     pub fn type_info_size(&self) -> usize {
         self.id_type_size(self.type_info_decl.unwrap()) as usize
     }
 
-    #[instrument(skip_all)]
     pub fn get_string_data_id(&mut self, sym: Sym, name: &str) -> DraftResult<DataId> {
         if let Some(data_id) = self.symbol_data_ids.get(&sym) {
             return Ok(*data_id);
@@ -294,7 +284,6 @@ impl Context {
         Ok(string_data_id)
     }
 
-    #[instrument(skip_all)]
     pub fn define_functions(&mut self) -> EmptyDraftResult {
         let mut codegen_ctx = self.module.make_context();
         let mut func_ctx = FunctionBuilderContext::new();
@@ -316,7 +305,6 @@ impl Context {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     pub fn predeclare_function(&mut self, id: NodeId) -> EmptyDraftResult {
         if let Node::FnDefinition {
             name,
@@ -352,7 +340,6 @@ impl Context {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     fn mangled_func_name(&self, name: Option<NodeId>, anonymous_id: NodeId) -> String {
         name.map(|n| {
             let sym = self.nodes[n].as_symbol().unwrap();
@@ -369,7 +356,6 @@ impl Context {
         .unwrap_or_else(|| format!("anonymous__{}", anonymous_id.0))
     }
 
-    #[instrument(skip_all)]
     pub fn call_fn(&mut self, fn_name: &str) -> EmptyDraftResult {
         let fn_name_interned = self.string_interner.get_or_intern(fn_name);
 
@@ -394,12 +380,10 @@ impl Context {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     fn id_cranelift_type(&self, param: NodeId) -> CraneliftType {
         self.cranelift_type(self.types[&param].clone())
     }
 
-    #[instrument(skip_all)]
     fn cranelift_type(&self, ty: Type) -> CraneliftType {
         match ty {
             Type::I8 | Type::U8 | Type::Bool => types::I8,
@@ -419,24 +403,20 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     fn get_pointer_type(&self) -> CraneliftType {
         self.module.isa().pointer_type()
     }
 
-    #[instrument(skip_all)]
     #[inline]
     fn enum_tag_size(&self) -> u32 {
         // todo(chad): this is horrible, but until alignment is sorted out it's the only valid size that works for everything
         std::mem::size_of::<u64>() as u32
     }
 
-    #[instrument(skip_all)]
     pub fn id_type_size(&self, id: NodeId) -> StackSize {
         self.type_size(self.types[&id].clone())
     }
 
-    #[instrument(skip_all)]
     pub fn type_size(&self, ty: Type) -> StackSize {
         match ty {
             Type::I8 | Type::U8 | Type::Bool => 1,
@@ -471,7 +451,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     pub fn get_func_id(&self, id: NodeId) -> FuncId {
         match self.values[&id] {
             Value::Func(f) => f,
@@ -479,7 +458,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     pub fn get_func_signature(&self, func: NodeId, param_ids: &Vec<NodeId>) -> Signature {
         let func_ty = self.get_type(func);
         let return_ty = match func_ty {
@@ -506,12 +484,10 @@ impl Context {
         sig
     }
 
-    #[instrument(skip_all)]
     pub fn id_is_aggregate_type(&self, id: NodeId) -> bool {
         self.is_aggregate_type(self.get_type(id))
     }
 
-    #[instrument(skip_all)]
     pub fn id_base_is_aggregate_type(&self, id: NodeId) -> bool {
         let ty = self.get_type(id);
         if self.is_aggregate_type(ty.clone()) {
@@ -523,7 +499,6 @@ impl Context {
         return false;
     }
 
-    #[instrument(skip_all)]
     pub fn is_aggregate_type(&self, ty: Type) -> bool {
         matches!(
             ty,
@@ -533,7 +508,6 @@ impl Context {
 }
 
 impl Context {
-    #[instrument(skip_all)]
     fn make_global_builder(&mut self) -> DraftResult<GlobalBuilder> {
         let data_id = self
             .module
@@ -558,7 +532,6 @@ impl Context {
         })
     }
 
-    #[instrument(skip_all)]
     fn gb_write_string_data_pointer(
         &mut self,
         gb: &mut GlobalBuilder,
@@ -575,7 +548,6 @@ impl Context {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     fn gb_write_global_pointer(&mut self, gb: &mut GlobalBuilder, id: DataId) -> EmptyDraftResult {
         let global = self.module.declare_data_in_data(id, &mut gb.desc);
         gb.desc.write_data_addr(gb.bytes.len() as u32, global, 0);
@@ -584,7 +556,6 @@ impl Context {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     fn gb_write_type_info_pointer(
         &mut self,
         gb: &mut GlobalBuilder,
@@ -601,7 +572,6 @@ impl Context {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     pub fn gb_finalize(&mut self, mut gb: GlobalBuilder, id: Option<NodeId>) -> DataId {
         gb.desc.init = Init::Bytes {
             contents: gb.bytes.into_boxed_slice(),
@@ -688,7 +658,6 @@ struct FunctionCompileContext<'a> {
 }
 
 impl<'a> FunctionCompileContext<'a> {
-    #[instrument(skip_all)]
     pub fn compile_id(&mut self, id: NodeId) -> EmptyDraftResult {
         // idempotency
         match self.ctx.values.get(&id) {
@@ -1791,62 +1760,80 @@ impl<'a> FunctionCompileContext<'a> {
                         unreachable!()
                     };
 
-                    let tag_sym = match self.ctx.nodes[tag] {
-                        Node::Symbol(sym) => sym,
-                        Node::EnumDeclParam { name, .. } => self.ctx.get_symbol(name),
-                        _ => todo!(),
-                    };
-
                     let value_ty = self.ctx.get_type(value);
                     let Type::Enum { params, .. } = value_ty else {
                         unreachable!()
                     };
-                    let mut param_index = -1;
-                    for (idx, &param) in params.borrow().iter().enumerate() {
-                        if let Node::EnumDeclParam { name, .. } = self.ctx.nodes[param].clone() {
-                            let name_sym = self.ctx.get_symbol(name);
-                            if name_sym == tag_sym {
-                                param_index = idx as i64;
-                                break;
-                            }
-                        } else {
-                            todo!()
-                        };
-                    }
-
-                    // Assign the value to the alias in case the branch is taken.
-                    if let Some(alias) = alias {
-                        let tag_offset = self.ctx.enum_tag_size();
-                        let enum_value_ptr = self.id_value(value);
-                        let enum_value_ptr = self
-                            .builder
-                            .ins()
-                            .iadd_imm(enum_value_ptr, tag_offset as i64);
-                        let enum_value_ptr = Value::Reference(enum_value_ptr);
-                        self.ctx.values.insert(alias, enum_value_ptr);
-                    }
-
-                    // Get the tag value of expr
-                    let expr_value = self.id_value(value);
-                    let tag_value = self.load(types::I64, expr_value, 0);
-
-                    // Compare against param_index
-                    let cond_value =
-                        self.builder
-                            .ins()
-                            .icmp_imm(IntCC::Equal, tag_value, param_index);
 
                     let then_ebb = self.builder.create_block();
                     let merge_ebb = self.builder.create_block();
 
-                    self.blocks.push((block_label, Block::Break(merge_ebb)));
+                    match tag {
+                        MatchCaseTag::CatchAll => {
+                            self.blocks.push((block_label, Block::Break(merge_ebb)));
 
-                    self.builder
-                        .ins()
-                        .brif(cond_value, then_ebb, &[], merge_ebb, &[]);
+                            self.builder.ins().jump(then_ebb, &[]);
 
-                    self.builder.switch_to_block(then_ebb);
-                    self.compile_id(block)?;
+                            self.builder.switch_to_block(then_ebb);
+                            self.compile_id(block)?;
+                        }
+                        MatchCaseTag::Node(tag) => {
+                            let mut param_index = -1;
+                            for (idx, &param) in params.borrow().iter().enumerate() {
+                                if let Node::EnumDeclParam { name, .. } =
+                                    self.ctx.nodes[param].clone()
+                                {
+                                    let name_sym = self.ctx.get_symbol(name);
+
+                                    let tag_sym = match self.ctx.nodes[tag] {
+                                        Node::Symbol(sym) => sym,
+                                        Node::EnumDeclParam { name, .. } => {
+                                            self.ctx.get_symbol(name)
+                                        }
+                                        _ => todo!(),
+                                    };
+
+                                    if name_sym == tag_sym {
+                                        param_index = idx as i64;
+                                        break;
+                                    }
+                                } else {
+                                    todo!()
+                                };
+                            }
+
+                            // Assign the value to the alias in case the branch is taken.
+                            if let Some(alias) = alias {
+                                let tag_offset = self.ctx.enum_tag_size();
+                                let enum_value_ptr = self.id_value(value);
+                                let enum_value_ptr = self
+                                    .builder
+                                    .ins()
+                                    .iadd_imm(enum_value_ptr, tag_offset as i64);
+                                let enum_value_ptr = Value::Reference(enum_value_ptr);
+                                self.ctx.values.insert(alias, enum_value_ptr);
+                            }
+
+                            // Get the tag value of expr
+                            let expr_value = self.id_value(value);
+                            let tag_value = self.load(types::I64, expr_value, 0);
+
+                            // Compare against param_index
+                            let cond_value =
+                                self.builder
+                                    .ins()
+                                    .icmp_imm(IntCC::Equal, tag_value, param_index);
+
+                            self.blocks.push((block_label, Block::Break(merge_ebb)));
+
+                            self.builder
+                                .ins()
+                                .brif(cond_value, then_ebb, &[], merge_ebb, &[]);
+
+                            self.builder.switch_to_block(then_ebb);
+                            self.compile_id(block)?;
+                        }
+                    }
 
                     if !self.exited_blocks.contains(&self.current_block) {
                         self.builder.ins().jump(merge_ebb, &[]);
@@ -1872,7 +1859,6 @@ impl<'a> FunctionCompileContext<'a> {
         }
     }
 
-    #[instrument(skip_all)]
     fn unroll_member_access(
         &self,
         id: NodeId,
@@ -1903,7 +1889,6 @@ impl<'a> FunctionCompileContext<'a> {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     fn compile_ids(&mut self, ids: IdVec) -> EmptyDraftResult {
         for id in ids.borrow().iter() {
             self.compile_id(*id)?;
@@ -1912,7 +1897,6 @@ impl<'a> FunctionCompileContext<'a> {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     fn compile_id_for_call(&mut self, id: NodeId, func: NodeId, params: IdVec) -> EmptyDraftResult {
         self.compile_id(func)?;
 
@@ -1961,7 +1945,6 @@ impl<'a> FunctionCompileContext<'a> {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     fn switch_to_block(&mut self, block: impl Into<CraneliftBlock>) {
         let block = block.into();
 
@@ -1969,17 +1952,14 @@ impl<'a> FunctionCompileContext<'a> {
         self.current_block = block;
     }
 
-    #[instrument(skip_all)]
     fn exit_current_block(&mut self) {
         self.exited_blocks.insert(self.current_block);
     }
 
-    #[instrument(skip_all)]
     fn load(&mut self, ty: types::Type, value: CraneliftValue, offset: i32) -> CraneliftValue {
         self.builder.ins().load(ty, MemFlags::new(), value, offset)
     }
 
-    #[instrument(skip_all)]
     fn get_member_offset(
         &mut self,
         mut value_ty: Type,
@@ -2064,7 +2044,6 @@ impl<'a> FunctionCompileContext<'a> {
         ));
     }
 
-    #[instrument(skip_all)]
     fn as_cranelift_value(&mut self, value: Value) -> CraneliftValue {
         match value {
             Value::Register(val) | Value::Reference(val) => val,
@@ -2087,7 +2066,6 @@ impl<'a> FunctionCompileContext<'a> {
         }
     }
 
-    #[instrument(skip_all)]
     fn store_with_offset(&mut self, id: NodeId, dest: Value, offset: u32) {
         let size = self.ctx.id_type_size(id) as u64;
 
@@ -2132,12 +2110,10 @@ impl<'a> FunctionCompileContext<'a> {
         }
     }
 
-    #[instrument(skip_all)]
     fn store_copy(&mut self, id: NodeId, dest: Value) {
         self.store_with_offset(id, dest, 0);
     }
 
-    #[instrument(skip_all)]
     fn emit_small_memory_copy(
         &mut self,
         dest_value: CraneliftValue,
@@ -2156,7 +2132,6 @@ impl<'a> FunctionCompileContext<'a> {
         );
     }
 
-    #[instrument(skip_all)]
     fn id_value(&mut self, id: NodeId) -> CraneliftValue {
         let value = self.ctx.values[&id];
         let value_ty = self.ctx.get_type(id);
@@ -2164,7 +2139,6 @@ impl<'a> FunctionCompileContext<'a> {
         self.id_value_from_parts(value, value_ty)
     }
 
-    #[instrument(skip_all)]
     fn id_value_from_parts(&mut self, value: Value, ty: Type) -> CraneliftValue {
         match value {
             Value::Func(func_id) => {

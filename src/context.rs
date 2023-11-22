@@ -6,7 +6,6 @@ use cranelift_module::DataId;
 use string_interner::StringInterner;
 
 use cranelift_jit::JITModule;
-use tracing::instrument;
 
 use crate::{
     AddressableMatch, Args, CompileError, EmptyDraftResult, Location, Node, NodeId, Range,
@@ -139,7 +138,6 @@ pub struct Context {
 unsafe impl Send for Context {}
 
 impl Context {
-    #[instrument(skip_all)]
     pub fn new(args: Args) -> Self {
         let mut ctx = Self {
             args,
@@ -208,7 +206,6 @@ impl Context {
         ctx
     }
 
-    #[instrument(skip_all)]
     pub fn reset(&mut self) {
         self.string_interner = StringInterner::new();
         self.file_sources.clear();
@@ -255,7 +252,6 @@ impl Context {
         self.symbol_data_ids.clear();
     }
 
-    #[instrument(skip_all)]
     pub fn make_source_info_from_file(&mut self, file_name: &str) -> SourceInfo<StaticStrSource> {
         let path = PathBuf::from(file_name);
         let source_str = std::fs::read_to_string(&path).unwrap();
@@ -287,7 +283,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     pub fn make_ropey_source_info_from_file(&mut self, file_name: &str) -> SourceInfo<RopeySource> {
         let path = PathBuf::from(file_name);
         let source_str = std::fs::read_to_string(&path).unwrap();
@@ -319,7 +314,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     pub fn make_source_info_from_range(&mut self, range: Range) -> SourceInfo<StaticStrSource> {
         let source_path = PathBuf::from(range.source_path);
         let source = self.file_sources.get(&source_path).unwrap();
@@ -342,7 +336,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     pub fn defer_on(&mut self, ids: &[NodeId], error: CompileError) {
         self.deferreds.extend(ids.iter());
         if self.hardstop == self.max_hardstop - 1 {
@@ -350,7 +343,6 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     pub fn prepare(&mut self) -> EmptyDraftResult {
         // self.assign_type(self.type_info_decl.unwrap());
         // self.unify_types();
@@ -462,18 +454,15 @@ impl Context {
         Ok(())
     }
 
-    #[instrument(skip_all)]
     pub fn get_symbol(&self, sym_id: NodeId) -> Sym {
         self.nodes[sym_id].as_symbol().unwrap()
     }
 
-    #[instrument(skip_all)]
     pub fn get_symbol_str(&self, sym_id: NodeId) -> &str {
         let sym = self.get_symbol(sym_id);
         self.string_interner.resolve(sym.0).unwrap()
     }
 
-    #[instrument(skip_all)]
     pub fn report_error(&self, err: CompileError) {
         match err {
             CompileError::Message(msg) => {
@@ -491,12 +480,10 @@ impl Context {
         }
     }
 
-    #[instrument(skip_all)]
     pub fn char_offset_for_location(&self, source_path: &str, start: Location) -> usize {
         self.line_offsets[source_path][start.line - 1] + start.col
     }
 
-    #[instrument(skip_all)]
     pub fn char_span(&self, range: Range) -> usize {
         return self.char_offset_for_location(range.source_path, range.end)
             - self.char_offset_for_location(range.source_path, range.start);
