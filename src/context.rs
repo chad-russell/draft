@@ -448,7 +448,7 @@ impl Context {
 
         self.predeclare_string_constants()?;
         self.predeclare_functions()?;
-        self.insert_type_infos_into_global_data()?;
+        // self.insert_type_infos_into_global_data()?;
         self.define_functions()?;
 
         Ok(())

@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::immediates::Imm64;
-use cranelift_codegen::ir::{Block as CraneliftBlock, JumpTableData};
+use cranelift_codegen::ir::{Block as CraneliftBlock, BlockCall, JumpTableData};
 use cranelift_codegen::ir::{FuncRef, GlobalValue, GlobalValueData, StackSlot};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 
@@ -119,16 +119,16 @@ impl Context {
         Ok(())
     }
 
-    pub fn insert_type_infos_into_global_data(&mut self) -> EmptyDraftResult {
-        for node_id in 0..self.nodes.len() {
-            let Node::TypeInfo(id) = self.nodes[NodeId(node_id)] else {
-                continue;
-            };
-            self.insert_type_info_into_global_data(id)?
-        }
+    // pub fn insert_type_infos_into_global_data(&mut self) -> EmptyDraftResult {
+    //     for node_id in 0..self.nodes.len() {
+    //         let Node::TypeInfo(id) = self.nodes[NodeId(node_id)] else {
+    //             continue;
+    //         };
+    //         self.insert_type_info_into_global_data(id)?
+    //     }
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     pub fn insert_type_info_into_global_data(&mut self, id: NodeId) -> EmptyDraftResult {
         let ty = self.types[&id].clone();
@@ -1714,6 +1714,10 @@ impl<'a> FunctionCompileContext<'a> {
                 _ => unreachable!(),
             },
             Node::TypeInfo(tid) => {
+                if !self.ctx.global_values.contains_key(&tid) {
+                    self.ctx.insert_type_info_into_global_data(tid)?;
+                }
+
                 let (data_id, _gv) = self.ctx.global_values[&tid];
 
                 let gv = self
@@ -1847,6 +1851,8 @@ impl<'a> FunctionCompileContext<'a> {
                 }
 
                 self.break_addr = saved_break_addr;
+
+                self.builder.switch_to_block(merge_ebb);
 
                 Ok(())
             }

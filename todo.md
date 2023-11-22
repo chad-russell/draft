@@ -67,12 +67,12 @@
     - [x] `break` can reference labels
     - [x] `continue` can reference labels
 - [x] continue
-- [x] any / #astof(...) / type info stuff
+- [ ] any / #astof(...) / type info stuff
 - [-] pattern matching (on enums only at first, very simple single-depth match)
     - [x] `match`
-        - [ ] underscore for catch-all case
+        - [x] underscore for catch-all case
             - [ ] error for when trying to specify two catch-all cases
-            - [ ] error when specifying a catch-all case but all the other cases are already covered (?)
+            - [ ] error when specifying a catch-all case but all the other cases are already covered 
     - [x] `if let`
 - [ ] stack allocation should work the same way as any other allocation, and produce a pointer. If a struct is put on the stack, 
       why should it not be a pointer, and copy, but if it's allocated through an arena it's suddenly a pointer and a reference?

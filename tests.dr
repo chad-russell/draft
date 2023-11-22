@@ -536,6 +536,46 @@ fn transparent_polymorph() {
     return;
 }
 
+fn test_default_match() i64 {
+    enum Option {
+        All,
+        Some: i64,
+        None,
+    }
+
+    let o = Option::Some(3);
+
+    let r = match o {
+        Some(a): {
+            print_string("Some: a = ");
+            print_i64(a);
+            break 5;
+        }
+        _: {
+            print_string("Catch-all\n");
+            break 8;
+        }
+    };
+    print_i64(r);
+    
+    o = Option::None();
+
+    r = match o {
+        Some(a): {
+            print_string("Some: a = ");
+            print_i64(a);
+            break 5;
+        }
+        _: {
+            print_string("Catch-all\n");
+            break 8;
+        }
+    };
+    print_i64(r);
+
+    return 0;
+}
+
 fn main() i64 {
     {
         let te1 = 3i64;
@@ -668,6 +708,8 @@ fn main() i64 {
     test_if_let();
 
     transparent_polymorph();
+
+    test_default_match();
 
     return 0;
 }

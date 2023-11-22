@@ -52,21 +52,26 @@ enum TypeInfo {
     },
 }
 
-// struct Any {
-    // ty: *TypeInfo,
-    // value: *_T!,
-// }
+struct Any {
+    ty: *TypeInfo,
+    value: *_T!,
+}
 
-// fn any_of(value: *_T!) Any! {
-    // return Any {
-        // ty: #type_info(T),
-        // value: value,
-    // };
-// }
+fn any_of(value: *_T!) Any! {
+    return Any {
+        ty: #type_info(T),
+        value: value,
+    };
+}
 
 struct Foo {
     x: i64,
     y: i64,
+}
+
+enum FooE {
+    A: bool,
+    b: i64,
 }
 
 fn print_type_info_param(p: TypeInfoParam, indent: i64) {
@@ -120,14 +125,11 @@ fn print_type(t: TypeInfo) {
 }
 
 fn main() i64 {
-    // let f = Foo { x: 3, y: 4 };
+    let f = Foo { x: 3, y: 4 };
 
-    // #type_info(f) |> print_type;
+    #type_info(f) |> print_type;
 
-    let a = 3i64;
-
-    let b: struct { a: i64, #transparent f: Foo } = _{ 3, _{ 4, 5 } };
-    print_i64(b.f.x);
+    // #type_info(FooE) |> print_type;
 
     return 0;
 }

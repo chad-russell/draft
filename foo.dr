@@ -6,32 +6,15 @@ fn print_string(s: string) {
     return;
 }
 
-enum Option {
-    All,
-    Some: i64,
-    None,
+struct Foo {
+    m: i64,
+    n: i64,
 }
 
 fn main() i64 {
-    // let a: [3]i64 = [1, 2, 3]; 
-    // a::len + print_i64(a[0]);
+    let f = Foo { 3, 4 };
 
-    let o = Option::Some(3);
-    // o = Option::None();
-
-    let r = match o {
-        Some(a): {
-            print_string("Some\n");
-            print_i64(a);
-            break 5;
-        }
-        _: {
-            print_string("Catch-all\n");
-            break 8;
-        }
-    };
-
-    print_i64(r);
+    let t = #type_info(Foo);
 
     return 0;
 }
