@@ -1,0 +1,71 @@
+struct FILE {}
+
+extern putchar(ch: u8);
+extern fopen(filename: *u8, mode: *u8) *FILE;
+extern malloc(n: i64) *struct{};
+extern memcpy(dest: *struct{}, src: *struct{}, n: i64);
+extern puts(s: *u8);
+extern ftell(f: *FILE) i64;
+extern rewind(f: *FILE);
+extern fseek(f: *FILE, a: i64, b: i64);
+extern fread(buf: *struct{}, size: i64, count: i64, f: *FILE);
+extern fclose(f: *FILE);
+
+extern print_i64(n: i64);
+
+
+fn alloc(n: i64) *_T! {
+    return #cast(*T) malloc(n);
+}
+
+fn alloc_array(n: i64) []_T! {
+    return _{ data: alloc(n), len: n } as []T;
+}
+
+fn alloc_string(n: i64) string {
+    let s: string;
+    s.data = alloc(n);
+    s.len = n;
+    return s;
+}
+
+fn cstr(s: string) *u8 {
+    let bytea = alloc_array(s.len + 1);
+
+    memcpy(#cast bytea.data, #cast s.data, s.len);
+    bytea[s.len] = 0;
+
+    return bytea.data;
+}
+
+fn print_string(s: string) {
+    let i = 0;
+    while i < s.len {
+        putchar(s[i]);
+        i = i + 1;
+    }
+}
+
+fn read_entire_file(name: string) string {
+    let SEEK_END = 2;
+
+    let file = fopen(cstr(name), cstr("rb"));
+    // defer { fclose(file); }
+
+    fseek(file, 0, SEEK_END);
+    let size = ftell(file);
+    rewind(file);
+
+    let s = alloc_string(size + 1);
+    fread(#cast s.data, 1, size, file);
+    s[size] = 0;
+
+    fclose(file);
+
+    return s;
+}
+
+fn main() {
+    let contents = read_entire_file("./todo.md");
+    print_string(contents);
+}

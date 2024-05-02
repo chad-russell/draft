@@ -7,8 +7,8 @@ extern put_char(ch: u8);
 extern print_str(ch: *u8, len: i64);
 
 enum Option {
-    None,
     Some: _T!,
+    None,
 }
 
 struct TypeInfoParam {
@@ -31,7 +31,6 @@ enum TypeInfo {
     F64,
     String,
     Func: struct {
-        name: Option!(T: string),
         inputs: []TypeInfoParam,
         return_ty: Option!(T: *TypeInfo),
     },
@@ -50,6 +49,89 @@ enum TypeInfo {
     },
 }
 
+struct Any {
+    ty: *TypeInfo,
+    value: *_T!,
+}
+
+fn any_of(value: *_T!) Any! {
+    return Any {
+        ty: #type_info(T),
+        value: value,
+    };
+}
+
+fn print_type_info_param(p: TypeInfoParam, \indent: i64) {
+    print_indent();
+    print_string(p.name);
+    print_string(": ");
+    print_type_with_indent(*p.ty);
+}
+
+fn print_indent(\indent: i64) {
+    let i = 0i64;
+    while i < indent {
+        print_string("  ");
+        i = i + 1;
+    }
+}
+
+fn print_type_with_indent(t: TypeInfo, \indent: i64) {
+    if let I32 = t {
+        print_indent(indent);
+        print_string("i32\n");
+    }
+    else if let I64 = t {
+        print_indent(indent);
+        print_string("i64\n");
+    }
+    else if let F32 = t {
+        print_indent(indent);
+        print_string("f32\n");
+    }
+    else if let F64 = t {
+        print_indent(indent);
+        print_string("f64\n");
+    }
+    else if let Bool = t {
+        print_indent(indent);
+        print_string("bool\n");
+    }
+    else if let Struct(s) = t {
+        print_string("struct");
+        if let Some(name) = s.name {
+            print_string(" ");
+            print_string(name);
+        }
+        print_string(" {\n");
+        for p in s.params {
+            print_type_info_param(p, indent + 1);
+        }
+        print_string("}\n");
+    }
+    else if let Enum(e) = t {
+        print_string("enum");
+        if let Some(name) = e.name {
+            print_string(" ");
+            print_string(name);
+        }
+        print_string(" {\n");
+        for p in e.params {
+            print_type_info_param(p, indent + 1);
+        }
+        print_string("}\n");
+    }
+    else {
+        print_indent(indent);
+        print_string("unknown\n");
+    }
+}
+
+fn print_type(t: TypeInfo) {
+    let \indent = 0;
+    print_type_with_indent(t);
+}
+
 fn heapify(v: _T!) *T {
     let a = #cast(*T) malloc(#size_of(T));
     *a = v;
@@ -58,7 +140,6 @@ fn heapify(v: _T!) *T {
 
 fn freeify(v: *_T!) {
     free(#cast v);
-    return;
 }
 
 struct Foo {
@@ -153,6 +234,9 @@ fn test_vec_stuff_1() i64 {
 
 fn test_vec_stuff_2() { 
     &Vec { data: &vec_new(), len: 26 } |> double_vec_len |> print_i64;
+}
+
+fn test_empty_return() {
     return;
 }
 
@@ -218,7 +302,7 @@ fn test_for_array() i64 {
 }
 
 fn test_for_dynamic_array() i64 {
-    let arr: []_ = [_{x: 1, y: 1.1}, _{2, 2.2}, _{3, 3.3}] as []_;
+    let arr = [_{x: 1, y: 1.1}, _{2, 2.2}, _{3, 3.3}] as []_;
 
     for val in arr {
         val.x = 999;
@@ -241,7 +325,7 @@ fn test_for_array_manual() i64 {
         d3: _{3i64, 3.3f64},
     };
 
-    let arr: []struct{x: i64, y: f64} = _{ data: #cast(*_) datas, len: 3i64 } as []_;
+    let arr: []struct{x: i64, y: f64} = _{ data: #cast(*_) datas, len: 3i64 } |> struct_to_array;
 
     for val in arr {
         val.x = 999;
@@ -270,14 +354,17 @@ fn test_threading() i64 {
 
 fn print_string(s: string) {
     print_str(s.data, s.len);
-    return;
 }
 
-fn assert_equal(a: _T!, b: T) {
+fn println(s: string) {
+    print_string(s);
+    print_string("\n");
+}
+
+fn assert_equal(a: _T!, b: T, msg: string = "assertion failed") {
     if a != b {
-        print_string("assertion failed\n");
+        println(msg);
     }
-    return;
 }
 
 fn sub(a: i64, b: i64) i64 {
@@ -287,20 +374,39 @@ fn sub(a: i64, b: i64) i64 {
 fn test_static_array_len() {
     let a: [_]i64 = [1, 2, 3, 4, 5];
     a::len |> print_i64;
-
-    return;
 }
 
 fn schange_array(a: [_]i64) {
     a[2] = 5;
     print_i64(a[2]);
-    return;
 }
 
 fn change_array(a: []i64) {
     a[2] = 5;
     print_i64(a[2]);
-    return;
+}
+
+struct array_struct {
+    data: *_T!,
+    len: i64,
+}
+
+fn struct_to_array(n: array_struct!(T: _T!)) []T {
+    let a: []T;
+    a.data = n.data;
+    a.len = n.len;
+    return a;
+}
+
+fn static_to_dyn_array(n: *_T!) []_U! {
+    let a: []_;
+    a.data = #cast(#type n[0]) n;
+    a.len = n::len;
+    return a;
+}
+
+fn null() *_T! {
+    return *(#cast(**T) &0i64);
 }
 
 fn test_array_casts() i64 {
@@ -309,17 +415,18 @@ fn test_array_casts() i64 {
     schange_array(a);
     print_i64(a[2]);
 
-    let b: []i64 = a as _;
+    let b: []i64 = a as []_;
+    // let b = static_to_dyn_array(&a);
     change_array(b);
     print_i64(b[2]);
     print_i64(a[2]);
 
     let c = _{ data: #cast(*_) &a, len: a::len };
-    let d = c as []_;
+    let d = struct_to_array(c);
     change_array(d);
     
     c = _{ data: b.data, len: b.len };
-    d = c as []_;
+    d = struct_to_array(c);
     change_array(d);
     
     return 0;
@@ -356,8 +463,6 @@ fn test_transparent() {
     (b.foo.x + 20) |> print_i64;
     (b.x + 20) |> print_i64;
     (x + 20) |> print_i64;
-
-    return;
 }
 
 fn test_transparent2() {
@@ -385,8 +490,6 @@ fn test_transparent2() {
     print_i64(f.n);
     print_i64(m);
     print_i64(n);
-    
-    return;
 }
 
 fn test_arrow_threading() {
@@ -420,8 +523,6 @@ fn test_arrow_threading() {
     };
 
     print_i64(&foo->modify->modify->sum);
-
-    return;
 }
 
 fn test_vtable_stuff1() i64 {
@@ -496,8 +597,6 @@ fn test_if_let() {
     } else {
         print_string("ERROR\n");
     }
-
-    return;
 }
 
 fn test_if_let2() {
@@ -514,8 +613,6 @@ fn test_if_let2() {
     } else {
         print_string("ERROR\n");
     }
-
-    return;
 }
 
 fn transparent_polymorph() {
@@ -532,8 +629,6 @@ fn transparent_polymorph() {
     let #transparent o = Option::Some(Foo { 2, 3 });
 
     x |> print_i64;
-
-    return;
 }
 
 fn test_default_match() i64 {
@@ -574,6 +669,33 @@ fn test_default_match() i64 {
     print_i64(r);
 
     return 0;
+}
+
+fn test_print_type_info() i64 {
+    struct Foo {
+        x: i64,
+        y: i64,
+    }
+
+    enum FooE {
+        a: bool,
+        b: i64,
+    }
+
+    let f = Foo { x: 3, y: 4 };
+
+    #type_info(f) |> print_type;
+
+    print_string("\n");
+
+    #type_info(FooE) |> print_type;
+
+    return 0;
+}
+
+fn test_null() {
+    let n: *i64 = null();
+    assert_equal(n, null());
 }
 
 fn main() i64 {
@@ -617,9 +739,9 @@ fn main() i64 {
     let fb = make_b(6);
     let fc = Baz::C(_{ 888, 999 });
 
-    print_enum_tag(&fa);
-    print_enum_tag(&fb);
-    print_enum_tag(&fc);
+    // print_enum_tag(&fa);
+    // print_enum_tag(&fb);
+    // print_enum_tag(&fc);
     
     let a = false;
     if a {
@@ -710,6 +832,15 @@ fn main() i64 {
     transparent_polymorph();
 
     test_default_match();
+
+    test_print_type_info();
+
+    test_empty_return();
+
+    test_null();
+    
+    let t: i64 = 3;
+    assert_equal(t, 4);
 
     return 0;
 }

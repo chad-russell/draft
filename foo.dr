@@ -1,20 +1,20 @@
-extern print_i64(n: i64);
-extern print_str(ch: *u8, len: i64);
+// extern print_i64(n: i64);
+// extern print_str(ch: *u8, len: i64);
+extern putchar(ch: u8);
 
 fn print_string(s: string) {
-    print_str(s.data, s.len);
-    return;
+    // print_str(s.data, s.len);
+    let i = 0;
+    while i < s.len {
+        putchar(s[i]);
+        i = i + 1;
+    }
 }
 
-struct Foo {
-    m: i64,
-    n: i64,
-}
-
-fn main() i64 {
-    let f = Foo { 3, 4 };
-
-    let t = #type_info(Foo);
-
-    return 0;
+fn main() {
+    // defer {
+        // print_string("end...");
+    // }
+    
+    print_string("hello\n");
 }

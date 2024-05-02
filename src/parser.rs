@@ -178,10 +178,12 @@ pub enum Token {
     Bang,
     UnderscoreLCurly,
     Cast,
+    Type,
     SizeOf,
     Transparent,
     Hash,
     TypeInfo,
+    Defer,
     Eof,
 }
 
@@ -398,6 +400,9 @@ impl<'a, W: Source> Parser<'a, W> {
         if self.source_info.prefix_keyword("match", Token::Match) {
             return;
         }
+        if self.source_info.prefix_keyword("defer", Token::Defer) {
+            return;
+        }
         if self.source_info.prefix_keyword("in", Token::In) {
             return;
         }
@@ -468,6 +473,9 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
         if self.source_info.prefix_keyword("#cast", Token::Cast) {
+            return;
+        }
+        if self.source_info.prefix_keyword("#type", Token::Type) {
             return;
         }
         if self.source_info.prefix_keyword("#size_of", Token::SizeOf) {
@@ -1243,6 +1251,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 | Token::True
                 | Token::False
                 | Token::If
+                | Token::Defer
                 | Token::Match => {
                     if !parsing_expr {
                         break;
@@ -1472,6 +1481,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 Ok(id)
             }
             Token::If => self.parse_if(),
+            Token::Defer => self.parse_defer(),
             Token::Match => self.parse_match(),
             Token::IntegerLiteral(_, _) | Token::FloatLiteral(_, _) => self.parse_numeric_literal(),
             Token::StringLiteral(sym) => {
@@ -2028,6 +2038,26 @@ impl<'a, W: Source> Parser<'a, W> {
         ))
     }
 
+    pub fn parse_defer(&mut self) -> DraftResult<NodeId> {
+        let start = self.source_info.top.range.start;
+
+        self.pop(); // `defer`
+
+        let block_label = if let Token::LabelSymbol(sym) = self.source_info.top.tok {
+            self.pop(); // `a
+            Some(sym)
+        } else {
+            None
+        };
+
+        let block = self.parse_block(false)?;
+
+        Ok(self.ctx.push_node(
+            Range::new(start, self.ctx.ranges[block].end, self.source_info.path),
+            Node::Defer { block, block_label },
+        ))
+    }
+
     pub fn parse_match(&mut self) -> DraftResult<NodeId> {
         let start = self.source_info.top.range.start;
 
@@ -2249,6 +2279,7 @@ impl<'a, W: Source> Parser<'a, W> {
             }
             Token::Let => self.parse_let(),
             Token::If => self.parse_if(),
+            Token::Defer => self.parse_defer(),
             Token::Match => self.parse_match(),
             Token::For => self.parse_for(),
             Token::While => self.parse_while(),
@@ -2489,6 +2520,13 @@ impl<'a, W: Source> Parser<'a, W> {
                     self.pop();
                     Ok(self.ctx.push_node(range, Node::Symbol(sym)))
                 }
+            }
+            Token::Type => {
+                let mut range = self.source_info.top.range;
+                self.pop(); // `#type`
+                let expr = self.parse_expression(false)?;
+                range.end = self.ctx.ranges[expr].end;
+                Ok(self.ctx.push_node(range, Node::TypeExpr(expr)))
             }
             _ => Err(CompileError::Generic(
                 "Expected type".to_string(),

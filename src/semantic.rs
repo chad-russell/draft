@@ -900,6 +900,10 @@ impl Context {
             Node::Type(ty) => {
                 self.assign_type_type(id, ty);
             }
+            Node::TypeExpr(ty) => {
+                self.assign_type(id);
+                self.match_types(id, ty);
+            }
             Node::Return(ret_id) => {
                 self.assign_type_return(ret_id, id);
             }
@@ -1265,7 +1269,7 @@ impl Context {
                                 self.types.insert(id, Type::I64);
                             }
                             "data" => {
-                                self.types.insert(id, Type::Infer(None));
+                                self.types.insert(id, Type::Pointer(self.ty_u8.unwrap()));
                             }
                             _ => {
                                 self.errors.push(CompileError::Node(
@@ -1482,6 +1486,14 @@ impl Context {
                 self.pop_break();
                 self.returns.pop();
             }
+            Node::Defer { block, block_label } => {
+                self.push_break(block_label);
+
+                self.assign_type(block);
+                self.match_types(id, block);
+
+                self.pop_break();
+            }
             Node::Match { value, cases } => {
                 self.assign_type(value);
 
@@ -1666,6 +1678,10 @@ impl Context {
                         self.types.insert(index, Type::I64);
                         self.match_types(id, ty);
                     }
+                    Type::String => {
+                        self.types.insert(index, Type::I64);
+                        self.types.insert(id, Type::U8);
+                    }
                     Type::Infer(_) => {
                         self.deferreds.push(id);
                         return false;
@@ -1843,7 +1859,7 @@ impl Context {
 
                 match (self.get_type(value), self.get_type(ty)) {
                     (Type::Infer(_), _) | (_, Type::Infer(_)) => {}
-                    (Type::Array(_, ArrayLen::Infer), _) => {}
+                    (Type::Array(_, ArrayLen::Infer), Type::Array(_, _)) => {}
                     (Type::Array(ty1, ArrayLen::Some(_)), Type::Array(ty2, ArrayLen::None)) => {
                         self.match_types(ty1, ty2);
                         self.nodes[id] = Node::AsCast {
@@ -1975,9 +1991,130 @@ impl Context {
 
                         fully_done = true;
                     }
+                    (Type::Struct { params, .. }, Type::String) => {
+                        // Make sure params is laid out exactly like a string
+                        let param_ids = params.clone();
+                        if param_ids.borrow().len() != 2 {
+                            self.errors.push(CompileError::Node(
+                                "Struct must have exactly two parameters".to_string(),
+                                id,
+                            ));
+                            return true;
+                        }
+
+                        // Match the first param to the data pointer
+                        {
+                            let p0 = param_ids.borrow()[0];
+
+                            self.assign_type(p0);
+                            if let Type::Infer(_) = self.get_type(p0) {
+                                self.deferreds.push(p0);
+                                self.deferreds.push(id);
+                                return false;
+                            }
+
+                            let Node::ValueParam {
+                                name: Some(name),
+                                value,
+                                ..
+                            } = self.nodes[p0]
+                            else {
+                                self.errors.push(CompileError::Node(
+                                    "Expected a value param called 'data' here".to_string(),
+                                    p0,
+                                ));
+                                return true;
+                            };
+
+                            // todo(chad): directly compare symbols, it's faster
+                            let name = self.get_symbol_str(name);
+                            if name != "data" {
+                                self.errors.push(CompileError::Node(
+                                    "Expected a value param called 'data' here".to_string(),
+                                    p0,
+                                ));
+                                return true;
+                            }
+
+                            self.assign_type(value);
+                            if let Type::Infer(_) = self.get_type(value) {
+                                self.deferreds.push(value);
+                                self.deferreds.push(id);
+                                return false;
+                            }
+
+                            let Type::Pointer(array_ty) = self.get_type(value) else {
+                                self.errors.push(CompileError::Node(
+                                    "Expected a pointer here".to_string(),
+                                    value,
+                                ));
+                                return true;
+                            };
+
+                            self.match_types(array_ty, self.ty_u8.unwrap());
+                        }
+
+                        // Match the second param to the len field
+                        {
+                            let p1 = param_ids.borrow()[1];
+
+                            self.assign_type(p1);
+                            if let Type::Infer(_) = self.get_type(p1) {
+                                self.deferreds.push(p1);
+                                self.deferreds.push(id);
+                                return false;
+                            }
+
+                            let Node::ValueParam {
+                                name: Some(name),
+                                value,
+                                ..
+                            } = self.nodes[p1]
+                            else {
+                                self.errors.push(CompileError::Node(
+                                    "Expected a value param called 'len' here".to_string(),
+                                    p1,
+                                ));
+                                return true;
+                            };
+
+                            // todo(chad): directly compare symbols, it's faster
+                            let name = self.get_symbol_str(name);
+                            if name != "len" {
+                                self.errors.push(CompileError::Node(
+                                    "Expected a value param called 'len' here".to_string(),
+                                    p1,
+                                ));
+                                return true;
+                            }
+
+                            self.assign_type(value);
+                            if let Type::Infer(_) = self.get_type(value) {
+                                self.deferreds.push(value);
+                                self.deferreds.push(id);
+                                return false;
+                            }
+
+                            let Type::I64 = self.get_type(value) else {
+                                self.errors.push(CompileError::Node(
+                                    "Expected an i64 here".to_string(),
+                                    value,
+                                ));
+                                return true;
+                            };
+                        }
+
+                        self.nodes[id] = Node::AsCast {
+                            value,
+                            ty,
+                            style: AsCastStyle::StructToString,
+                        };
+
+                        fully_done = true;
+                    }
                     (ty1, ty2) => {
                         self.errors.push(CompileError::Node2(
-                            format!("Invalid cast from {:?} to {:?}", ty1, ty2),
+                            format!("Invalid as-cast from {:?} to {:?}", ty1, ty2),
                             value,
                             ty,
                         ));
@@ -2823,6 +2960,7 @@ impl Context {
             Node::StringLiteral(_) => id,
             Node::BoolLiteral(_) => todo!(),
             Node::Type(_) => todo!(),
+            Node::TypeExpr(_) => todo!(),
             Node::Return(r) => {
                 let r = r.map(|r| self.deep_copy_node(r));
                 self.push_node(range, Node::Return(r))
@@ -2954,6 +3092,10 @@ impl Context {
             } => todo!(),
             Node::While {
                 cond: _,
+                block: _,
+                block_label: _,
+            } => todo!(),
+            Node::Defer {
                 block: _,
                 block_label: _,
             } => todo!(),

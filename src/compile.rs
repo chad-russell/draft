@@ -1,11 +1,13 @@
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 
 use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::immediates::Imm64;
-use cranelift_codegen::ir::{Block as CraneliftBlock, BlockCall, JumpTableData};
+use cranelift_codegen::ir::Block as CraneliftBlock;
 use cranelift_codegen::ir::{FuncRef, GlobalValue, GlobalValueData, StackSlot};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
+use cranelift_jit::{JITBuilder, JITModule};
 
 use cranelift_codegen::ir::{
     stackslot::StackSize, types, AbiParam, InstBuilder, MemFlags, Signature, StackSlotData,
@@ -13,14 +15,12 @@ use cranelift_codegen::ir::{
 };
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context as CodegenContext;
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{
-    default_libcall_names, DataDescription, DataId, FuncId, Init, Linkage, Module,
-};
+use cranelift_module::{default_libcall_names, DataDescription, DataId, FuncId, Init, Linkage};
+use cranelift_object::{ObjectBuilder, ObjectModule};
 
 use crate::{
     ArrayLen, AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, IfCond,
-    MatchCaseTag, Node, NodeId, Op, StaticMemberResolution, Sym, Type,
+    MatchCaseTag, Node, NodeId, ObjectOrJITModule, Op, StaticMemberResolution, Sym, Type,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -50,9 +50,11 @@ impl GlobalBuilder {
 }
 
 impl Context {
-    pub fn make_module() -> JITModule {
+    pub fn make_module(jit: bool) -> ObjectOrJITModule {
         let mut flags_builder = settings::builder();
-        flags_builder.set("is_pic", "false").unwrap();
+        flags_builder
+            .set("is_pic", if jit { "false" } else { "true" })
+            .unwrap();
         flags_builder.set("enable_verifier", "false").unwrap();
         flags_builder.set("enable_alias_analysis", "false").unwrap();
 
@@ -67,22 +69,28 @@ impl Context {
             .finish(settings::Flags::new(flags_builder))
             .unwrap();
 
-        let mut jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
+        if jit {
+            let mut jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
 
-        jit_builder.hotswap(false);
+            jit_builder.hotswap(false);
 
-        jit_builder.symbol("print_i64", print_i64 as *const u8);
-        jit_builder.symbol("print_f64", print_f64 as *const u8);
-        jit_builder.symbol("print_enum_tag", print_enum_tag as *const u8);
-        jit_builder.symbol("put_char", put_char as *const u8);
-        jit_builder.symbol("print_str", print_str as *const u8);
+            jit_builder.symbol("print_i64", print_i64 as *const u8);
+            jit_builder.symbol("print_f64", print_f64 as *const u8);
+            jit_builder.symbol("print_enum_tag", print_enum_tag as *const u8);
+            jit_builder.symbol("put_char", put_char as *const u8);
+            jit_builder.symbol("print_str", print_str as *const u8);
 
-        JITModule::new(jit_builder)
+            ObjectOrJITModule::JIT(JITModule::new(jit_builder))
+        } else {
+            let object_builder = ObjectBuilder::new(isa, "draft", default_libcall_names()).unwrap();
+
+            ObjectOrJITModule::Object(ObjectModule::new(object_builder))
+        }
     }
 
     pub fn predeclare_string_constants(&mut self) -> EmptyDraftResult {
         let data_id = self
-            .module
+            .module_mut()
             .declare_data("string_constants", Linkage::Local, false, false)
             .map_err(|err| CompileError::Message(err.to_string()))?;
         self.string_literal_data_id = Some(data_id);
@@ -102,7 +110,7 @@ impl Context {
             contents: bytes.into_boxed_slice(),
         };
 
-        self.module.define_data(data_id, &desc).unwrap();
+        self.module_mut().define_data(data_id, &desc).unwrap();
 
         Ok(())
     }
@@ -119,23 +127,12 @@ impl Context {
         Ok(())
     }
 
-    // pub fn insert_type_infos_into_global_data(&mut self) -> EmptyDraftResult {
-    //     for node_id in 0..self.nodes.len() {
-    //         let Node::TypeInfo(id) = self.nodes[NodeId(node_id)] else {
-    //             continue;
-    //         };
-    //         self.insert_type_info_into_global_data(id)?
-    //     }
-
-    //     Ok(())
-    // }
-
     pub fn insert_type_info_into_global_data(&mut self, id: NodeId) -> EmptyDraftResult {
         let ty = self.types[&id].clone();
 
         let mut gb = self.make_global_builder()?;
 
-        match ty {
+        match &ty {
             Type::I64 => {
                 // Write the tag, skip the value as it's never used anyway, and this is read-only memory
                 gb.write_u64(5);
@@ -154,13 +151,18 @@ impl Context {
                 gb.extend_bytes_to_length(self.type_info_size());
 
                 // Write the value. This is a pointer to the type info of the pointed-to type
-                self.gb_write_type_info_pointer(&mut gb, pid)?;
+                self.gb_write_type_info_pointer(&mut gb, *pid)?;
 
                 self.gb_finalize(gb, Some(id));
             }
-            Type::Struct { params, decl, .. } => {
+            Type::Struct { params, decl, .. } | Type::Enum { params, decl, .. } => {
                 // Write the tag
-                gb.write_u64(14);
+                let tag = match ty {
+                    Type::Struct { .. } => 14,
+                    Type::Enum { .. } => 15,
+                    _ => unreachable!(),
+                };
+                gb.write_u64(tag);
 
                 // Write the name
                 {
@@ -175,24 +177,24 @@ impl Context {
 
                     match name {
                         Some(sym) => {
-                            // Write the tag (Some)
+                            // write the tag (some)
                             gb.write_u64(0);
 
-                            // Write the string value
+                            // write the string value
                             {
-                                // Write the pointer
+                                // write the pointer
                                 self.gb_write_string_data_pointer(&mut gb, sym)?;
 
-                                // Write the length
+                                // write the length
                                 let sym_str = self.string_interner.resolve(sym.0).unwrap();
                                 gb.write_u64(sym_str.len() as u64);
                             }
                         }
                         None => {
-                            // Write the tag (None)
+                            // write the tag (none)
                             gb.write_u64(1);
 
-                            // Pad with bytes that would represent the string value
+                            // pad with bytes that would represent the string value
                             gb.write_u64(0);
                             gb.write_u64(0);
                         }
@@ -210,6 +212,7 @@ impl Context {
                             // Name (string)
                             {
                                 let (Node::StructDeclParam { name, .. }
+                                | Node::EnumDeclParam { name, .. }
                                 | Node::ValueParam {
                                     name: Some(name), ..
                                 }) = self.nodes[*param].clone()
@@ -249,7 +252,178 @@ impl Context {
 
                 self.gb_finalize(gb, Some(id));
             }
-            a => todo!("insert_type_infos_into_global_data for {:?}", a),
+            Type::Empty | Type::EnumNoneType => {
+                // Write the tag, skip the value as it's never used anyway, and this is read-only memory
+                gb.write_u64(0);
+                gb.extend_bytes_to_length(self.type_info_size());
+                self.gb_finalize(gb, Some(id));
+            }
+            Type::I8 => {
+                // Write the tag, skip the value as it's never used anyway, and this is read-only memory
+                gb.write_u64(2);
+                gb.extend_bytes_to_length(self.type_info_size());
+                self.gb_finalize(gb, Some(id));
+            }
+            Type::I16 => {
+                // Write the tag, skip the value as it's never used anyway, and this is read-only memory
+                gb.write_u64(3);
+                gb.extend_bytes_to_length(self.type_info_size());
+                self.gb_finalize(gb, Some(id));
+            }
+            Type::U8 => {
+                // Write the tag, skip the value as it's never used anyway, and this is read-only memory
+                gb.write_u64(2);
+                gb.extend_bytes_to_length(self.type_info_size());
+                self.gb_finalize(gb, Some(id));
+            }
+            Type::U16 => {
+                // Write the tag, skip the value as it's never used anyway, and this is read-only memory
+                gb.write_u64(2);
+                gb.extend_bytes_to_length(self.type_info_size());
+                self.gb_finalize(gb, Some(id));
+            }
+            Type::U32 => {
+                // Write the tag, skip the value as it's never used anyway, and this is read-only memory
+                gb.write_u64(8);
+                gb.extend_bytes_to_length(self.type_info_size());
+                self.gb_finalize(gb, Some(id));
+            }
+            Type::U64 => {
+                // Write the tag, skip the value as it's never used anyway, and this is read-only memory
+                gb.write_u64(9);
+                gb.extend_bytes_to_length(self.type_info_size());
+                self.gb_finalize(gb, Some(id));
+            }
+            Type::F32 => {
+                // Write the tag, skip the value as it's never used anyway, and this is read-only memory
+                gb.write_u64(10);
+                gb.extend_bytes_to_length(self.type_info_size());
+                self.gb_finalize(gb, Some(id));
+            }
+            Type::F64 => {
+                // Write the tag, skip the value as it's never used anyway, and this is read-only memory
+                gb.write_u64(11);
+                gb.extend_bytes_to_length(self.type_info_size());
+                self.gb_finalize(gb, Some(id));
+            }
+            Type::Bool => {
+                // Write the tag, skip the value as it's never used anyway, and this is read-only memory
+                gb.write_u64(1);
+                gb.extend_bytes_to_length(self.type_info_size());
+                self.gb_finalize(gb, Some(id));
+            }
+            Type::String => {
+                // Write the tag, skip the value as it's never used anyway, and this is read-only memory
+                gb.write_u64(12);
+                gb.extend_bytes_to_length(self.type_info_size());
+                self.gb_finalize(gb, Some(id));
+            }
+            Type::Func {
+                input_tys,
+                return_ty,
+            } => {
+                gb.write_u64(13);
+                // Write the input params array
+                {
+                    // Build the data
+                    let params_data_id = {
+                        let mut params_gb = self.make_global_builder()?;
+
+                        for param in input_tys.borrow().iter() {
+                            // TypeInfoParam
+                            // Name (string)
+                            {
+                                let (Node::StructDeclParam { name, .. }
+                                | Node::ValueParam {
+                                    name: Some(name), ..
+                                }) = self.nodes[*param].clone()
+                                else {
+                                    todo!("{:?}", self.nodes[*param].clone())
+                                };
+                                let name = self.nodes[name].as_symbol().unwrap();
+
+                                // Write the pointer
+                                self.gb_write_string_data_pointer(&mut params_gb, name)?;
+
+                                // Write the length
+                                let name_str = self.string_interner.resolve(name.0).unwrap();
+                                params_gb.write_u64(name_str.len() as u64);
+                            }
+
+                            // Type Info Pointer
+                            {
+                                self.insert_type_info_into_global_data(*param)?;
+
+                                let (param_data_id, _) = self.global_values[&param];
+                                self.gb_write_global_pointer(&mut params_gb, param_data_id)?;
+                            }
+                        }
+
+                        self.gb_finalize(params_gb, None)
+                    };
+
+                    // Write the data pointer
+                    self.gb_write_global_pointer(&mut gb, params_data_id)?;
+
+                    // Write the length
+                    gb.write_u64(input_tys.borrow().len() as u64);
+                }
+
+                // Write the return type
+                {
+                    match return_ty {
+                        Some(rt) => {
+                            // Write the tag (Some)
+                            gb.write_u64(0);
+
+                            // Write the type info pointer
+                            self.insert_type_info_into_global_data(*rt)?;
+
+                            let (rt_data_id, _) = self.global_values[&rt];
+                            self.gb_write_global_pointer(&mut gb, rt_data_id)?;
+                        }
+                        None => {
+                            // Write the tag (None)
+                            gb.write_u64(1);
+
+                            // Pad with bytes that would represent the string value
+                            gb.write_u64(0);
+                            gb.write_u64(0);
+                        }
+                    }
+                }
+
+                gb.extend_bytes_to_length(self.type_info_size());
+                self.gb_finalize(gb, Some(id));
+            }
+            Type::Array(array_ty, len) => {
+                gb.write_u64(17);
+
+                // Write the type
+                self.insert_type_info_into_global_data(*array_ty)?;
+
+                // Write the len
+                match *len {
+                    ArrayLen::Some(len) => {
+                        // Write the tag (Some)
+                        gb.write_u64(0);
+
+                        // Write the length
+                        gb.write_u64(len as u64);
+                    }
+                    _ => {
+                        // write the tag (none)
+                        gb.write_u64(1);
+
+                        // pad with bytes that would represent the string value
+                        gb.write_u64(0);
+                        gb.write_u64(0);
+                    }
+                }
+
+                self.gb_finalize(gb, Some(id));
+            }
+            _ => unreachable!(),
         }
 
         Ok(())
@@ -265,17 +439,21 @@ impl Context {
             return Ok(*data_id);
         }
 
-        let sym_str = self.string_interner.resolve(sym.0).unwrap();
+        let contents = self
+            .string_interner
+            .resolve(sym.0)
+            .unwrap()
+            .as_bytes()
+            .to_vec()
+            .into_boxed_slice();
 
         let string_data_id = self
-            .module
+            .module_mut()
             .declare_data(&name, Linkage::Local, false, false)
             .map_err(|err| CompileError::Message(err.to_string()))?;
         let mut string_desc = DataDescription::new();
-        string_desc.init = Init::Bytes {
-            contents: sym_str.as_bytes().to_vec().into_boxed_slice(),
-        };
-        self.module
+        string_desc.init = Init::Bytes { contents };
+        self.module_mut()
             .define_data(string_data_id, &string_desc)
             .unwrap();
 
@@ -285,7 +463,7 @@ impl Context {
     }
 
     pub fn define_functions(&mut self) -> EmptyDraftResult {
-        let mut codegen_ctx = self.module.make_context();
+        let mut codegen_ctx = self.module_mut().make_context();
         let mut func_ctx = FunctionBuilderContext::new();
 
         let mut compile_ctx = ToplevelCompileContext {
@@ -298,9 +476,29 @@ impl Context {
             compile_ctx.compile_toplevel_id(t)?;
         }
 
-        self.module
-            .finalize_definitions()
-            .expect("Failed to finalize definitions");
+        if matches!(&self.module, ObjectOrJITModule::Object(_)) {
+            let module = std::mem::replace(&mut self.module, ObjectOrJITModule::Consumed);
+            let ObjectOrJITModule::Object(module) = module else {
+                unreachable!()
+            };
+
+            let product = module.finish().emit().unwrap();
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .open("out.o")
+                .unwrap();
+            file.write_all(&product).unwrap();
+        } else {
+            match &mut self.module {
+                ObjectOrJITModule::JIT(module) => {
+                    module
+                        .finalize_definitions()
+                        .expect("Failed to finalize definitions");
+                }
+                _ => unreachable!(),
+            }
+        }
 
         Ok(())
     }
@@ -313,7 +511,7 @@ impl Context {
             ..
         } = self.nodes[id].clone()
         {
-            let mut sig = self.module.make_signature();
+            let mut sig = self.module_mut().make_signature();
 
             for &param in params.borrow().iter() {
                 sig.params
@@ -330,7 +528,7 @@ impl Context {
             let func_name = self.mangled_func_name(name, id);
 
             let func = self
-                .module
+                .module_mut()
                 .declare_function(&func_name, Linkage::Local, &sig)
                 .unwrap();
 
@@ -372,9 +570,15 @@ impl Context {
             .cloned();
 
         if let (Some(id), true) = (node_id, self.args.run) {
-            let code = self.module.get_finalized_function(self.get_func_id(id));
-            let func = unsafe { std::mem::transmute::<_, fn() -> i64>(code) };
-            func();
+            let func_id = self.get_func_id(id);
+
+            if let ObjectOrJITModule::JIT(module) = &mut self.module {
+                module.finalize_definitions().unwrap();
+
+                let code = module.get_finalized_function(func_id);
+                let func = unsafe { std::mem::transmute::<_, fn() -> i64>(code) };
+                func();
+            }
         }
 
         Ok(())
@@ -404,7 +608,7 @@ impl Context {
     }
 
     fn get_pointer_type(&self) -> CraneliftType {
-        self.module.isa().pointer_type()
+        self.module().isa().pointer_type()
     }
 
     #[inline]
@@ -470,7 +674,7 @@ impl Context {
 
         let return_size = return_ty.map(|rt| self.id_type_size(rt)).unwrap_or(0);
 
-        let mut sig = self.module.make_signature();
+        let mut sig = self.module().make_signature();
         for param in param_ids.iter() {
             sig.params
                 .push(AbiParam::new(self.id_cranelift_type(*param)));
@@ -509,14 +713,11 @@ impl Context {
 
 impl Context {
     fn make_global_builder(&mut self) -> DraftResult<GlobalBuilder> {
+        let global_name = format!("g{}", self.global_builder_id);
+
         let data_id = self
-            .module
-            .declare_data(
-                &format!("g{}", self.global_builder_id),
-                Linkage::Local,
-                false,
-                false,
-            )
+            .module_mut()
+            .declare_data(&global_name, Linkage::Local, false, false)
             .map_err(|err| CompileError::Message(err.to_string()))?;
 
         self.global_builder_id += 1;
@@ -539,7 +740,7 @@ impl Context {
     ) -> EmptyDraftResult {
         let string_data_id = self.get_string_data_id(sym, &format!("sym__{:?}", sym.0))?;
         let string_global = self
-            .module
+            .module_mut()
             .declare_data_in_data(string_data_id, &mut gb.desc);
         gb.desc
             .write_data_addr(gb.bytes.len() as u32, string_global, 0);
@@ -549,7 +750,7 @@ impl Context {
     }
 
     fn gb_write_global_pointer(&mut self, gb: &mut GlobalBuilder, id: DataId) -> EmptyDraftResult {
-        let global = self.module.declare_data_in_data(id, &mut gb.desc);
+        let global = self.module_mut().declare_data_in_data(id, &mut gb.desc);
         gb.desc.write_data_addr(gb.bytes.len() as u32, global, 0);
         gb.write_u64(0); // extend bytes to make room for the pointer
 
@@ -563,7 +764,9 @@ impl Context {
     ) -> EmptyDraftResult {
         self.insert_type_info_into_global_data(id)?;
         let (pid_data_id, _) = self.global_values[&id];
-        let pglobal = self.module.declare_data_in_data(pid_data_id, &mut gb.desc);
+        let pglobal = self
+            .module_mut()
+            .declare_data_in_data(pid_data_id, &mut gb.desc);
 
         // Write the data address of pglobal into the type info, after the tag
         gb.desc.write_data_addr(gb.bytes.len() as u32, pglobal, 0);
@@ -577,7 +780,7 @@ impl Context {
             contents: gb.bytes.into_boxed_slice(),
         };
 
-        self.module.define_data(gb.data_id, &gb.desc).unwrap();
+        self.module_mut().define_data(gb.data_id, &gb.desc).unwrap();
 
         if let Some(id) = id {
             self.global_values.insert(id, (gb.data_id, None));
@@ -638,9 +841,7 @@ enum Block {
 impl Into<CraneliftBlock> for Block {
     fn into(self) -> CraneliftBlock {
         match self {
-            Block::Block(b) => b,
-            Block::Continue(b) => b,
-            Block::Break(b) => b,
+            Block::Block(b) | Block::Continue(b) | Block::Break(b) => b,
         }
     }
 }
@@ -699,7 +900,15 @@ impl<'a> FunctionCompileContext<'a> {
                         let value = self.builder.ins().iconst(types::I32, n);
                         self.ctx.values.insert(id, Value::Register(value));
                     }
-                    _ => todo!(),
+                    Type::I16 | Type::U16 => {
+                        let value = self.builder.ins().iconst(types::I16, n);
+                        self.ctx.values.insert(id, Value::Register(value));
+                    }
+                    Type::I8 | Type::U8 => {
+                        let value = self.builder.ins().iconst(types::I8, n);
+                        self.ctx.values.insert(id, Value::Register(value));
+                    }
+                    _ => todo!("{:?}", self.ctx.types[&id]),
                 };
 
                 Ok(())
@@ -878,8 +1087,12 @@ impl<'a> FunctionCompileContext<'a> {
                     | Type::U8
                     | Type::U16
                     | Type::U32
-                    | Type::U64 => {
-                        let is_signed = matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64);
+                    | Type::U64
+                    | Type::Pointer(_) => {
+                        let is_signed = matches!(
+                            ty,
+                            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::Pointer(_)
+                        );
 
                         let value = match op {
                             Op::Add => self.builder.ins().iadd(lhs_value, rhs_value),
@@ -1057,7 +1270,7 @@ impl<'a> FunctionCompileContext<'a> {
                                 let return_size =
                                     return_ty.map(|rt| self.ctx.id_type_size(rt)).unwrap_or(0);
 
-                                let mut sig = self.ctx.module.make_signature();
+                                let mut sig = self.ctx.module_mut().make_signature();
                                 for param in param_ids.borrow().iter() {
                                     sig.params
                                         .push(AbiParam::new(self.ctx.id_cranelift_type(*param)));
@@ -1182,7 +1395,7 @@ impl<'a> FunctionCompileContext<'a> {
                 params,
                 return_ty,
             } => {
-                let mut sig = self.ctx.module.make_signature();
+                let mut sig = self.ctx.module_mut().make_signature();
 
                 let return_size = return_ty.map(|rt| self.ctx.id_type_size(rt)).unwrap_or(0);
                 if return_size > 0 {
@@ -1206,7 +1419,7 @@ impl<'a> FunctionCompileContext<'a> {
 
                 let func_id = self
                     .ctx
-                    .module
+                    .module_mut()
                     .declare_function(&name, Linkage::Import, &sig)
                     .unwrap();
 
@@ -1617,7 +1830,7 @@ impl<'a> FunctionCompileContext<'a> {
                 });
 
                 let gsp = self.global_str_ptr.get_or_insert_with(|| {
-                    self.ctx.module.declare_data_in_func(
+                    self.ctx.module().declare_data_in_func(
                         self.ctx.string_literal_data_id.unwrap(),
                         self.builder.func,
                     )
@@ -1670,9 +1883,13 @@ impl<'a> FunctionCompileContext<'a> {
                 Ok(())
             }
             Node::StaticMemberAccess { value, .. } => {
-                let value_ty = self.ctx.get_type(value);
+                let mut value_ty = self.ctx.get_type(value);
+                while let Type::Pointer(inner) = value_ty {
+                    value_ty = self.ctx.get_type(inner);
+                }
+
                 let Type::Array(_, ArrayLen::Some(len)) = value_ty else {
-                    unreachable!()
+                    unreachable!("{:?}", value_ty)
                 };
 
                 let value = self.builder.ins().iconst(types::I64, len as i64);
@@ -1722,7 +1939,7 @@ impl<'a> FunctionCompileContext<'a> {
 
                 let gv = self
                     .ctx
-                    .module
+                    .module_mut()
                     .declare_data_in_func(data_id, self.builder.func);
 
                 let ptr = self
@@ -1915,11 +2132,11 @@ impl<'a> FunctionCompileContext<'a> {
         }
 
         // direct call?
-        let call_inst = if let Some(Value::Func(func_id)) = self.ctx.values.get(&func) {
-            let func_ref = *self.declared_func_ids.entry(*func_id).or_insert_with(|| {
+        let call_inst = if let Some(&Value::Func(func_id)) = self.ctx.values.get(&func) {
+            let func_ref = *self.declared_func_ids.entry(func_id).or_insert_with(|| {
                 self.ctx
-                    .module
-                    .declare_func_in_func(*func_id, self.builder.func)
+                    .module_mut()
+                    .declare_func_in_func(func_id, self.builder.func)
             });
             self.builder.ins().call(func_ref, &param_values)
         } else {
@@ -2057,7 +2274,7 @@ impl<'a> FunctionCompileContext<'a> {
             Value::Func(func_id) => {
                 let func_ref = *self.declared_func_ids.entry(func_id).or_insert_with(|| {
                     self.ctx
-                        .module
+                        .module_mut()
                         .declare_func_in_func(func_id, self.builder.func)
                 });
 
@@ -2096,7 +2313,7 @@ impl<'a> FunctionCompileContext<'a> {
             (a @ (Value::StackSlot(_) | Value::Reference(_)), Value::StackSlot(dest_ss)) => {
                 let source_ptr = self.as_cranelift_value(*a);
                 let dest_ptr = self.builder.ins().stack_addr(
-                    self.ctx.module.isa().pointer_type(),
+                    self.ctx.module().isa().pointer_type(),
                     dest_ss,
                     offset as i32,
                 );
@@ -2128,7 +2345,7 @@ impl<'a> FunctionCompileContext<'a> {
         size: u64,
     ) {
         self.builder.emit_small_memory_copy(
-            self.ctx.module.isa().frontend_config(),
+            self.ctx.module().isa().frontend_config(),
             dest_value,
             source_value,
             size as _,
@@ -2151,7 +2368,7 @@ impl<'a> FunctionCompileContext<'a> {
             Value::Func(func_id) => {
                 let func_ref = *self.declared_func_ids.entry(func_id).or_insert_with(|| {
                     self.ctx
-                        .module
+                        .module_mut()
                         .declare_func_in_func(func_id, self.builder.func)
                 });
 
@@ -2267,7 +2484,7 @@ impl<'a> ToplevelCompileContext<'a> {
             } => {
                 let name_str = self.ctx.mangled_func_name(name, id);
 
-                let mut sig = self.ctx.module.make_signature();
+                let mut sig = self.ctx.module_mut().make_signature();
 
                 for &param in params.borrow().iter() {
                     sig.params
@@ -2281,7 +2498,7 @@ impl<'a> ToplevelCompileContext<'a> {
 
                 let func_id = self
                     .ctx
-                    .module
+                    .module_mut()
                     .declare_function(&name_str, Linkage::Export, &sig)
                     .unwrap();
 
@@ -2311,6 +2528,17 @@ impl<'a> ToplevelCompileContext<'a> {
                     builder_ctx.compile_id(stmt)?;
                 }
 
+                if !builder_ctx
+                    .exited_blocks
+                    .contains(&builder_ctx.current_block)
+                {
+                    if return_ty.is_some() {
+                        unreachable!("This should have already been a compile error!");
+                    } else {
+                        builder_ctx.builder.ins().return_(&[]);
+                    }
+                }
+
                 builder_ctx.builder.seal_all_blocks();
                 builder_ctx.builder.finalize();
 
@@ -2319,11 +2547,11 @@ impl<'a> ToplevelCompileContext<'a> {
                 }
 
                 self.ctx
-                    .module
+                    .module_mut()
                     .define_function(func_id, self.codegen_ctx)
                     .unwrap();
 
-                self.ctx.module.clear_context(self.codegen_ctx);
+                self.ctx.module_mut().clear_context(self.codegen_ctx);
 
                 Ok(())
             }
@@ -2351,7 +2579,7 @@ impl<'a> ToplevelCompileContext<'a> {
                             id.0
                         );
 
-                        let mut sig = self.ctx.module.make_signature();
+                        let mut sig = self.ctx.module_mut().make_signature();
 
                         if let Some(ty) = ty {
                             sig.params
@@ -2363,7 +2591,7 @@ impl<'a> ToplevelCompileContext<'a> {
 
                         let func_id = self
                             .ctx
-                            .module
+                            .module_mut()
                             .declare_function(&name_str, Linkage::Export, &sig)
                             .unwrap();
 
@@ -2384,10 +2612,11 @@ impl<'a> ToplevelCompileContext<'a> {
                             kind: StackSlotKind::ExplicitSlot,
                             size: enum_type_size,
                         });
-                        let slot_addr =
-                            builder
-                                .ins()
-                                .stack_addr(self.ctx.module.isa().pointer_type(), slot, 0);
+                        let slot_addr = builder.ins().stack_addr(
+                            self.ctx.module().isa().pointer_type(),
+                            slot,
+                            0,
+                        );
 
                         // Assign the enum tag
                         let tag = builder.ins().iconst(types::I64, index as i64);
@@ -2409,7 +2638,7 @@ impl<'a> ToplevelCompileContext<'a> {
                                     .iadd_imm(dest_value, self.ctx.enum_tag_size() as i64);
 
                                 builder.emit_small_memory_copy(
-                                    self.ctx.module.isa().frontend_config(),
+                                    self.ctx.module().isa().frontend_config(),
                                     dest_value,
                                     source_value,
                                     size as _,
@@ -2438,11 +2667,11 @@ impl<'a> ToplevelCompileContext<'a> {
                         }
 
                         self.ctx
-                            .module
+                            .module_mut()
                             .define_function(func_id, self.codegen_ctx)
                             .unwrap();
 
-                        self.ctx.module.clear_context(self.codegen_ctx);
+                        self.ctx.module_mut().clear_context(self.codegen_ctx);
 
                         Ok(())
                     }

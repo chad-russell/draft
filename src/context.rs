@@ -2,16 +2,40 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use cranelift_codegen::ir::GlobalValue;
-use cranelift_module::DataId;
-use string_interner::StringInterner;
-
 use cranelift_jit::JITModule;
+use cranelift_module::{DataId, Module};
+use cranelift_object::ObjectModule;
+use string_interner::StringInterner;
 
 use crate::{
     AddressableMatch, Args, CompileError, EmptyDraftResult, Location, Node, NodeId, Range,
     RopeySource, Scope, ScopeId, Scopes, Source, SourceInfo, StaticStrSource, Sym, Type, TypeMatch,
     Value,
 };
+
+pub enum ObjectOrJITModule {
+    Object(ObjectModule),
+    JIT(JITModule),
+    Consumed, // Producing object code consumes the module
+}
+
+impl ObjectOrJITModule {
+    pub fn as_module(&self) -> &dyn Module {
+        match self {
+            ObjectOrJITModule::Object(module) => module,
+            ObjectOrJITModule::JIT(module) => module,
+            _ => panic!("Module was already consumed"),
+        }
+    }
+
+    pub fn as_module_mut(&mut self) -> &mut dyn Module {
+        match self {
+            ObjectOrJITModule::Object(module) => module,
+            ObjectOrJITModule::JIT(module) => module,
+            _ => panic!("Module was already consumed"),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct DenseStorage<T>(Vec<T>);
@@ -85,6 +109,7 @@ pub struct Context {
     // todo(chad): switch to MaybeUninit at some point
     pub string_literal_data_id: Option<DataId>,
     pub ty_empty: Option<NodeId>,
+    pub ty_u8: Option<NodeId>, // For easily creating string pointers, which must be *u8. We need to have a node ID to point to
 
     // stack of returns - pushed when entering parsing a function, popped when exiting
     pub returns: Vec<Vec<NodeId>>,
@@ -118,7 +143,7 @@ pub struct Context {
     pub addressable_array_reverse_map: SecondaryMap<usize>,
     pub in_assign_lhs: bool,
 
-    pub module: JITModule,
+    pub module: ObjectOrJITModule,
     pub values: SecondaryMap<Value>,
     pub global_values: SecondaryMap<(DataId, Option<GlobalValue>)>,
     pub global_builder_id: u32,
@@ -139,6 +164,8 @@ unsafe impl Send for Context {}
 
 impl Context {
     pub fn new(args: Args) -> Self {
+        let is_jit = args.jit;
+
         let mut ctx = Self {
             args,
 
@@ -156,6 +183,7 @@ impl Context {
             string_literal_offsets: Default::default(),
             string_literal_data_id: None,
             ty_empty: None,
+            ty_u8: None,
 
             hardstop: 0,
             max_hardstop: 8,
@@ -188,7 +216,7 @@ impl Context {
             addressable_array_reverse_map: Default::default(),
             in_assign_lhs: false,
 
-            module: Self::make_module(),
+            module: Self::make_module(is_jit),
             values: Default::default(),
             global_values: Default::default(),
             global_builder_id: 0,
@@ -197,11 +225,7 @@ impl Context {
             type_info_decl: None,
         };
 
-        ctx.ty_empty = Some(ctx.push_node(
-            Range::new(Location::default(), Location::default(), ""),
-            Node::Type(Type::Empty),
-        ));
-        ctx.types.insert(ctx.ty_empty.unwrap(), Type::Empty);
+        ctx.setup_default_types();
 
         ctx
     }
@@ -245,11 +269,36 @@ impl Context {
         self.deferreds.clear();
         self.in_assign_lhs = false;
 
-        self.module = Self::make_module();
+        match self.module {
+            ObjectOrJITModule::Object(_) => {
+                self.module = Self::make_module(false);
+            }
+            ObjectOrJITModule::JIT(_) => {
+                self.module = Self::make_module(true);
+            }
+            _ => {}
+        }
+
         self.values.clear();
         self.global_values.clear();
         self.global_builder_id = 0;
         self.symbol_data_ids.clear();
+
+        self.setup_default_types();
+    }
+
+    fn setup_default_types(&mut self) {
+        self.ty_empty = Some(self.push_node(
+            Range::new(Location::default(), Location::default(), ""),
+            Node::Type(Type::Empty),
+        ));
+        self.types.insert(self.ty_empty.unwrap(), Type::Empty);
+
+        self.ty_u8 = Some(self.push_node(
+            Range::new(Location::default(), Location::default(), ""),
+            Node::Type(Type::U8),
+        ));
+        self.types.insert(self.ty_u8.unwrap(), Type::U8);
     }
 
     pub fn make_source_info_from_file(&mut self, file_name: &str) -> SourceInfo<StaticStrSource> {
@@ -487,5 +536,13 @@ impl Context {
     pub fn char_span(&self, range: Range) -> usize {
         return self.char_offset_for_location(range.source_path, range.end)
             - self.char_offset_for_location(range.source_path, range.start);
+    }
+
+    pub fn module_mut(&mut self) -> &mut dyn Module {
+        self.module.as_module_mut()
+    }
+
+    pub fn module(&self) -> &dyn Module {
+        self.module.as_module()
     }
 }

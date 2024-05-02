@@ -39,6 +39,10 @@ pub enum AsCastStyle {
     None,
     StaticToDynamicArray,
     StructToDynamicArray,
+    StructToString,
+    ArrayToString,
+    IntToPtr,
+    PtrToInt,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -66,6 +70,7 @@ pub enum Node {
     StringLiteral(Sym),
     BoolLiteral(bool),
     Type(Type),
+    TypeExpr(NodeId),
     Return(Option<NodeId>),
     Break(Option<NodeId>, Option<Sym>),
     Continue(Option<Sym>),
@@ -178,6 +183,10 @@ pub enum Node {
         else_block: NodeElse,
         else_label: Option<Sym>,
     },
+    Defer {
+        block: NodeId,
+        block_label: Option<Sym>,
+    },
     Match {
         value: NodeId,
         cases: IdVec,
@@ -230,6 +239,7 @@ impl Node {
             Node::BoolLiteral(_) => "BoolLiteral".to_string(),
             Node::StringLiteral(_) => "StringLiteral".to_string(),
             Node::Type(_) => "Type".to_string(),
+            Node::TypeExpr(_) => "TypeExpr".to_string(),
             Node::Return(_) => "Return".to_string(),
             Node::Let { .. } => "Let".to_string(),
             Node::Assign { .. } => "Set".to_string(),
@@ -264,6 +274,7 @@ impl Node {
             Node::SizeOf(_) => "SizeOf".to_string(),
             Node::TypeInfo(_) => "TypeInfo".to_string(),
             Node::AsCast { .. } => "AsCast".to_string(),
+            Node::Defer { .. } => "Defer".to_string(),
         }
     }
 }
