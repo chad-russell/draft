@@ -20,7 +20,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 
 use crate::{
     ArrayLen, AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, IfCond,
-    MatchCaseTag, Node, NodeId, ObjectOrJITModule, Op, StaticMemberResolution, Sym, Type,
+    MatchCaseTag, Node, NodeId, ObjectOrJITModule, Op, ScopeId, StaticMemberResolution, Sym, Type,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -128,6 +128,11 @@ impl Context {
     }
 
     pub fn insert_type_info_into_global_data(&mut self, id: NodeId) -> EmptyDraftResult {
+        if self.global_values.contains_key(&id) {
+            println!("Skipping");
+            return Ok(());
+        }
+
         let ty = self.types[&id].clone();
 
         let mut gb = self.make_global_builder()?;
@@ -146,13 +151,19 @@ impl Context {
                 self.gb_finalize(gb, Some(id));
             }
             Type::Pointer(pid) => {
+                // Insert the data id into the global values map now, to avoid infinite recursion, e.g. if a struct is self-referential through a pointer
+                self.global_values.insert(id, (gb.data_id, None));
+
                 // Write the tag
                 gb.write_u64(16);
+
+                // Type Info Pointer
+                self.insert_type_info_into_global_data(*pid)?;
+
+                let (gv, _) = self.global_values[pid];
+                self.gb_write_global_pointer(&mut gb, gv)?;
+
                 gb.extend_bytes_to_length(self.type_info_size());
-
-                // Write the value. This is a pointer to the type info of the pointed-to type
-                self.gb_write_type_info_pointer(&mut gb, *pid)?;
-
                 self.gb_finalize(gb, Some(id));
             }
             Type::Struct { params, decl, .. } | Type::Enum { params, decl, .. } => {
@@ -757,23 +768,24 @@ impl Context {
         Ok(())
     }
 
-    fn gb_write_type_info_pointer(
-        &mut self,
-        gb: &mut GlobalBuilder,
-        id: NodeId,
-    ) -> EmptyDraftResult {
-        self.insert_type_info_into_global_data(id)?;
-        let (pid_data_id, _) = self.global_values[&id];
-        let pglobal = self
-            .module_mut()
-            .declare_data_in_data(pid_data_id, &mut gb.desc);
+    // fn gb_write_type_info_pointer(
+    //     &mut self,
+    //     gb: &mut GlobalBuilder,
+    //     id: NodeId,
+    // ) -> EmptyDraftResult {
+    //     self.insert_type_info_into_global_data(id)?;
 
-        // Write the data address of pglobal into the type info, after the tag
-        gb.desc.write_data_addr(gb.bytes.len() as u32, pglobal, 0);
-        gb.bytes.extend(0u64.to_ne_bytes()); // extend bytes to make room for the pointer
+    //     let (pid_data_id, _) = self.global_values[&id];
+    //     let pglobal = self
+    //         .module_mut()
+    //         .declare_data_in_data(pid_data_id, &mut gb.desc);
 
-        Ok(())
-    }
+    //     // Write the data address of pglobal into the type info, after the tag
+    //     gb.desc.write_data_addr(gb.bytes.len() as u32, pglobal, 0);
+    //     gb.bytes.extend(0u64.to_ne_bytes()); // extend bytes to make room for the pointer
+
+    //     Ok(())
+    // }
 
     pub fn gb_finalize(&mut self, mut gb: GlobalBuilder, id: Option<NodeId>) -> DataId {
         gb.desc.init = Init::Bytes {
@@ -853,9 +865,10 @@ struct FunctionCompileContext<'a> {
     pub break_addr: Option<Value>, // the stack slot where we store the value of any Node::Break we encounter
     pub declared_func_ids: HashMap<FuncId, FuncRef>,
     pub global_str_ptr: Option<GlobalValue>,
-    pub blocks: Vec<(Option<Sym>, Block)>,
+    pub blocks: Vec<(Option<Sym>, Block, Option<ScopeId>)>,
     pub current_block: CraneliftBlock,
     pub current_fn_block: CraneliftBlock,
+    pub current_fn_scope: ScopeId,
 }
 
 impl<'a> FunctionCompileContext<'a> {
@@ -934,6 +947,8 @@ impl<'a> FunctionCompileContext<'a> {
                 Ok(())
             }
             Node::Return(rv) => {
+                self.run_defers_until(self.ctx.node_scopes[id], self.current_fn_scope)?;
+
                 self.exit_current_block();
 
                 if let Some(rv) = rv {
@@ -1016,8 +1031,8 @@ impl<'a> FunctionCompileContext<'a> {
                 let variable = Variable::new(id.0);
                 self.builder.declare_var(variable, types::I8);
 
-                let test_rhs_block = self.create_block(None);
-                let cont_block = self.create_block(None);
+                let test_rhs_block = self.create_block();
+                let cont_block = self.create_block();
 
                 self.compile_id(lhs)?;
                 let lhs_rvalue = self.id_value(lhs);
@@ -1506,8 +1521,22 @@ impl<'a> FunctionCompileContext<'a> {
                 let else_ebb = self.builder.create_block();
                 let merge_ebb = self.builder.create_block();
 
-                self.blocks.push((then_label, Block::Break(merge_ebb)));
-                self.blocks.push((else_label, Block::Break(merge_ebb)));
+                let then_scope = self.block_scope(then_block);
+
+                self.blocks
+                    .push((then_label, Block::Break(merge_ebb), Some(then_scope)));
+                let mut pushed_else_block = false;
+                match else_block {
+                    crate::NodeElse::Block(b) => {
+                        pushed_else_block = true;
+                        self.blocks.push((
+                            else_label,
+                            Block::Break(merge_ebb),
+                            Some(self.block_scope(b)),
+                        ));
+                    }
+                    _ => {}
+                }
 
                 self.builder
                     .ins()
@@ -1541,7 +1570,10 @@ impl<'a> FunctionCompileContext<'a> {
                 self.builder.switch_to_block(merge_ebb);
 
                 self.blocks.pop();
-                self.blocks.pop();
+
+                if pushed_else_block {
+                    self.blocks.pop();
+                }
 
                 self.break_addr = saved_break_addr;
 
@@ -1596,8 +1628,16 @@ impl<'a> FunctionCompileContext<'a> {
                 let merge_ebb = self.builder.create_block();
                 let incr_ebb = self.builder.create_block();
 
-                self.blocks.push((block_label, Block::Continue(incr_ebb)));
-                self.blocks.push((block_label, Block::Break(merge_ebb)));
+                self.blocks.push((
+                    block_label,
+                    Block::Continue(incr_ebb),
+                    Some(self.block_scope(block)),
+                ));
+                self.blocks.push((
+                    block_label,
+                    Block::Break(merge_ebb),
+                    Some(self.block_scope(block)),
+                ));
 
                 self.builder.ins().jump(cond_ebb, &[]);
                 self.switch_to_block(cond_ebb);
@@ -1668,8 +1708,16 @@ impl<'a> FunctionCompileContext<'a> {
                 let while_block = self.builder.create_block();
                 let merge_block = self.builder.create_block();
 
-                self.blocks.push((block_label, Block::Continue(cond_block)));
-                self.blocks.push((block_label, Block::Break(merge_block)));
+                self.blocks.push((
+                    block_label,
+                    Block::Continue(cond_block),
+                    Some(self.block_scope(block)),
+                ));
+                self.blocks.push((
+                    block_label,
+                    Block::Break(merge_block),
+                    Some(self.block_scope(block)),
+                ));
 
                 self.builder.ins().jump(cond_block, &[]);
                 self.switch_to_block(cond_block);
@@ -1681,6 +1729,7 @@ impl<'a> FunctionCompileContext<'a> {
 
                 self.switch_to_block(while_block);
                 self.compile_id(block)?;
+
                 if !self.exited_blocks.contains(&self.current_block) {
                     self.builder.ins().jump(cond_block, &[]);
                 }
@@ -1696,6 +1745,7 @@ impl<'a> FunctionCompileContext<'a> {
                 label,
                 stmts,
                 is_standalone,
+                scope,
                 ..
             } => {
                 if is_standalone {
@@ -1713,9 +1763,14 @@ impl<'a> FunctionCompileContext<'a> {
 
                     let merge_ebb = self.builder.create_block();
 
-                    self.blocks.push((label, Block::Break(merge_ebb)));
+                    self.blocks
+                        .push((label, Block::Break(merge_ebb), Some(scope)));
 
                     self.compile_ids(stmts)?;
+                    if !self.exited_blocks.contains(&self.current_block) {
+                        self.run_defers(scope)?;
+                    }
+
                     if !self.exited_blocks.contains(&self.current_block) {
                         self.builder.ins().jump(merge_ebb, &[]);
                     }
@@ -1726,17 +1781,22 @@ impl<'a> FunctionCompileContext<'a> {
                     self.blocks.pop();
                 } else {
                     self.compile_ids(stmts)?;
+                    if !self.exited_blocks.contains(&self.current_block) {
+                        self.run_defers(scope)?;
+                    }
                 }
 
                 Ok(())
             }
             Node::Break(r, name) => {
+                let (break_block, break_scope) = self.find_break_block(name).unwrap();
+
+                self.run_defers_until(self.ctx.node_scopes[id], break_scope.unwrap())?;
+
                 if let Some(r) = r {
                     self.compile_id(r)?;
                     self.store_copy(r, self.break_addr.unwrap());
                 }
-
-                let break_block = self.find_break_block(name).unwrap();
 
                 self.builder.ins().jump(break_block, &[]);
 
@@ -1745,7 +1805,9 @@ impl<'a> FunctionCompileContext<'a> {
                 Ok(())
             }
             Node::Continue(sym) => {
-                let continue_block = self.find_continue_block(sym).unwrap();
+                let (continue_block, continue_scope) = self.find_continue_block(sym).unwrap();
+
+                self.run_defers_until(self.ctx.node_scopes[id], continue_scope.unwrap())?;
 
                 self.builder.ins().jump(continue_block, &[]);
 
@@ -1992,7 +2054,11 @@ impl<'a> FunctionCompileContext<'a> {
 
                     match tag {
                         MatchCaseTag::CatchAll => {
-                            self.blocks.push((block_label, Block::Break(merge_ebb)));
+                            self.blocks.push((
+                                block_label,
+                                Block::Break(merge_ebb),
+                                Some(self.block_scope(block)),
+                            ));
 
                             self.builder.ins().jump(then_ebb, &[]);
 
@@ -2046,7 +2112,11 @@ impl<'a> FunctionCompileContext<'a> {
                                     .ins()
                                     .icmp_imm(IntCC::Equal, tag_value, param_index);
 
-                            self.blocks.push((block_label, Block::Break(merge_ebb)));
+                            self.blocks.push((
+                                block_label,
+                                Block::Break(merge_ebb),
+                                Some(self.block_scope(block)),
+                            ));
 
                             self.builder
                                 .ins()
@@ -2078,7 +2148,8 @@ impl<'a> FunctionCompileContext<'a> {
             }
             Node::FnDefinition { .. }
             | Node::StructDefinition { .. }
-            | Node::EnumDefinition { .. } => Ok(()), // This should have already been handled by the toplevel context
+            | Node::EnumDefinition { .. }
+            | Node::Defer { .. } => Ok(()), // This should have already been handled by the toplevel context
             _ => todo!("compile_id for {:?}", &self.ctx.nodes[id]),
         }
     }
@@ -2403,21 +2474,21 @@ impl<'a> FunctionCompileContext<'a> {
     }
 
     #[inline]
-    fn create_block(&mut self, name: Option<Sym>) -> Block {
+    fn create_block(&mut self) -> Block {
         let block = self.builder.create_block();
         let block = Block::Block(block);
-        self.blocks.push((name, block));
+        self.blocks.push((None, block, None));
         block
     }
 
-    fn find_break_block(&self, name: Option<Sym>) -> Option<CraneliftBlock> {
+    fn find_break_block(&self, name: Option<Sym>) -> Option<(CraneliftBlock, Option<ScopeId>)> {
         match name {
             Some(name) => {
-                for (bname, b) in self.blocks.iter().rev() {
+                for (bname, b, s) in self.blocks.iter().rev() {
                     if let Block::Break(b) = b {
                         if let Some(bname) = bname {
                             if *bname == name {
-                                return Some(*b);
+                                return Some((*b, *s));
                             }
                         }
                     }
@@ -2426,9 +2497,9 @@ impl<'a> FunctionCompileContext<'a> {
                 return None;
             }
             None => {
-                for (_, b) in self.blocks.iter().rev() {
+                for (_, b, s) in self.blocks.iter().rev() {
                     if let Block::Break(b) = b {
-                        return Some(*b);
+                        return Some((*b, *s));
                     }
                 }
             }
@@ -2437,14 +2508,14 @@ impl<'a> FunctionCompileContext<'a> {
         return None;
     }
 
-    fn find_continue_block(&self, name: Option<Sym>) -> Option<CraneliftBlock> {
+    fn find_continue_block(&self, name: Option<Sym>) -> Option<(CraneliftBlock, Option<ScopeId>)> {
         match name {
             Some(name) => {
-                for (bname, b) in self.blocks.iter().rev() {
+                for (bname, b, s) in self.blocks.iter().rev() {
                     if let Block::Continue(b) = b {
                         if let Some(bname) = bname {
                             if *bname == name {
-                                return Some(*b);
+                                return Some((*b, *s));
                             }
                         }
                     }
@@ -2453,15 +2524,57 @@ impl<'a> FunctionCompileContext<'a> {
                 return None;
             }
             None => {
-                for (_, b) in self.blocks.iter().rev() {
+                for (_, b, s) in self.blocks.iter().rev() {
                     if let Block::Continue(b) = b {
-                        return Some(*b);
+                        return Some((*b, *s));
                     }
                 }
             }
         }
 
         return None;
+    }
+
+    fn run_defers(&mut self, scope: crate::ScopeId) -> EmptyDraftResult {
+        let defers = self.ctx.defers.get(&scope).cloned();
+        if let Some(defers) = defers {
+            for defer in defers {
+                let Node::Defer { block, .. } = self.ctx.nodes[defer].clone() else {
+                    unreachable!()
+                };
+                self.compile_id(block)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn run_defers_until(&mut self, scope: ScopeId, stop_at: ScopeId) -> EmptyDraftResult {
+        self.run_defers(scope)?;
+
+        if scope == stop_at {
+            return Ok(());
+        }
+
+        let mut cur_scope = scope;
+        while let Some(parent_id) = self.ctx.scopes[cur_scope].parent {
+            cur_scope = parent_id;
+            self.run_defers(cur_scope)?;
+
+            if cur_scope == stop_at {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn block_scope(&self, block_id: NodeId) -> ScopeId {
+        let Node::Block { scope, .. } = self.ctx.nodes[block_id] else {
+            unreachable!()
+        };
+
+        scope
     }
 }
 
@@ -2480,6 +2593,7 @@ impl<'a> ToplevelCompileContext<'a> {
                 stmts,
                 params,
                 return_ty,
+                scope,
                 ..
             } => {
                 let name_str = self.ctx.mangled_func_name(name, id);
@@ -2522,6 +2636,7 @@ impl<'a> ToplevelCompileContext<'a> {
                     blocks: Default::default(),
                     current_block: ebb,
                     current_fn_block: ebb,
+                    current_fn_scope: scope,
                 };
 
                 for &stmt in stmts.borrow().iter() {
@@ -2535,6 +2650,7 @@ impl<'a> ToplevelCompileContext<'a> {
                     if return_ty.is_some() {
                         unreachable!("This should have already been a compile error!");
                     } else {
+                        builder_ctx.run_defers(scope)?;
                         builder_ctx.builder.ins().return_(&[]);
                     }
                 }

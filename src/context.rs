@@ -87,6 +87,7 @@ where
 }
 
 pub type SecondaryMap<V> = HashMap<NodeId, V>;
+pub type SecondaryScopeMap<V> = HashMap<ScopeId, V>;
 pub type SecondarySet = HashSet<NodeId>;
 
 pub struct Context {
@@ -122,9 +123,12 @@ pub struct Context {
 
     // stack of continues - pushed when entering parsing a continue-able block, popped when exiting
     pub continues: Vec<Vec<NodeId>>,
-    //
+
     // stack of continue labels - pushed when doing semantic analysis on a continue-able block with a label, popped when exiting
     pub continue_labels: Vec<Option<Sym>>,
+
+    // associates a scope with all defer blocks which need to be executed when the scope is exited
+    pub defers: SecondaryScopeMap<Vec<NodeId>>,
 
     pub scopes: Scopes,
     pub top_scope: ScopeId,
@@ -193,6 +197,7 @@ impl Context {
             break_labels: Default::default(),
             continues: Default::default(),
             continue_labels: Default::default(),
+            defers: Default::default(),
 
             scopes: Scopes::new(vec![Scope::new_top()]),
             top_scope: ScopeId(0),

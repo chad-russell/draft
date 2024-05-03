@@ -8,19 +8,11 @@
     and because the `print_i64` call has return type unassigned, it is automatically infers it (incorrectly) as i64.
 
 # Features
-- [x] implicit function arguments
-    - [ ] test passing from a function param to a function that it calls
-- [-] defer
-    - [ ] can reference a label
-- [x] #type_info / any
-    - [ ] test dedup (i.e. for recursive structs)
 - [ ] modules, imports
-    - [ ] import { A, B::{C, D}, E::* } from "whatever/bar"
-- [ ] c interop
-    - [x] extern functions POC
-    - [x] make sure extern functions works with libs/dylibs when compiling to binary
-    - [ ] pass structs as arguments
-- [ ] type alignment
+    - [ ] `import "foo"` puts a symbol foo int our scope
+    - [ ] `import "foo" as bar` puts a symbol bar into our scope, behind which we can access everything in foo
+    - [ ] `import foo::*` brings all symbols from foo into our scope
+    - [ ] `import "whatever/bar"::{ A, B::{C, D as DD}, E::* }` brings A, C, DD and everything from E int our scope
 - [ ] debugger
 - [ ] top-level/struct-level global constants
     - [ ] numerics / bools
@@ -29,13 +21,18 @@
     - [ ] structs with constant field values
     - [ ] enums
     - [ ] pointers
-- [ ] enum discriminant type should be variable, based on how many members there are
 - [-] pattern matching (on enums only at first, very simple single-depth match)
     - [x] `match`
         - [x] underscore for catch-all case
             - [ ] error for when trying to specify two catch-all cases
-            - [ ] error when specifying a catch-all case but all the other cases are already covered 
+            - [?] error when specifying a catch-all case but all the other cases are already covered 
     - [x] `if let`
+- [ ] c interop
+    - [x] extern functions POC
+    - [x] make sure extern functions works with libs/dylibs when compiling to binary
+    - [ ] pass structs as arguments
+- [ ] type alignment
+- [ ] enum discriminant type should be variable, based on how many members there are
 - [ ] aoc problems
 
 # Experimental Features
@@ -67,10 +64,10 @@
     - [ ] for symbols in scope
     - [ ] for member access
     - [ ] for functions (params)
-- [ ] go to definition
+- [-] go to definition
 - [ ] hover
 - [ ] go to type definition
 - [ ] run button over main
 - [ ] generate missing function
 - [ ] import suggestions
-- [ ] syntax highlighter
+- [-] syntax highlighter

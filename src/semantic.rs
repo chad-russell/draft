@@ -1747,6 +1747,9 @@ impl Context {
                     }
                     | Node::EnumDefinition {
                         scope: scope_id, ..
+                    }
+                    | Node::FnDefinition {
+                        scope: scope_id, ..
                     }) = self.nodes[copied]
                     else {
                         panic!(
@@ -3010,6 +3013,7 @@ impl Context {
                 stmts: _,
                 breaks: _,
                 is_standalone: _,
+                scope: _,
             } => todo!(),
             Node::Extern {
                 name: _,

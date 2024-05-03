@@ -99,6 +99,7 @@ pub enum Node {
         stmts: IdVec,
         breaks: IdVec,
         is_standalone: bool,
+        scope: ScopeId,
     },
     Extern {
         name: NodeId,

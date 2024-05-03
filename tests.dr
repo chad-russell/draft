@@ -121,6 +121,11 @@ fn print_type_with_indent(t: TypeInfo, \indent: i64) {
         }
         print_string("}\n");
     }
+    else if let Pointer(p) = t {
+        print_indent(indent);
+        print_string("*");
+        print_type(*p);
+    }
     else {
         print_indent(indent);
         print_string("unknown\n");
@@ -699,6 +704,42 @@ fn test_null() {
 }
 
 fn main() i64 {
+    struct TYI {
+        x: i64,
+        y: i64,
+        z: *TYI,
+        // z: *i64,
+    }
+
+    let tyi = TYI;
+    tyi.x = 1;
+    tyi.y = 2;
+    tyi.z = &tyi;
+    // tyi.z = &3;
+    
+    let m = #type_info(tyi);
+    print_type(m);
+
+    return 0;
+}
+
+fn test_defer() i64 {
+    a: i64 = 3;
+
+    if true {
+        defer {
+            a = 8;
+        }
+
+        assert_equal(a, 3);
+    }
+
+    assert_equal(a, 8);
+
+    return 0;
+}
+
+fn main_backup() i64 {
     {
         let te1 = 3i64;
         let te2 = 3;
@@ -838,9 +879,8 @@ fn main() i64 {
     test_empty_return();
 
     test_null();
-    
-    let t: i64 = 3;
-    assert_equal(t, 4);
+
+    test_defer();
 
     return 0;
 }

@@ -1894,6 +1894,8 @@ impl<'a, W: Source> Parser<'a, W> {
 
         let pushed_scope = self.ctx.push_scope();
 
+        let block_scope = self.ctx.top_scope;
+
         self.ctx.breaks.push(Vec::new());
 
         let mut stmts = Vec::new();
@@ -1917,6 +1919,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 stmts,
                 breaks,
                 is_standalone,
+                scope: block_scope,
             },
         );
 
@@ -2052,10 +2055,18 @@ impl<'a, W: Source> Parser<'a, W> {
 
         let block = self.parse_block(false)?;
 
-        Ok(self.ctx.push_node(
+        let id = self.ctx.push_node(
             Range::new(start, self.ctx.ranges[block].end, self.source_info.path),
             Node::Defer { block, block_label },
-        ))
+        );
+
+        self.ctx
+            .defers
+            .entry(self.ctx.top_scope)
+            .or_default()
+            .push(id);
+
+        Ok(id)
     }
 
     pub fn parse_match(&mut self) -> DraftResult<NodeId> {
