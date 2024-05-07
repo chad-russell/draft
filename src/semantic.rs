@@ -41,6 +41,7 @@ pub enum Type {
     EnumNoneType, // Type given to enum members with no storage. We need a distinct type to differentiate it from being unassigned
     Pointer(NodeId),
     Array(NodeId, ArrayLen),
+    Module(NodeId),
 }
 
 impl Type {
@@ -1350,9 +1351,36 @@ impl Context {
                         self.deferreds.push(id);
                         return false;
                     }
+                    Type::Module(module_id) => {
+                        let Node::Module { decls, .. } = self.nodes[module_id].clone() else {
+                            unreachable!()
+                        };
+
+                        let member_name_sym = self.get_symbol(member);
+                        for decl in decls.borrow().iter() {
+                            if let Node::FnDefinition {
+                                name: Some(name), ..
+                            }
+                            | Node::StructDefinition { name, .. }
+                            | Node::EnumDefinition { name, .. } = self.nodes[*decl].clone()
+                            {
+                                if self.nodes[name].as_symbol().unwrap() == member_name_sym {
+                                    self.match_types(id, *decl);
+
+                                    self.nodes[id] = Node::StaticMemberAccess {
+                                        value,
+                                        member,
+                                        resolved: Some(StaticMemberResolution::Node(*decl)),
+                                    };
+
+                                    return false;
+                                }
+                            }
+                        }
+                    }
                     _ => {
                         self.errors.push(CompileError::Node(
-                            format!("Static member access on a non-enum (type {:?})", value_ty),
+                            format!("Static member access on an invalid type ({:?})", value_ty),
                             id,
                         ));
                     }
@@ -1497,13 +1525,22 @@ impl Context {
             Node::Match { value, cases } => {
                 self.assign_type(value);
 
+                let mut num_catch_all_cases = 0;
+
                 for c in cases.borrow().iter() {
                     let Node::MatchCase {
-                        block, block_label, ..
+                        block,
+                        block_label,
+                        tag,
+                        ..
                     } = self.nodes[*c].clone()
                     else {
                         unreachable!()
                     };
+
+                    if let MatchCaseTag::CatchAll = tag {
+                        num_catch_all_cases += 1;
+                    }
 
                     self.push_break(block_label);
 
@@ -1513,6 +1550,13 @@ impl Context {
                     self.returns.last_mut().unwrap().clear();
 
                     self.match_types(id, block);
+                }
+
+                if num_catch_all_cases > 1 {
+                    self.errors.push(CompileError::Node(
+                        "Cannot have more than one catch all case in a match".to_string(),
+                        id,
+                    ));
                 }
 
                 if let Type::Infer(_) = self.get_type(value) {
@@ -2131,6 +2175,12 @@ impl Context {
                     return false;
                 }
             }
+            Node::Module { decls, .. } => {
+                for &decl in decls.clone().borrow().iter() {
+                    self.assign_type(decl);
+                }
+                self.types.insert(id, Type::Module(id));
+            }
         }
 
         return true;
@@ -2608,7 +2658,8 @@ impl Context {
             | Type::Bool
             | Type::String
             | Type::EnumNoneType
-            | Type::Infer(_) => {}
+            | Type::Infer(_)
+            | Type::Module(_) => {}
         }
     }
 
@@ -3117,6 +3168,11 @@ impl Context {
                 value: _,
                 ty: _,
                 style: _,
+            } => todo!(),
+            Node::Module {
+                name: _,
+                decls: _,
+                scope: _,
             } => todo!(),
         }
     }

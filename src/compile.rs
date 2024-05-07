@@ -1944,19 +1944,25 @@ impl<'a> FunctionCompileContext<'a> {
 
                 Ok(())
             }
-            Node::StaticMemberAccess { value, .. } => {
-                let mut value_ty = self.ctx.get_type(value);
-                while let Type::Pointer(inner) = value_ty {
-                    value_ty = self.ctx.get_type(inner);
+            Node::StaticMemberAccess {
+                value, resolved, ..
+            } => {
+                if let Some(StaticMemberResolution::Node(resolved)) = resolved {
+                    self.ctx.values.insert(id, self.ctx.values[&resolved]);
+                } else {
+                    let mut value_ty = self.ctx.get_type(value);
+                    while let Type::Pointer(inner) = value_ty {
+                        value_ty = self.ctx.get_type(inner);
+                    }
+
+                    let Type::Array(_, ArrayLen::Some(len)) = value_ty else {
+                        unreachable!("{:?}", value_ty)
+                    };
+
+                    let value = self.builder.ins().iconst(types::I64, len as i64);
+
+                    self.ctx.values.insert(id, Value::Register(value));
                 }
-
-                let Type::Array(_, ArrayLen::Some(len)) = value_ty else {
-                    unreachable!("{:?}", value_ty)
-                };
-
-                let value = self.builder.ins().iconst(types::I64, len as i64);
-
-                self.ctx.values.insert(id, Value::Register(value));
 
                 Ok(())
             }
@@ -2791,7 +2797,10 @@ impl<'a> ToplevelCompileContext<'a> {
 
                         Ok(())
                     }
-                    _ => todo!(),
+                    StaticMemberResolution::Node(res_id) => {
+                        self.compile_toplevel_id(res_id)?;
+                        Ok(())
+                    }
                 }
             }
             _ => todo!(),

@@ -184,6 +184,7 @@ pub enum Token {
     Hash,
     TypeInfo,
     Defer,
+    Module,
     Eof,
 }
 
@@ -401,6 +402,9 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
         if self.source_info.prefix_keyword("defer", Token::Defer) {
+            return;
+        }
+        if self.source_info.prefix_keyword("module", Token::Module) {
             return;
         }
         if self.source_info.prefix_keyword("in", Token::In) {
@@ -757,6 +761,7 @@ impl<'a, W: Source> Parser<'a, W> {
             Token::Extern => self.parse_extern(),
             Token::Struct => self.parse_struct_declaration(),
             Token::Enum => self.parse_enum_definition(),
+            Token::Module => self.parse_module(),
             _ => {
                 let msg = format!(
                     "expected 'fn', 'extern', 'struct', or 'enum', found '{:?}'",
@@ -1206,6 +1211,44 @@ impl<'a, W: Source> Parser<'a, W> {
                 name,
                 params,
                 return_ty,
+            },
+        );
+
+        self.ctx.scope_insert(name_sym, id);
+
+        Ok(id)
+    }
+
+    pub fn parse_module(&mut self) -> DraftResult<NodeId> {
+        let start = self.source_info.top.range.start;
+
+        self.pop(); // `module`
+
+        let name = self.parse_symbol()?;
+        let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
+
+        let pushed_scope = self.ctx.push_scope();
+        let module_scope = self.ctx.top_scope;
+
+        self.expect(Token::LCurly)?;
+
+        let mut decls = Vec::new();
+        while self.source_info.top.tok != Token::RCurly {
+            let tl = self.parse_top_level()?;
+            decls.push(tl);
+        }
+        let decls = self.ctx.push_id_vec(decls);
+
+        let range = self.expect_range(start, Token::RCurly)?;
+
+        self.ctx.pop_scope(pushed_scope);
+
+        let id = self.ctx.push_node(
+            range,
+            Node::Module {
+                name: name_sym,
+                scope: module_scope,
+                decls,
             },
         );
 

@@ -220,6 +220,11 @@ pub enum Node {
         ty: NodeId,
         style: AsCastStyle,
     },
+    Module {
+        name: Sym,
+        decls: IdVec,
+        scope: ScopeId,
+    },
 }
 
 impl Node {
@@ -276,6 +281,7 @@ impl Node {
             Node::TypeInfo(_) => "TypeInfo".to_string(),
             Node::AsCast { .. } => "AsCast".to_string(),
             Node::Defer { .. } => "Defer".to_string(),
+            Node::Module { .. } => "Module".to_string(),
         }
     }
 }

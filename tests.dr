@@ -703,43 +703,28 @@ fn test_null() {
     assert_equal(n, null());
 }
 
-fn main() i64 {
-    struct TYI {
-        x: i64,
-        y: i64,
-        z: *TYI,
-        // z: *i64,
-    }
-
-    let tyi = TYI;
-    tyi.x = 1;
-    tyi.y = 2;
-    tyi.z = &tyi;
-    // tyi.z = &3;
-    
-    let m = #type_info(tyi);
-    print_type(m);
-
-    return 0;
-}
-
 fn test_defer() i64 {
-    a: i64 = 3;
+    let i: i64 = 0;
+    let a = i;
 
-    if true {
+    while i < 10 {
         defer {
-            a = 8;
+            i = i + 1;
         }
 
-        assert_equal(a, 3);
+        defer {
+            a = i;
+        }
+
+        assert_equal(a, i);
     }
 
-    assert_equal(a, 8);
+    assert_equal(a, 10);
 
     return 0;
 }
 
-fn main_backup() i64 {
+fn main() i64 {
     {
         let te1 = 3i64;
         let te2 = 3;

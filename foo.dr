@@ -1,14 +1,22 @@
-// extern print_i64(n: i64);
-// extern print_str(ch: *u8, len: i64);
-// extern putchar(ch: u8);
+extern print_i64(n: i64);
+extern put_char(ch: u8);
 
-// fn print_string(s: string) {
-    // let i = 0;
-    // while i < s.len {
-        // putchar(s[i]);
-        // i = i + 1;
-    // }
-// }
+fn print_string(s: string) {
+    let i = 0;
+    while i < s.len {
+        put_char(s[i]);
+        i = i + 1;
+    }
+}
+
+module foo {
+    fn bar() i64 {
+        return 8;
+    }
+}
 
 fn main() {
+    "The answer is: " |> print_string;
+    foo::bar() |> print_i64;
+    "!\n" |> print_string;
 }

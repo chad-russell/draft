@@ -11,8 +11,10 @@
 - [ ] modules, imports
     - [ ] `import "foo"` puts a symbol foo int our scope
     - [ ] `import "foo" as bar` puts a symbol bar into our scope, behind which we can access everything in foo
-    - [ ] `import foo::*` brings all symbols from foo into our scope
+    - [ ] `import "foo"::*` brings all symbols from foo into our scope
     - [ ] `import "whatever/bar"::{ A, B::{C, D as DD}, E::* }` brings A, C, DD and everything from E int our scope
+    - [ ] `import foo` assumes foo is a module, not a file-as-a-module
+    - [ ] `import "https://github.com/sammy/random"` will download from the web
 - [ ] debugger
 - [ ] top-level/struct-level global constants
     - [ ] numerics / bools
@@ -21,12 +23,6 @@
     - [ ] structs with constant field values
     - [ ] enums
     - [ ] pointers
-- [-] pattern matching (on enums only at first, very simple single-depth match)
-    - [x] `match`
-        - [x] underscore for catch-all case
-            - [ ] error for when trying to specify two catch-all cases
-            - [?] error when specifying a catch-all case but all the other cases are already covered 
-    - [x] `if let`
 - [ ] c interop
     - [x] extern functions POC
     - [x] make sure extern functions works with libs/dylibs when compiling to binary
