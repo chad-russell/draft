@@ -4,7 +4,7 @@ use string_interner::symbol::SymbolU32;
 
 use crate::{
     ArrayLen, AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, IfCond,
-    MatchCaseTag, Node, NodeElse, NodeId, Source, SourceInfo, StaticStrSource, Type,
+    ImportTarget, MatchCaseTag, Node, NodeElse, NodeId, Source, SourceInfo, StaticStrSource, Type,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
@@ -185,6 +185,7 @@ pub enum Token {
     TypeInfo,
     Defer,
     Module,
+    Import,
     Eof,
 }
 
@@ -405,6 +406,9 @@ impl<'a, W: Source> Parser<'a, W> {
             return;
         }
         if self.source_info.prefix_keyword("module", Token::Module) {
+            return;
+        }
+        if self.source_info.prefix_keyword("import", Token::Import) {
             return;
         }
         if self.source_info.prefix_keyword("in", Token::In) {
@@ -762,6 +766,7 @@ impl<'a, W: Source> Parser<'a, W> {
             Token::Struct => self.parse_struct_declaration(),
             Token::Enum => self.parse_enum_definition(),
             Token::Module => self.parse_module(),
+            Token::Import => self.parse_import(),
             _ => {
                 let msg = format!(
                     "expected 'fn', 'extern', 'struct', or 'enum', found '{:?}'",
@@ -1253,6 +1258,35 @@ impl<'a, W: Source> Parser<'a, W> {
         );
 
         self.ctx.scope_insert(name_sym, id);
+
+        Ok(id)
+    }
+
+    pub fn parse_import(&mut self) -> DraftResult<NodeId> {
+        let start = self.source_info.top.range.start;
+
+        self.pop(); // `import`
+
+        let target_id = self.parse_symbol()?;
+        let mut target = ImportTarget::Id(target_id);
+
+        if self.source_info.top.tok == Token::DoubleColon {
+            self.pop(); // `::`
+            let name = self.parse_symbol()?;
+            let static_member_access = self.ctx.push_node(
+                self.make_range_spanning(target_id, name),
+                Node::StaticMemberAccess {
+                    value: target_id,
+                    member: name,
+                    resolved: None,
+                },
+            );
+            target = ImportTarget::Id(static_member_access);
+        }
+
+        let range = self.expect_range(start, Token::Semicolon)?;
+
+        let id = self.ctx.push_node(range, Node::Import { target });
 
         Ok(id)
     }

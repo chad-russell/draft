@@ -16,17 +16,12 @@ impl Scope {
     pub fn new(parent: ScopeId) -> Self {
         Self {
             parent: Some(parent),
-            entries: Default::default(),
-            implicit_entries: Default::default(),
+            ..Default::default()
         }
     }
 
     pub fn new_top() -> Self {
-        Self {
-            parent: None,
-            entries: Default::default(),
-            implicit_entries: Default::default(),
-        }
+        Self::default()
     }
 }
 

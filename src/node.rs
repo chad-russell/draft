@@ -51,6 +51,21 @@ pub enum MatchCaseTag {
     CatchAll,
 }
 
+#[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq)]
+pub enum ImportTarget {
+    All,
+    File(Sym),
+    Id(NodeId),
+    Rename {
+        target: Box<ImportTarget>,
+        alias: Sym,
+    },
+    List {
+        base: Box<ImportTarget>,
+        targets: Vec<ImportTarget>,
+    },
+}
+
 pub type IdVec = Rc<RefCell<Vec<NodeId>>>;
 
 #[derive(Debug, Clone)]
@@ -225,6 +240,9 @@ pub enum Node {
         decls: IdVec,
         scope: ScopeId,
     },
+    Import {
+        target: ImportTarget,
+    },
 }
 
 impl Node {
@@ -282,6 +300,7 @@ impl Node {
             Node::AsCast { .. } => "AsCast".to_string(),
             Node::Defer { .. } => "Defer".to_string(),
             Node::Module { .. } => "Module".to_string(),
+            Node::Import { .. } => "Import".to_string(),
         }
     }
 }
