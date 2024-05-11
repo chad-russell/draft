@@ -554,12 +554,17 @@ impl Context {
             let sym = self.nodes[n].as_symbol().unwrap();
             if self.polymorph_copies.contains(&anonymous_id) {
                 format!(
-                    "{}_polycopy{}",
+                    "{}_polycopy{}_{}",
                     self.string_interner.resolve(sym.0).unwrap(),
-                    anonymous_id.0
+                    self.ranges[n].source_path,
+                    anonymous_id.0,
                 )
             } else {
-                self.string_interner.resolve(sym.0).unwrap().to_string()
+                format!(
+                    "{}_{}",
+                    self.string_interner.resolve(sym.0).unwrap().to_string(),
+                    self.ranges[n].source_path
+                )
             }
         })
         .unwrap_or_else(|| format!("anonymous__{}", anonymous_id.0))

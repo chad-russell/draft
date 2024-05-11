@@ -8,13 +8,14 @@
     and because the `print_i64` call has return type unassigned, it is automatically infers it (incorrectly) as i64.
 
 # Features
-- [ ] modules, imports
-    - [ ] `import "foo"` puts a symbol foo int our scope
-    - [ ] `import "foo" as bar` puts a symbol bar into our scope, behind which we can access everything in foo
-    - [ ] `import "foo"::*` brings all symbols from foo into our scope
-    - [ ] `import "whatever/bar"::{ A, B::{C, D as DD}, E::* }` brings A, C, DD and everything from E int our scope
-    - [ ] `import foo` assumes foo is a module, not a file-as-a-module
-    - [ ] `import "https://github.com/sammy/random"` will download from the web
+- [-] modules, imports
+    - [x] import bare module
+    - [x] import with double colon
+    - [x] import with curly braces
+    - [ ] import file modules
+    - [x] import aliases
+    - [ ] import *
+    - [ ] import url
 - [ ] debugger
 - [ ] top-level/struct-level global constants
     - [ ] numerics / bools
@@ -23,6 +24,7 @@
     - [ ] structs with constant field values
     - [ ] enums
     - [ ] pointers
+    - [ ] use these constants in polymorphs (?)
 - [ ] c interop
     - [x] extern functions POC
     - [x] make sure extern functions works with libs/dylibs when compiling to binary
@@ -30,6 +32,7 @@
 - [ ] type alignment
 - [ ] enum discriminant type should be variable, based on how many members there are
 - [ ] aoc problems
+- [ ] figure out what stance to take on variable shadowing
 
 # Experimental Features
 - [ ] string interpolation

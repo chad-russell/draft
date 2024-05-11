@@ -1,9 +1,9 @@
 use std::{cell::RefCell, rc::Rc};
 
 use crate::{
-    AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, IfCond, ImportTarget,
-    MatchCaseTag, Node, NodeElse, NodeId, NumericSpecification, Op, ParseTarget, ScopeId,
-    StaticMemberResolution, Sym,
+    AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, IfCond, MatchCaseTag,
+    Node, NodeElse, NodeId, NumericSpecification, Op, ParseTarget, ScopeId, StaticMemberResolution,
+    Sym,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -915,6 +915,9 @@ impl Context {
             Node::StringLiteral(_) => {
                 self.assign_type_string_literal(id);
             }
+            Node::ImportPath { path, resolved } => {
+                return self.assign_type_import_path(id, path, resolved);
+            }
             Node::Symbol(sym) => {
                 return self.assign_type_symbol(sym, id);
             }
@@ -1300,11 +1303,6 @@ impl Context {
                 }
             }
             Node::StaticMemberAccess { value, member, .. } => {
-                println!(
-                    "Assigning static member access for value={:?}, member={:?}",
-                    self.nodes[value].ty(),
-                    self.nodes[member].ty()
-                );
                 self.assign_type(value);
 
                 // If this is a polymorph, copy it first
@@ -1362,33 +1360,13 @@ impl Context {
                         };
 
                         let member_name_sym = self.get_symbol(member);
-                        // for decl in decls.borrow().iter() {
-                        //     if let Node::FnDefinition {
-                        //         name: Some(name), ..
-                        //     }
-                        //     | Node::StructDefinition { name, .. }
-                        //     | Node::EnumDefinition { name, .. } = self.nodes[*decl].clone()
-                        //     {
-                        //         if self.nodes[name].as_symbol().unwrap() == member_name_sym {
-                        //             self.match_types(id, *decl);
-
-                        //             self.nodes[id] = Node::StaticMemberAccess {
-                        //                 value,
-                        //                 member,
-                        //                 resolved: Some(StaticMemberResolution::Node(*decl)),
-                        //             };
-
-                        //             return false;
-                        //         }
-                        //     }
-                        // }
-                        for (sym, value) in self.scopes[scope].entries.clone() {
-                            if sym == member_name_sym {
-                                self.match_types(id, self.scopes[scope].entries[&sym]);
+                        for (entry_sym, entry_value) in self.scopes[scope].entries.clone() {
+                            if entry_sym == member_name_sym {
+                                self.match_types(id, entry_value);
                                 self.nodes[id] = Node::StaticMemberAccess {
                                     value,
                                     member,
-                                    resolved: Some(StaticMemberResolution::Node(value)),
+                                    resolved: Some(StaticMemberResolution::Node(entry_value)),
                                 };
 
                                 return false;
@@ -2198,35 +2176,18 @@ impl Context {
                 }
                 self.types.insert(id, Type::Module(id));
             }
-            Node::Import { target } => {
-                match target {
-                    ImportTarget::All => todo!(),
-                    ImportTarget::File(_) => todo!(),
-                    ImportTarget::Id(import_id) => {
-                        let sym = self.get_import_member_sym(import_id);
-                        self.scope_insert_into_scope_id(sym, import_id, self.node_scopes[id]);
-                    }
-                    ImportTarget::Rename {
-                        target: _,
-                        alias: _,
-                    } => todo!(),
-                    ImportTarget::List {
-                        base: _,
-                        targets: _,
-                    } => todo!(),
-                };
+            Node::Import { targets } => {
+                for target in targets.borrow().iter() {
+                    self.assign_type(*target);
+                }
             }
+            Node::ImportAlias { target, alias } => {
+                self.assign_type(target);
+            }
+            Node::ImportAll => {}
         }
 
         return true;
-    }
-
-    fn get_import_member_sym(&self, id: NodeId) -> Sym {
-        match &self.nodes[id] {
-            Node::Symbol(sym) => *sym,
-            Node::StaticMemberAccess { member, .. } => self.get_import_member_sym(*member),
-            _ => todo!(),
-        }
     }
 
     fn push_break(&mut self, label: Option<Sym>) {
@@ -2591,6 +2552,26 @@ impl Context {
 
     fn assign_type_string_literal(&mut self, id: NodeId) {
         self.types.insert(id, Type::String);
+    }
+
+    fn assign_type_import_path(&mut self, id: NodeId, path: Sym, resolved: Option<NodeId>) -> bool {
+        if let Some(resolved) = resolved {
+            self.assign_type(resolved);
+            self.types.insert(id, Type::Module(resolved));
+            return true;
+        } else {
+            self.defer_on(
+                &[id],
+                CompileError::Node(
+                    format!(
+                        "Module not found: {}",
+                        self.string_interner.resolve(path.0).unwrap()
+                    ),
+                    id,
+                ),
+            );
+            return false;
+        }
     }
 
     fn assign_type_bool(&mut self, id: NodeId) {
@@ -3055,6 +3036,7 @@ impl Context {
             Node::IntLiteral(_, _) => todo!(),
             Node::FloatLiteral(_, _) => todo!(),
             Node::StringLiteral(_) => id,
+            Node::ImportPath { .. } => todo!(),
             Node::BoolLiteral(_) => todo!(),
             Node::Type(_) => todo!(),
             Node::TypeExpr(_) => todo!(),
@@ -3217,7 +3199,12 @@ impl Context {
                 decls: _,
                 scope: _,
             } => todo!(),
-            Node::Import { target: _ } => todo!(),
+            Node::Import { targets: _ } => todo!(),
+            Node::ImportAlias {
+                target: _,
+                alias: _,
+            } => todo!(),
+            Node::ImportAll => todo!(),
         }
     }
 

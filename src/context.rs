@@ -137,6 +137,7 @@ pub struct Context {
 
     pub top_level: Vec<NodeId>,
     pub funcs: Vec<NodeId>,
+    pub imports: Vec<NodeId>,
 
     pub types: SecondaryMap<Type>,
     pub type_matches: Vec<TypeMatch>,
@@ -206,6 +207,7 @@ impl Context {
 
             top_level: Default::default(),
             funcs: Default::default(),
+            imports: Default::default(),
 
             types: Default::default(),
             type_matches: Default::default(),
@@ -261,6 +263,7 @@ impl Context {
 
         self.top_level.clear();
         self.funcs.clear();
+        self.imports.clear();
 
         self.types.clear();
         self.type_matches.clear();

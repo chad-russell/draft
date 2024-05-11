@@ -4,7 +4,7 @@ use string_interner::symbol::SymbolU32;
 
 use crate::{
     ArrayLen, AsCastStyle, CompileError, Context, DraftResult, EmptyDraftResult, IdVec, IfCond,
-    ImportTarget, MatchCaseTag, Node, NodeElse, NodeId, Source, SourceInfo, StaticStrSource, Type,
+    MatchCaseTag, Node, NodeElse, NodeId, Source, SourceInfo, StaticStrSource, Type,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
@@ -1267,28 +1267,171 @@ impl<'a, W: Source> Parser<'a, W> {
 
         self.pop(); // `import`
 
-        let target_id = self.parse_symbol()?;
-        let mut target = ImportTarget::Id(target_id);
+        let name;
 
-        if self.source_info.top.tok == Token::DoubleColon {
-            self.pop(); // `::`
-            let name = self.parse_symbol()?;
-            let static_member_access = self.ctx.push_node(
-                self.make_range_spanning(target_id, name),
-                Node::StaticMemberAccess {
-                    value: target_id,
-                    member: name,
+        if let Token::Symbol(sym) = self.source_info.top.tok {
+            self.pop(); // symbol
+            name = self
+                .ctx
+                .push_node(self.source_info.top.range, Node::Symbol(sym));
+        } else if let Token::StringLiteral(sym) = self.source_info.top.tok {
+            self.pop(); // string literal
+            name = self.ctx.push_node(
+                self.source_info.top.range,
+                Node::ImportPath {
+                    path: sym,
                     resolved: None,
                 },
             );
-            target = ImportTarget::Id(static_member_access);
+        } else {
+            return Err(CompileError::Generic(
+                "Expected symbol or string literal".to_string(),
+                self.source_info.top.range,
+            ));
         }
+
+        let mut targets = Vec::new();
+
+        self.add_import_targets(&mut targets, name)?;
 
         let range = self.expect_range(start, Token::Semicolon)?;
 
-        let id = self.ctx.push_node(range, Node::Import { target });
+        let targets = Rc::new(RefCell::new(targets));
+
+        let id = self.ctx.push_node(range, Node::Import { targets });
+
+        self.ctx.imports.push(id);
 
         Ok(id)
+    }
+
+    pub fn add_import_targets(
+        &mut self,
+        targets: &mut Vec<NodeId>,
+        target: NodeId,
+    ) -> DraftResult<()> {
+        if self.source_info.top.tok == Token::DoubleColon {
+            if self.source_info.second.tok == Token::LCurly {
+                self.pop(); // `::`
+                self.pop(); // `{`
+
+                while self.source_info.top.tok != Token::RCurly {
+                    let name = self.parse_symbol()?;
+
+                    let static_member_access = match self.ctx.nodes[target] {
+                        Node::ImportAlias {
+                            target: target_id,
+                            alias,
+                        } => self.ctx.push_node(
+                            self.make_range_spanning(target_id, alias),
+                            Node::StaticMemberAccess {
+                                value: target_id,
+                                member: name,
+                                resolved: None,
+                            },
+                        ),
+                        Node::Symbol(_) => self.ctx.push_node(
+                            self.make_range_spanning(target, name),
+                            Node::StaticMemberAccess {
+                                value: target,
+                                member: name,
+                                resolved: None,
+                            },
+                        ),
+                        _ => todo!(),
+                    };
+
+                    let mut alias = None;
+                    if self.source_info.top.tok == Token::As {
+                        self.pop(); // `as`
+                        alias = Some(self.parse_symbol()?);
+                    }
+
+                    if let Some(alias) = alias {
+                        targets.push(self.ctx.push_node(
+                            self.make_range_spanning(static_member_access, alias),
+                            Node::ImportAlias {
+                                target: static_member_access,
+                                alias,
+                            },
+                        ));
+                    } else {
+                        targets.push(static_member_access);
+
+                        let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
+                        self.ctx.scope_insert(name_sym, static_member_access);
+                    }
+
+                    if self.source_info.top.tok == Token::Comma {
+                        self.pop(); // `,`
+                    } else {
+                        break;
+                    }
+                }
+
+                self.expect(Token::RCurly)?;
+            } else {
+                if let Node::ImportAlias { .. } = self.ctx.nodes[target] {
+                    return Err(CompileError::Generic(
+                        "LHS of a static member access cannot be an alias".to_string(),
+                        self.source_info.top.range,
+                    ));
+                };
+
+                self.pop(); // `::`
+                let name = self.parse_symbol()?;
+                let static_member_access = self.ctx.push_node(
+                    self.make_range_spanning(target, name),
+                    Node::StaticMemberAccess {
+                        value: target,
+                        member: name,
+                        resolved: None,
+                    },
+                );
+
+                if self.source_info.top.tok == Token::DoubleColon {
+                    self.add_import_targets(targets, static_member_access)?;
+                } else {
+                    if self.source_info.top.tok == Token::As {
+                        self.pop(); // `as`
+                        let alias = self.parse_symbol()?;
+
+                        targets.push(self.ctx.push_node(
+                            self.make_range_spanning(static_member_access, alias),
+                            Node::ImportAlias {
+                                target: static_member_access,
+                                alias,
+                            },
+                        ));
+
+                        let name_sym = self.ctx.nodes[alias].as_symbol().unwrap();
+                        self.ctx.scope_insert(name_sym, static_member_access);
+                    } else {
+                        targets.push(static_member_access);
+
+                        let name_sym = self.ctx.nodes[name].as_symbol().unwrap();
+                        self.ctx.scope_insert(name_sym, static_member_access);
+                    }
+                }
+            }
+        } else {
+            if self.source_info.top.tok == Token::As {
+                self.pop(); // `as`
+                let alias = self.parse_symbol()?;
+
+                targets.push(self.ctx.push_node(
+                    self.make_range_spanning(target, alias),
+                    Node::ImportAlias { target, alias },
+                ));
+
+                let name_sym = self.ctx.nodes[alias].as_symbol().unwrap();
+                self.ctx.scope_insert(name_sym, target);
+            } else {
+                targets.push(target);
+            }
+        }
+
+        Ok(())
     }
 
     pub fn parse_expression(&mut self, struct_literals_allowed: bool) -> DraftResult<NodeId> {
@@ -2682,8 +2825,44 @@ impl Context {
     pub fn parse_file(&mut self, file_name: &str) -> EmptyDraftResult {
         let mut source = self.make_source_info_from_file(file_name);
         let mut parser = Parser::from_source(self, &mut source);
-
         parser.parse()
+    }
+
+    pub fn parse_file_as_module(&mut self, file_name: &str) -> DraftResult<NodeId> {
+        let name_sym = self.string_interner.get_or_intern(file_name);
+
+        let mut source = self.make_source_info_from_file(file_name);
+        let mut parser = Parser::from_source(self, &mut source);
+
+        let pushed_scope = parser.ctx.push_scope();
+        let module_scope = parser.ctx.top_scope;
+        parser.ctx.scopes[module_scope].parent = None;
+
+        parser.pop();
+        parser.pop();
+
+        let mut decls = Vec::new();
+        while parser.source_info.top.tok != Token::Eof {
+            let tl = parser.parse_top_level()?;
+            decls.push(tl);
+        }
+        let range = parser.make_range_spanning(*decls.first().unwrap(), *decls.last().unwrap());
+        let decls = parser.ctx.push_id_vec(decls);
+
+        parser.ctx.pop_scope(pushed_scope);
+
+        let id = parser.ctx.push_node(
+            range,
+            Node::Module {
+                name: Sym(name_sym),
+                decls,
+                scope: module_scope,
+            },
+        );
+
+        self.top_level.push(id);
+
+        Ok(id)
     }
 
     pub fn ropey_parse_file(&mut self, file_name: &str) -> EmptyDraftResult {

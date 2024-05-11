@@ -1,15 +1,15 @@
 extern print_i64(n: i64);
 
-module foo {
-    module bar {
-        fn baz() i64 {
-            return 8;
-        }
+module bar {
+    fn baz() i64 {
+        return 66;
     }
 }
 
-import foo::bar;
+import "bar"::baz;
+import bar::baz as local_baz;
 
 fn main() {
-    bar::baz() |> print_i64;
+    baz() |> print_i64;
+    local_baz() |> print_i64;
 }

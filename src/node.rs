@@ -51,21 +51,6 @@ pub enum MatchCaseTag {
     CatchAll,
 }
 
-#[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq)]
-pub enum ImportTarget {
-    All,
-    File(Sym),
-    Id(NodeId),
-    Rename {
-        target: Box<ImportTarget>,
-        alias: Sym,
-    },
-    List {
-        base: Box<ImportTarget>,
-        targets: Vec<ImportTarget>,
-    },
-}
-
 pub type IdVec = Rc<RefCell<Vec<NodeId>>>;
 
 #[derive(Debug, Clone)]
@@ -241,7 +226,16 @@ pub enum Node {
         scope: ScopeId,
     },
     Import {
-        target: ImportTarget,
+        targets: IdVec,
+    },
+    ImportAll,
+    ImportAlias {
+        target: NodeId,
+        alias: NodeId, // Symbol
+    },
+    ImportPath {
+        path: Sym,
+        resolved: Option<NodeId>, // Module
     },
 }
 
@@ -262,6 +256,7 @@ impl Node {
             Node::FloatLiteral(_, _) => "FloatLiteral".to_string(),
             Node::BoolLiteral(_) => "BoolLiteral".to_string(),
             Node::StringLiteral(_) => "StringLiteral".to_string(),
+            Node::ImportPath { .. } => "ImportPath".to_string(),
             Node::Type(_) => "Type".to_string(),
             Node::TypeExpr(_) => "TypeExpr".to_string(),
             Node::Return(_) => "Return".to_string(),
@@ -301,6 +296,8 @@ impl Node {
             Node::Defer { .. } => "Defer".to_string(),
             Node::Module { .. } => "Module".to_string(),
             Node::Import { .. } => "Import".to_string(),
+            Node::ImportAll => "ImportAll".to_string(),
+            Node::ImportAlias { .. } => "ImportAlias".to_string(),
         }
     }
 }
