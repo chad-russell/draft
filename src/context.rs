@@ -95,6 +95,7 @@ pub struct Context {
 
     pub string_interner: StringInterner,
     pub file_sources: HashMap<PathBuf, &'static str>,
+    pub file_modules: HashMap<PathBuf, NodeId>,
     pub line_offsets: HashMap<&'static str, Vec<usize>>, // file -> (line -> char_offset)
 
     pub nodes: DenseStorage<Node>,
@@ -176,6 +177,7 @@ impl Context {
 
             string_interner: StringInterner::new(),
             file_sources: Default::default(),
+            file_modules: Default::default(),
             line_offsets: Default::default(),
 
             nodes: Default::default(),
@@ -240,6 +242,7 @@ impl Context {
     pub fn reset(&mut self) {
         self.string_interner = StringInterner::new();
         self.file_sources.clear();
+        self.file_modules.clear();
 
         self.nodes.clear();
         self.ranges.clear();
@@ -309,8 +312,7 @@ impl Context {
         self.types.insert(self.ty_u8.unwrap(), Type::U8);
     }
 
-    pub fn make_source_info_from_file(&mut self, file_name: &str) -> SourceInfo<StaticStrSource> {
-        let path = PathBuf::from(file_name);
+    pub fn make_source_info_from_file(&mut self, path: PathBuf) -> SourceInfo<StaticStrSource> {
         let source_str = std::fs::read_to_string(&path).unwrap();
         let source_str: &'static str = Box::leak(source_str.into_boxed_str());
 

@@ -4,12 +4,14 @@ module bar {
     fn baz() i64 {
         return 66;
     }
+
+    fn qux() i64 {
+        return 77;
+    }
 }
 
-import "bar"::baz;
-import bar::baz as local_baz;
+import bar::*;
 
 fn main() {
-    baz() |> print_i64;
-    local_baz() |> print_i64;
+    baz();
 }

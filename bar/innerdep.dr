@@ -1,0 +1,5 @@
+import "inner" as i;
+
+fn baz() i64 {
+    return i::import_ception();
+}

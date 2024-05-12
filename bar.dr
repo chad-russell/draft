@@ -1,3 +1,0 @@
-fn baz() i64 {
-    return 3;
-}

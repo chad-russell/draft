@@ -12,10 +12,10 @@
     - [x] import bare module
     - [x] import with double colon
     - [x] import with curly braces
-    - [ ] import file modules
+    - [x] import file modules
     - [x] import aliases
     - [ ] import *
-    - [ ] import url
+    - [ ] import url (?)
 - [ ] debugger
 - [ ] top-level/struct-level global constants
     - [ ] numerics / bools

@@ -1,0 +1,9 @@
+import "innerdep" as i2;
+
+fn baz() i64 {
+    return i2::baz();
+}
+
+fn import_ception() i64 {
+    return 345;
+}

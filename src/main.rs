@@ -16,11 +16,7 @@ fn get_base_import_target(context: &Context, target: NodeId) -> Option<(NodeId, 
     }
 }
 
-fn run(context: &mut Context) -> EmptyDraftResult {
-    let input = context.args.input.clone();
-    println!("parse_file: {}", input);
-    context.parse_file(&input)?;
-
+fn handle_imports(context: &mut Context) -> EmptyDraftResult {
     let mut new_imports = Vec::new();
     std::mem::swap(&mut context.imports, &mut new_imports);
 
@@ -44,7 +40,8 @@ fn run(context: &mut Context) -> EmptyDraftResult {
                         .to_str()
                         .unwrap()
                 );
-                println!("parse_file: {}", joined_path);
+                println!("parse file module: {}", joined_path);
+
                 let module_id = context.parse_file_as_module(&joined_path)?;
 
                 let Node::ImportPath { path, .. } = context.nodes[import_target_id] else {
@@ -56,6 +53,17 @@ fn run(context: &mut Context) -> EmptyDraftResult {
                 };
             }
         }
+    }
+
+    Ok(())
+}
+
+fn run(context: &mut Context) -> EmptyDraftResult {
+    let input = context.args.input.clone();
+    context.parse_file(&input)?;
+
+    while !context.imports.is_empty() {
+        handle_imports(context)?;
     }
 
     if context.args.dump_tokens {

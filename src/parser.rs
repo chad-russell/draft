@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
 use string_interner::symbol::SymbolU32;
 
@@ -1311,25 +1311,15 @@ impl<'a, W: Source> Parser<'a, W> {
         target: NodeId,
     ) -> DraftResult<()> {
         if self.source_info.top.tok == Token::DoubleColon {
-            if self.source_info.second.tok == Token::LCurly {
-                self.pop(); // `::`
+            self.pop(); // `::`
+
+            if self.source_info.top.tok == Token::LCurly {
                 self.pop(); // `{`
 
                 while self.source_info.top.tok != Token::RCurly {
                     let name = self.parse_symbol()?;
 
                     let static_member_access = match self.ctx.nodes[target] {
-                        Node::ImportAlias {
-                            target: target_id,
-                            alias,
-                        } => self.ctx.push_node(
-                            self.make_range_spanning(target_id, alias),
-                            Node::StaticMemberAccess {
-                                value: target_id,
-                                member: name,
-                                resolved: None,
-                            },
-                        ),
                         Node::Symbol(_) => self.ctx.push_node(
                             self.make_range_spanning(target, name),
                             Node::StaticMemberAccess {
@@ -1355,6 +1345,9 @@ impl<'a, W: Source> Parser<'a, W> {
                                 alias,
                             },
                         ));
+
+                        let name_sym = self.ctx.nodes[alias].as_symbol().unwrap();
+                        self.ctx.scope_insert(name_sym, static_member_access);
                     } else {
                         targets.push(static_member_access);
 
@@ -1370,7 +1363,7 @@ impl<'a, W: Source> Parser<'a, W> {
                 }
 
                 self.expect(Token::RCurly)?;
-            } else {
+            } else if let Token::Symbol(_) = self.source_info.top.tok {
                 if let Node::ImportAlias { .. } = self.ctx.nodes[target] {
                     return Err(CompileError::Generic(
                         "LHS of a static member access cannot be an alias".to_string(),
@@ -1378,7 +1371,6 @@ impl<'a, W: Source> Parser<'a, W> {
                     ));
                 };
 
-                self.pop(); // `::`
                 let name = self.parse_symbol()?;
                 let static_member_access = self.ctx.push_node(
                     self.make_range_spanning(target, name),
@@ -1413,6 +1405,23 @@ impl<'a, W: Source> Parser<'a, W> {
                         self.ctx.scope_insert(name_sym, static_member_access);
                     }
                 }
+            } else if self.source_info.top.tok == Token::Star {
+                self.pop(); // `*`
+
+                let static_member_access = self.ctx.push_node(
+                    self.make_range_spanning(target, target),
+                    Node::ImportAll { target },
+                );
+
+                targets.push(static_member_access);
+            } else {
+                return Err(CompileError::Generic(
+                    format!(
+                        "Expected symbol, '{{', or '*', found {:?}",
+                        self.source_info.top.tok
+                    ),
+                    self.source_info.top.range,
+                ));
             }
         } else {
             if self.source_info.top.tok == Token::As {
@@ -2823,15 +2832,27 @@ impl Shunting {
 
 impl Context {
     pub fn parse_file(&mut self, file_name: &str) -> EmptyDraftResult {
-        let mut source = self.make_source_info_from_file(file_name);
+        let path = PathBuf::from(file_name);
+        let path = std::fs::canonicalize(&path).unwrap();
+
+        if self.file_sources.contains_key(&path) {
+            return Ok(());
+        }
+
+        let mut source = self.make_source_info_from_file(path);
         let mut parser = Parser::from_source(self, &mut source);
         parser.parse()
     }
 
     pub fn parse_file_as_module(&mut self, file_name: &str) -> DraftResult<NodeId> {
-        let name_sym = self.string_interner.get_or_intern(file_name);
+        let path = PathBuf::from(file_name);
+        let path = std::fs::canonicalize(&path).unwrap();
 
-        let mut source = self.make_source_info_from_file(file_name);
+        if self.file_sources.contains_key(&path) {
+            return Ok(*self.file_modules.get(&path).unwrap());
+        }
+
+        let mut source = self.make_source_info_from_file(path.clone());
         let mut parser = Parser::from_source(self, &mut source);
 
         let pushed_scope = parser.ctx.push_scope();
@@ -2851,6 +2872,7 @@ impl Context {
 
         parser.ctx.pop_scope(pushed_scope);
 
+        let name_sym = parser.ctx.string_interner.get_or_intern(file_name);
         let id = parser.ctx.push_node(
             range,
             Node::Module {
@@ -2861,6 +2883,8 @@ impl Context {
         );
 
         self.top_level.push(id);
+
+        self.file_modules.insert(path, id);
 
         Ok(id)
     }

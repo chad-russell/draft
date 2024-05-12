@@ -2181,10 +2181,12 @@ impl Context {
                     self.assign_type(*target);
                 }
             }
-            Node::ImportAlias { target, alias } => {
+            Node::ImportAlias { target, .. } => {
                 self.assign_type(target);
             }
-            Node::ImportAll => {}
+            Node::ImportAll { target, .. } => {
+                self.assign_type(target);
+            }
         }
 
         return true;
@@ -3204,7 +3206,7 @@ impl Context {
                 target: _,
                 alias: _,
             } => todo!(),
-            Node::ImportAll => todo!(),
+            Node::ImportAll { target: _ } => todo!(),
         }
     }
 

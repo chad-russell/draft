@@ -228,7 +228,9 @@ pub enum Node {
     Import {
         targets: IdVec,
     },
-    ImportAll,
+    ImportAll {
+        target: NodeId,
+    },
     ImportAlias {
         target: NodeId,
         alias: NodeId, // Symbol
@@ -296,7 +298,7 @@ impl Node {
             Node::Defer { .. } => "Defer".to_string(),
             Node::Module { .. } => "Module".to_string(),
             Node::Import { .. } => "Import".to_string(),
-            Node::ImportAll => "ImportAll".to_string(),
+            Node::ImportAll { .. } => "ImportAll".to_string(),
             Node::ImportAlias { .. } => "ImportAlias".to_string(),
         }
     }
